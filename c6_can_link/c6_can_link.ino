@@ -1,5 +1,5 @@
 /*
- * c6_can_link.ino  -  本番用: 車の CAN を読んで、表示に使う値を表示器へ UART で送る  Rev.6  (2026-10-23)
+ * c6_can_link.ino  -  本番用: 車の CAN を読んで、表示に使う値を表示器へ UART で送る  版は下の FW_VERSION
  *
  * 役割:
  *   XIAO ESP32C6 の CAN コントローラー 2 つで C-CAN(500 kbps)と B-CAN(50 kbps)を送信せずに受け、
@@ -23,13 +23,10 @@
  *   ブースト   0A18A001 b4 × BOOST_BAR_PER_LSB = bar(大気圧との差)        確認済み(10/22 ログ: アイドル 0、全開で最大 65)。単位は仮(0.01 bar/LSB)
  *   リバース   0A18A001 b7 の bit2(1 = R に入っている)                     確認済み(10/22 ログ)
  *   ギア       R は上のビット。1〜5 は車速と回転数の比から推定(下の GEAR_* の仮の値)。N は停車中
- *   燃料       B-CAN 0C014003 b5 − FUEL_EMPTY_RAW = L(1 LSB = 1 L。満タン 169 = 35 L)  確認済み(10/22 給油 25 L で +25)
- *              % = L ÷ FUEL_TANK_L × 100。0 L 側(FUEL_EMPTY_RAW)は仮の値。燃料警告灯が点いたときの生の値で確かめる【未確認】
- *              なまし(Rev.6、10/23 のログの模擬で決めた仕様):
- *                生の値は坂やカーブで液面が片寄り、数分かけて ±10 L 動く(10/22 実測。1 秒ごとの揺れではない)。
- *                hp = FUEL_HP_S 秒の指数平均、lp = FUEL_LP_S 秒の指数平均。表示は lp。
- *                |生 − hp| < FUEL_STABLE_L のとき(安定)は lp を更新。不安定なときは 生 < lp のときだけ lp を更新(減る方向だけ追う)。
- *                給油: 回転数 0(または回転数が来ない)が FUEL_ENGINE_OFF_MS 以上続き、回転数が戻ってからの最初の生の値が lp + FUEL_REFUEL_L 以上なら hp = lp = 生。走行中・停止中は増やさない
+ *   燃料       B-CAN 0C014003 b5 − FUEL_EMPTY_RAW = L(1 LSB = 1 L。満タン 169 = 35 L、空 134)  確認済み(10/22 給油 25 L で +25)
+ *              % = L ÷ FUEL_TANK_L × 100。0 L 側は燃料警告灯の値で確かめる【未確認】
+ *              液面の揺れで 1 秒ごとの値が 4〜7 L 動く(10/22 実測)ので、FUEL_AVG_S 秒の指数平均をかけて送る。
+ *              FUEL_JUMP_L 以上いきなり増えたら(給油)平均を捨てて新しい値から始める
  *
  * 操作: なし。書き込んで車につなぎ、IG ON にするだけ。
  *
@@ -80,15 +77,11 @@ static const uint32_t ID_WATER = 0x0A18A001;      // 水温 b3 − 40、ブー�
 static const float BOOST_BAR_PER_LSB = 0.01f;     // ブーストの 1 LSB [bar]【仮】(本人指定 10/22: 65 → 0.65 と表示)。実車の感触で直す
 static const uint8_t REVERSE_MASK = 0x04;         // 0A18A001 b7 のリバースのビット
 static const uint32_t ID_FUEL = 0x0C014003;       // 燃料(B-CAN、29 ビット、1 回/秒) b5 = 残量 [L] + FUEL_EMPTY_RAW
-static const int FUEL_EMPTY_RAW = 120;            // 0 L のときの値【仮】(10/22 の走行中の最小 127 が負にならない値。警告灯が点いたときの生の値で決める)
-static const int FUEL_FULL_RAW = 169;             // 満タン(35 L)のときの値(10/22 確認)
+static const int FUEL_EMPTY_RAW = 134;            // 0 L のときの値(満タン 169 − 35 L。10/22 の給油で 1 LSB = 1 L を確認)【0 L 側は未確認】
 static const int FUEL_TANK_L = 35;                // タンク容量 [L]
 static const uint32_t FUEL_TIMEOUT_MS = 5000;     // 1 回/秒なので長め
-static const float FUEL_HP_S = 30.0f;             // 「今動いているか」を見る短い指数平均の時定数 [秒]
-static const float FUEL_LP_S = 600.0f;            // 表示に使う長い指数平均の時定数 [秒]
-static const float FUEL_STABLE_L = 1.0f;          // |生 − hp| がこれ未満なら安定
-static const int FUEL_REFUEL_L = 5;               // エンジン停止のあと、lp よりこれ以上大きければ給油
-static const uint32_t FUEL_ENGINE_OFF_MS = 20000;  // 回転数 0(または回転数が来ない)がこれだけ続いたら「エンジン停止」
+static const float FUEL_AVG_S = 60.0f;            // 燃料の平均の時定数 [秒](Rev.5)。純正の燃料計は数分単位でなましている
+static const int FUEL_JUMP_L = 10;                // 平均より これ以上いきなり増えたら給油とみなし、平均を捨てる(液面の揺れは ±7 L 程度: 10/22 実測)。少ない給油は 3 分ほどで追いつく
 static const uint32_t SIGNAL_TIMEOUT_MS = 1000;   // この時間フレームが来なければ「信号なし」として送る
 static const uint32_t WATER_TIMEOUT_MS = 3000;
 
@@ -102,6 +95,10 @@ static const float GEAR_TOL_PCT = 12.0f;
 static const float GEAR_MIN_KMH = 5.0f;    // これより遅いときは推定しない(停車 = N)
 static const float STOP_KMH = 2.0f;        // これより遅ければ停車とみなして N
 static const int GEAR_MIN_RPM = 500;
+// クラッチのビットでギアを止めるか(1.0.0 で 0 にした)。10/22 のログでは、1 速でつながって走っている間も
+// 0628A001 b5 bit5 がほぼ 1 のまま(1 速 901 回中 892 回が 1、2 速でも 4 割)で、1 速がなかなか出ない原因と見ている(有力)。
+// 半クラッチの間は比がどのギアにも合わないので、止めなくても誤ったギアは出にくい。元に戻すときは 1
+#define GEAR_HOLD_ON_CLUTCH 0
 
 // ---- 送信の設定 ----
 static const uint32_t SIGNALS_MS = 20;        // 値のフレームの間隔(50 回/秒)
@@ -109,7 +106,10 @@ static const uint32_t INFO_MS = 1000;         // 状態のフレームの間隔
 static const uint32_t CAN_MIN_GAP_MS = 50;    // 同じ ID の生データを送る最短の間隔(中身が変わったとき)
 static const uint32_t CAN_REFRESH_MS = 1000;  // 変わらなくてもこの間隔で送る
 static const int CAN_PER_LOOP = 8;            // 1 周で送る生データの上限
-static const char FW_NAME[12] = "c6can r6";
+// 版(2026-10-23 から git で管理。Rev.5 の次が 1.0.0。燃料のなまし Rev.6 は入れていない)。形式は「大.中.小」: 小 = 直しだけ、中 = 値の追加や変更、
+// 大 = 表示器とのデータ形式(meter_link.h)が変わるとき。表示器の 受信の状態 の「送り元」に FW_NAME が出る
+#define FW_VERSION "1.0.0"
+static const char FW_NAME[12] = "c6can " FW_VERSION;  // 11 文字まで(最後の 0 を入れて 12)
 static const uart_port_t LINK_UART = UART_NUM_1;
 
 // ---- 受信の設定(can_dual_test と同じ) ----
@@ -188,11 +188,7 @@ struct Raw {
   uint8_t boostRaw;   // 0A18A001 b4(そのまま)
   bool reverse;       // R に入っている
   uint8_t fuelRaw;    // 0C014003 b5(そのまま)
-  float fuelHp;       // 短い指数平均(FUEL_HP_S)
-  float fuelLp;       // 長い指数平均(FUEL_LP_S)= 表示に使う値
-  bool fuelStable;    // 直近のサンプルが安定だったか(HB 行用)
-  uint32_t rpmZeroSince;  // 回転数 0 が続き始めた時刻(0 = 回っている)
-  bool fuelArmed;     // エンジン停止を見たので、次の燃料の値で給油を判定する
+  float fuelAvg;      // fuelRaw の指数平均(0 = まだ)
   uint32_t rpmMs, speedMs, clutchMs, waterMs, fuelMs;  // 最後に受けた時刻(0 = まだ)
 };
 static Raw g_raw;
@@ -247,11 +243,6 @@ static void decode(uint32_t id, const uint8_t *d, uint8_t dlc, uint32_t now) {
     g_raw.rpm = (uint16_t)(((uint16_t)d[2] << 8) | d[3]);
     g_raw.accel = d[7];
     g_raw.rpmMs = now;
-    if (g_raw.rpm == 0) {
-      if (g_raw.rpmZeroSince == 0) g_raw.rpmZeroSince = now ? now : 1;
-    } else {
-      g_raw.rpmZeroSince = 0;
-    }
   } else if (id == ID_SPEED && dlc >= 6) {
     g_raw.speedRaw = (uint16_t)(((uint16_t)d[4] << 8) | d[5]);
     g_raw.speedMs = now;
@@ -267,26 +258,13 @@ static void decode(uint32_t id, const uint8_t *d, uint8_t dlc, uint32_t now) {
 }
 static void decodeB(uint32_t id, const uint8_t *d, uint8_t dlc, uint32_t now) {  // B-CAN の 29 ビット ID
   if (id == ID_FUEL && dlc >= 6) {
-    float v = d[5];
     g_raw.fuelRaw = d[5];
-    // エンジン停止(回転数 0 が続く、または回転数のフレームが来ない)を見たら、給油の判定を待ち受ける
-    bool engineOff = (g_raw.rpmMs == 0) || (uint32_t)(now - g_raw.rpmMs) > FUEL_ENGINE_OFF_MS
-                     || (g_raw.rpmZeroSince && (uint32_t)(now - g_raw.rpmZeroSince) >= FUEL_ENGINE_OFF_MS);
-    if (engineOff) g_raw.fuelArmed = true;
-    if (g_raw.fuelMs == 0 || (uint32_t)(now - g_raw.fuelMs) > FUEL_TIMEOUT_MS) {
-      g_raw.fuelHp = g_raw.fuelLp = v;  // 最初、または途切れたあと
-      g_raw.fuelStable = true;
-    } else if (g_raw.fuelArmed && !engineOff && v >= g_raw.fuelLp + FUEL_REFUEL_L) {
-      g_raw.fuelHp = g_raw.fuelLp = v;  // 給油(エンジンが再び回ってからの最初の値で判定。停止中は判定しない: 停めた場所の傾きで +10 L 出ることがある 10/23 模擬)
-      g_raw.fuelStable = true;
-      g_raw.fuelArmed = false;
+    if (g_raw.fuelMs == 0 || (uint32_t)(now - g_raw.fuelMs) > FUEL_TIMEOUT_MS || (int)d[5] - (int)g_raw.fuelAvg >= FUEL_JUMP_L) {
+      g_raw.fuelAvg = d[5];  // 最初・途切れたあと・給油: 平均を捨てる
     } else {
       float dt = (now - g_raw.fuelMs) / 1000.0f;
-      g_raw.fuelHp += dt / (FUEL_HP_S + dt) * (v - g_raw.fuelHp);
-      float dev = v - g_raw.fuelHp;
-      g_raw.fuelStable = (dev < FUEL_STABLE_L && dev > -FUEL_STABLE_L);
-      if (g_raw.fuelStable || v < g_raw.fuelLp) g_raw.fuelLp += dt / (FUEL_LP_S + dt) * (v - g_raw.fuelLp);
-      if (!engineOff) g_raw.fuelArmed = false;  // 走っているのに給油の判定が成立しなかった: 待ち受けを解く
+      float a = dt / (FUEL_AVG_S + dt);  // 1 秒ごとなら約 1/61
+      g_raw.fuelAvg += a * ((float)d[5] - g_raw.fuelAvg);
     }
     g_raw.fuelMs = now;
   }
@@ -394,7 +372,7 @@ static void updateGear(bool rpmOk, bool speedOk, bool clutchOk, const Raw &r) {
     return;
   }
   if (kmh < GEAR_MIN_KMH || r.rpm < GEAR_MIN_RPM) return;  // 遅いときは前の値のまま
-  if (clutchOk && r.clutch) return;                          // クラッチを踏んでいる間は前の値のまま
+  if (GEAR_HOLD_ON_CLUTCH && clutchOk && r.clutch) return;   // クラッチを踏んでいる間は前の値のまま(GEAR_HOLD_ON_CLUTCH 1 のとき)
   float ratio = r.rpm / kmh;
   g_lastRatio = ratio;
   for (int g = 0; g < 5; g++) {
@@ -429,11 +407,10 @@ static void sendSignals(uint32_t now) {
   s.rpm = r.rpm;
   s.speed_c = (uint16_t)((uint32_t)r.speedRaw * 100 / 128);
   s.throttle_h = (uint8_t)(((uint32_t)r.accel * 200 + 127) / 255);
-  // 0 L = FUEL_EMPTY_RAW、35 L = FUEL_FULL_RAW の直線で % に(0 L 側は仮)
-  float fuelPct = (r.fuelLp - FUEL_EMPTY_RAW) * 100.0f / (FUEL_FULL_RAW - FUEL_EMPTY_RAW);
-  if (fuelPct < 0) fuelPct = 0;
-  if (fuelPct > 100) fuelPct = 100;
-  s.fuel_h = (uint8_t)(fuelPct * 2.0f + 0.5f);
+  int fuelL = (int)(r.fuelAvg + 0.5f) - FUEL_EMPTY_RAW;
+  if (fuelL < 0) fuelL = 0;
+  if (fuelL > FUEL_TANK_L) fuelL = FUEL_TANK_L;
+  s.fuel_h = (uint8_t)((fuelL * 200 + FUEL_TANK_L / 2) / FUEL_TANK_L);
   int w = r.water < -3276 ? -3276 : (r.water > 3276 ? 3276 : r.water);
   s.water_d = (int16_t)(w * 10);
   s.gear = gear;
@@ -546,11 +523,11 @@ static void sendInfo(uint32_t now) {
 static void printBanner() {
   g_bannerMs = millis();
   Serial.println();
-  Serial.println("==== c6_can_link Rev.6  車の CAN を読んで表示器へ送る(本番用) ====");
+  Serial.println("==== c6_can_link v" FW_VERSION "  車の CAN を読んで表示器へ送る(本番用) ====");
   Serial.println("C-CAN: 500 kbps  RX=「D0」  B-CAN: 50 kbps  RX=「D2」  どちらも LISTEN_ONLY(送信も ACK もしない)");
   Serial.printf("UART: 「D6」(GPIO%d) → 表示器「IO16」  %d bps  データ形式 版 %d  → %s\n", PIN_LINK_TX, METER_LINK_BAUD, METER_LINK_PROTO_VER,
                 g_uartOk ? "送信中" : "初期化に失敗(送っていない)");
-  Serial.printf("値: 回転数・アクセル 0618A001、車速 0210A006、クラッチ 0628A001、水温 0A18A001 b3−40、ブースト 0A18A001 b4 × %.2f bar、R 0A18A001 b7 bit2。燃料 B-CAN 0C014003 b5(0 L = %d【仮】、35 L = %d。%.0f 秒の平均、安定判定 %.0f 秒・±%.0f L)\n", BOOST_BAR_PER_LSB, FUEL_EMPTY_RAW, FUEL_FULL_RAW, FUEL_LP_S, FUEL_HP_S, FUEL_STABLE_L);
+  Serial.printf("値: 回転数・アクセル 0618A001、車速 0210A006、クラッチ 0628A001、水温 0A18A001 b3−40、ブースト 0A18A001 b4 × %.2f bar、R 0A18A001 b7 bit2。燃料 B-CAN 0C014003 b5 − %d = L(タンク %d L、%.0f 秒の平均)\n", BOOST_BAR_PER_LSB, FUEL_EMPTY_RAW, FUEL_TANK_L, FUEL_AVG_S);
   Serial.printf("ギア: 回転数÷車速の比で推定(仮の変速比)。各ギアの比 1速 %.1f  2速 %.1f  3速 %.1f  4速 %.1f  5速 %.1f [rpm/(km/h)]\n", rpmPerKmh(0), rpmPerKmh(1), rpmPerKmh(2),
                 rpmPerKmh(3), rpmPerKmh(4));
   Serial.println("LED: ゆっくり点滅=両方受信中 / 1回=C-CAN受信なし 2回=B-CAN受信なし 3回=両方なし 4回=C-CANエラー 5回=B-CANエラー / 速い点滅=初期化失敗");
@@ -678,16 +655,12 @@ static void tick(uint32_t now) {
 
   // 表示器へ送っている値
   uint8_t r_fuelRaw;
-  float r_fuelHp, r_fuelLp;
-  bool r_fuelStable, r_fuelArmed;
+  float r_fuelAvg;
   portENTER_CRITICAL(&g_bus[0].mux);
   r_fuelRaw = g_raw.fuelRaw;
-  r_fuelHp = g_raw.fuelHp;
-  r_fuelLp = g_raw.fuelLp;
-  r_fuelStable = g_raw.fuelStable;
-  r_fuelArmed = g_raw.fuelArmed;
+  r_fuelAvg = g_raw.fuelAvg;
   portEXIT_CRITICAL(&g_bus[0].mux);
-  char val[240];
+  char val[200];
   const MlSignals &s = g_lastSig;
   char gearText[4] = "–";
   if (s.valid & ML_V_GEAR) {
@@ -698,8 +671,8 @@ static void tick(uint32_t now) {
            (s.valid & ML_V_SPEED) ? "" : "×", s.speed_c / 100.0, (s.valid & ML_V_THROTTLE) ? "" : "×", s.throttle_h / 2, (s.valid & ML_V_WATER) ? "" : "×", s.water_d / 10,
            (s.valid & ML_V_BOOST) ? "" : "×", s.boost_c / 100.0, (s.valid & ML_V_FUEL) ? "" : "×", s.fuel_h / 2, gearText, (double)g_lastRatio);
   // 燃料の生の値と平均(なましの効き具合を見る用)
-  char fuelDbg[64];
-  snprintf(fuelDbg, sizeof(fuelDbg), " 燃料生 %u hp %.1f lp %.1f %s%s", r_fuelRaw, (double)r_fuelHp, (double)r_fuelLp, r_fuelStable ? "安定" : "揺れ", r_fuelArmed ? " 停止後" : "");
+  char fuelDbg[48];
+  snprintf(fuelDbg, sizeof(fuelDbg), " 燃料生 %u 平均 %.1f", r_fuelRaw, (double)r_fuelAvg);
   strncat(val, fuelDbg, sizeof(val) - strlen(val) - 1);
   static uint32_t logLines = 0;
   Serial.printf("HB t=%lus | %s | %s | %s | 送信 %lu フレーム/秒 %lu バイト/秒(回線の %lu%%) 捨てた %lu | L行 %lu/秒 | LED=", (unsigned long)(now / 1000), seg[0], seg[1],

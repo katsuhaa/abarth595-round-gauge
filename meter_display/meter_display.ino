@@ -1,5 +1,5 @@
 /*
- * meter_display.ino  -  595 メーター表示器  Rev.1  (2026-10-14)
+ * meter_display.ino  -  595 メーター表示器  版は config.h の METER_FW_VERSION
  *
  * 目的:
  *   アバルト 595 の純正ブースト計の位置に付ける丸型表示器。XIAO ESP32C6 から UART で届く値を、
@@ -1383,7 +1383,7 @@ static bool selfCheckOk() {
 static void printSelfCheck() {
   g_checkPrintMs = millis();
   Serial.println();
-  Serial.println("==== meter_display Rev.1  595 メーター表示器 ====");
+  Serial.println("==== meter_display v" METER_FW_VERSION "  595 メーター表示器 ====");
   Serial.printf("PSRAM: %u バイト(空き %u)  内部メモリーの空き: %u バイト  フラッシュ: %u バイト\n", (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram(),
                 (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFlashChipSize());
   if (!g_lcdOk) Serial.println("画面(CO5300): SPI の準備に失敗");

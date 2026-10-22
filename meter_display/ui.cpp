@@ -1287,6 +1287,7 @@ static void fillChordRows(int y0, int y1, uint16_t c) {
 static void drawTopSet() {  // 設定の項目の上の帯「設定」
   fillChordRows(0, ZONE_TOP_Y, C_BAND_TOP);
   textC(FONT_JP600_48, 233, 92, "設定", C_ACCENT);
+  textC(FONT_NUM600_20, 233, 34, "v" METER_FW_VERSION, C_LABEL);  // 表示器の版(config.h)
 }
 static void drawTopBack() {  // その下の画面の上の帯「‹ 戻る」
   fillChordRows(0, ZONE_TOP_Y, C_BAND_TOP);
@@ -1996,6 +1997,7 @@ static void updOpening(const LinkStats &ls, const SysInfo &si, uint32_t now) {
     int rows = t2 >= tOff ? (int)((t2 - tOff) / OPENING_ROW_MS) + 1 : 0;  // 自己診断の行(弧が消えてから OPENING_ROW_MS ごとに 1 行)
     if (rows > 4) rows = 4;
     while (g_openRows < rows) {
+      if (g_openRows == 0) textC(FONT_NUM600_24, 233, 392, "v" METER_FW_VERSION, C_LABEL);  // 表示器の版(config.h)。自己診断の下
       openRow(g_openRows, ls, si);
       g_openRows++;
     }
