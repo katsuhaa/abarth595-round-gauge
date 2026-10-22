@@ -1,0 +1,4 @@
+.DS_Store
+pc_test/build/
+pc_test/out/
+*.FCBak
