@@ -1,4 +1,4 @@
-// app.cpp - 受信データの解釈(mlink)、CAN の表(cantab)、全開と走行の時間(trip)。説明は app.h
+// app.cpp - 受信データの解釈(mlink)、車の CAN から値を作る(veh)、CAN の表(cantab)、全開と走行の時間(trip)。説明は app.h
 #include "app.h"
 #include <string.h>
 #include <algorithm>
@@ -19,6 +19,7 @@ static uint32_t g_infoMs = 0;
 static bool g_haveSeq = false;
 static uint8_t g_lastSeq = 0;
 static uint32_t g_lastGoodMs = 0;
+static bool g_anySeen = false;  // 何かの正しいフレームを受けた(値のフレームが来ないとき、getSignals の linkUp に使う)
 static uint32_t g_tickMs = 0, g_tickFrames = 0;
 static uint32_t g_rxBytes = 0, g_tickBytes = 0;
 static volatile bool g_graceOn = false;
@@ -49,6 +50,7 @@ void begin() {
   g_len = 0;
   g_sigSeen = false;
   g_haveSeq = false;
+  g_anySeen = false;
   g_tickMs = 0;
   g_tickFrames = 0;
   g_rxBytes = 0;
@@ -79,6 +81,7 @@ static void handle(uint8_t type, uint8_t seq, const uint8_t *p, uint32_t nowMs) 
   g_haveSeq = true;
   g_lastSeq = seq;
   g_lastGoodMs = nowMs;
+  g_anySeen = true;
   g_st.framesOk++;
   if (type == ML_TYPE_SIGNALS) {
     memcpy(&g_sig, p, sizeof(g_sig));
@@ -99,6 +102,7 @@ static void handle(uint8_t type, uint8_t seq, const uint8_t *p, uint32_t nowMs) 
     memcpy(&h, p, sizeof(h));
     cantab::onFrame((h.info >> 7) & 1, (h.info >> 6) & 1, h.id, h.info & 0x0F, p + sizeof(h), nowMs);
     platCanFrame((h.info >> 7) & 1, (h.info >> 6) & 1, h.id, h.info & 0x0F, p + sizeof(h), nowMs);
+    veh::onFrame((h.info >> 7) & 1, (h.info >> 6) & 1, h.id, h.info & 0x0F, p + sizeof(h), nowMs);
   }
 }
 
@@ -163,6 +167,11 @@ void tick(uint32_t nowMs) {
       g_sigSeen = false;
       platUnlock();
     }
+    if (g_anySeen && (uint32_t)(nowMs - g_lastGoodMs) > 2 * LINK_TIMEOUT_MS) {
+      platLock();
+      g_anySeen = false;
+      platUnlock();
+    }
   }
 }
 
@@ -210,20 +219,38 @@ uint32_t autoBaud(uint32_t nowMs, size_t rxBytes) {
   return next;
 }
 
+// 値のフレームが LINK_TIMEOUT_MS 以内に届いているか(platLock の中で呼ぶ)。
+// 時刻は受信タスクが付けたもの。呼び出し側が nowMs を読んだあとに届いたフレームだと nowMs より新しい(差が負)
+static bool sigUpLocked(uint32_t nowMs) {
+  return g_sigSeen && (int32_t)(nowMs - g_sigMs) <= (int32_t)LINK_TIMEOUT_MS;
+}
+static bool anyUpLocked(uint32_t nowMs) {
+  return g_anySeen && (int32_t)(nowMs - g_lastGoodMs) <= (int32_t)LINK_TIMEOUT_MS;
+}
+
+bool usingRaw(uint32_t nowMs) {
+  platLock();
+  bool raw = !sigUpLocked(nowMs) && anyUpLocked(nowMs);
+  platUnlock();
+  return raw;
+}
+
 void getSignals(Signals *out, uint32_t nowMs) {
   MlSignals s;
-  bool seen;
-  uint32_t ms;
+  bool sigUp, anyUp;
   platLock();
   s = g_sig;
-  seen = g_sigSeen;
-  ms = g_sigMs;
+  sigUp = sigUpLocked(nowMs);
+  anyUp = anyUpLocked(nowMs);
   platUnlock();
   memset(out, 0, sizeof(*out));
-  // ms は受信タスクが付けた時刻。呼び出し側が nowMs を読んだあとに届いたフレームだと nowMs より新しい(差が負)
-  int32_t age = (int32_t)(nowMs - ms);
-  out->linkUp = seen && age <= (int32_t)LINK_TIMEOUT_MS;
-  if (!out->linkUp) return;
+  if (!sigUp) {
+    // 値のフレームが来ていない(2.0.0 の c6_can_link は送らない): CAN の生データから作る(veh)
+    out->linkUp = anyUp;
+    if (anyUp) veh::getSignals(out, nowMs);
+    return;
+  }
+  out->linkUp = true;
   out->rpmOk = s.valid & ML_V_RPM;
   out->speedOk = s.valid & ML_V_SPEED;
   out->throttleOk = s.valid & ML_V_THROTTLE;
@@ -250,6 +277,244 @@ void getStats(LinkStats *out) {
 }
 
 }  // namespace mlink
+
+// ================================================================ veh(config.h の VEH_*。c6_can_link 1.1.0 の decode・decodeB・updateGear・sendSignals を移した)
+namespace veh {
+
+struct State {
+  uint16_t rpm;
+  uint8_t accel;          // 0〜255
+  uint16_t speedRaw;      // km/h × 128
+  bool clutch;
+  int water;              // ℃
+  uint8_t boostRaw;       // 0A18A001 b4(そのまま)
+  bool reverse;           // R に入っている
+  uint32_t rpmZeroSince;  // 回転数 0 が続き始めた時刻(0 = 回っている)
+  uint32_t rpmMs, speedMs, clutchMs, engMs;  // 最後に受けた時刻(0 = まだ)
+  // 燃料
+  uint32_t fuelSeenMs;    // 0C014003 を最後に受けた時刻(b5 = 0 も含む)
+  uint32_t fuelMs;        // 最後に使った(正しい)値の時刻(0 = この起動でまだ。途切れたあとの判定にも使う)
+  uint8_t fuelRaw;        // 最後に使った生の値
+  float fuelHp;           // 短い指数平均(VEH_FUEL_HP_S)
+  float fuelLp;           // 長い指数平均(VEH_FUEL_LP_S)= 表示に使う値
+  bool fuelHave;          // fuelLp に値がある(前回の値、または正しい生の値)
+  bool fuelStable;        // 直近の値が安定だったか
+  bool fuelArmed;         // エンジン停止を見たので、再始動後の燃料の値で給油を判定する
+  bool fuelRestored;      // この起動で前回の値から始めた
+  int fuelRestoredTenths;
+  uint32_t fuelZero;      // 捨てた b5 = 0 のフレームの数
+  uint32_t fuelRefuels;   // 給油とみなした回数
+};
+static State g;              // 受信タスクが書き、loop() が読む(platLock で守る)
+static char g_gear = 0;      // 推定したギア('1'〜'5'、'N'、0 = 分からない)。getSignals だけが使う
+static float g_lastRatio = 0;
+
+static inline uint32_t stamp(uint32_t t) {  // 時刻 0 は「まだ」に使うので、0 は 1 にする
+  return t ? t : 1;
+}
+// t が timeout 以内か。受信タスクの時刻が now より新しいことがある(差が負)
+static bool within(uint32_t t, uint32_t now, uint32_t timeout) {
+  return t && (int32_t)(now - t) <= (int32_t)timeout;
+}
+
+void begin() {
+  platLock();
+  memset(&g, 0, sizeof(g));
+  platUnlock();
+  g_gear = 0;
+  g_lastRatio = 0;
+}
+
+void fuelRestore(int tenths) {
+  if (tenths <= 0) return;
+  platLock();
+  g.fuelHp = g.fuelLp = tenths / 10.0f;
+  g.fuelHave = true;
+  g.fuelRestored = true;
+  g.fuelRestoredTenths = tenths;
+  platUnlock();
+}
+
+bool fuelSaveValue(int *tenths) {
+  platLock();
+  bool have = g.fuelHave;
+  float lp = g.fuelLp;
+  platUnlock();
+  if (!have) return false;
+  long v = lroundf(lp * 10.0f);
+  if (v <= 0) return false;  // 0 以下は「無い」と区別できないので書かない
+  *tenths = (int)v;
+  return true;
+}
+
+// 正しい生の値(b5)を 1 つ入れる。platLock の中で呼ぶ
+static void fuelSample(float v, uint32_t now) {
+  // エンジン停止(回転数 0 が続く、または回転数のフレームが来ない)を見たら、再始動後の給油の判定を待ち受ける
+  bool engineOff = (g.rpmMs == 0) || (uint32_t)(now - g.rpmMs) > VEH_FUEL_ENGINE_OFF_MS
+                   || (g.rpmZeroSince && (uint32_t)(now - g.rpmZeroSince) >= VEH_FUEL_ENGINE_OFF_MS);
+  if (engineOff) g.fuelArmed = true;
+  if (g.fuelMs == 0 || (uint32_t)(now - g.fuelMs) > VEH_FUEL_TIMEOUT_MS) {
+    // 起動後の最初、または途切れたあと。前の値(前回保存した値、または途切れる前の値)があれば、それより
+    // VEH_FUEL_REFUEL_L 以上多いときだけ給油とみなしてこの値から始め直す。そうでなければ前の値を続ける(hp だけ今の値から)
+    if (g.fuelHave && v < g.fuelLp + VEH_FUEL_REFUEL_L) {
+      g.fuelHp = v;
+    } else {
+      if (g.fuelHave) g.fuelRefuels++;
+      g.fuelHp = g.fuelLp = v;
+      g.fuelHave = true;
+    }
+    g.fuelStable = true;
+    g.fuelArmed = false;  // 再始動後の判定はここで済んだ
+  } else if (g.fuelArmed && !engineOff && v >= g.fuelLp + VEH_FUEL_REFUEL_L) {
+    g.fuelHp = g.fuelLp = v;  // 給油(電源を切らずにエンジンを止め、再び回ってからの最初の値で判定)
+    g.fuelStable = true;
+    g.fuelArmed = false;
+    g.fuelRefuels++;
+  } else {
+    float dt = (uint32_t)(now - g.fuelMs) / 1000.0f;
+    g.fuelHp += dt / (VEH_FUEL_HP_S + dt) * (v - g.fuelHp);
+    float dev = v - g.fuelHp;
+    g.fuelStable = (dev < VEH_FUEL_STABLE_L && dev > -VEH_FUEL_STABLE_L);
+    if (g.fuelStable || v < g.fuelLp) g.fuelLp += dt / (VEH_FUEL_LP_S + dt) * (v - g.fuelLp);
+    if (!engineOff) g.fuelArmed = false;  // 回っているのに給油の判定が成立しなかった: 待ち受けを解く
+  }
+  g.fuelMs = stamp(now);
+}
+
+void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *d, uint32_t now) {
+  if (!ext) return;  // 使う値はどれも 29 ビット ID
+  if (bus == 0) {
+    if (id == VEH_ID_RPM_ACCEL && dlc >= 8) {
+      platLock();
+      g.rpm = (uint16_t)(((uint16_t)d[2] << 8) | d[3]);
+      g.accel = d[7];
+      g.rpmMs = stamp(now);
+      if (g.rpm == 0) {
+        if (g.rpmZeroSince == 0) g.rpmZeroSince = stamp(now);
+      } else {
+        g.rpmZeroSince = 0;
+      }
+      platUnlock();
+    } else if (id == VEH_ID_SPEED && dlc >= 6) {
+      platLock();
+      g.speedRaw = (uint16_t)(((uint16_t)d[4] << 8) | d[5]);
+      g.speedMs = stamp(now);
+      platUnlock();
+    } else if (id == VEH_ID_CLUTCH && dlc >= 6) {
+      platLock();
+      g.clutch = (d[5] & 0x20) != 0;
+      g.clutchMs = stamp(now);
+      platUnlock();
+    } else if (id == VEH_ID_ENGINE && dlc >= 8) {
+      platLock();
+      g.water = (int)d[3] - 40;
+      g.boostRaw = d[4];
+      g.reverse = (d[7] & VEH_REVERSE_MASK) != 0;
+      g.engMs = stamp(now);
+      platUnlock();
+    }
+  } else if (id == VEH_ID_FUEL && dlc >= 6) {
+    platLock();
+    g.fuelSeenMs = stamp(now);
+    if (d[5] == 0) {
+      g.fuelZero++;  // IG ON 直後の「まだ測れていない」値(b4 = 0x88、b5 = 0)。使わない
+    } else {
+      g.fuelRaw = d[5];
+      fuelSample(d[5], now);
+    }
+    platUnlock();
+  }
+}
+
+// ---- ギアの推定(c6_can_link 1.1.0 の updateGear と同じ)
+// rpm ÷ km/h の計算値。1 km/h = 1000 m/h → タイヤ 1000/外周 回転/h → ÷60 回転/分 × 減速比
+static float rpmPerKmh(int gear) {
+  static const float RATIO[5] = VEH_GEAR_RATIOS;
+  return RATIO[gear] * VEH_FINAL_DRIVE * (1000.0f / VEH_TIRE_CIRC_M) / 60.0f;
+}
+static void updateGear(bool rpmOk, bool speedOk, bool clutchOk, const State &r) {
+  if (!rpmOk || !speedOk) {
+    g_gear = 0;
+    return;
+  }
+  float kmh = r.speedRaw / 128.0f;
+  if (kmh < VEH_STOP_KMH) {
+    g_gear = 'N';
+    return;
+  }
+  if (kmh < VEH_GEAR_MIN_KMH || r.rpm < VEH_GEAR_MIN_RPM) return;  // 遅いときは前の値のまま
+  if (VEH_GEAR_HOLD_ON_CLUTCH && clutchOk && r.clutch) return;    // クラッチを踏んでいる間は前の値のまま(VEH_GEAR_HOLD_ON_CLUTCH 1 のとき)
+  (void)clutchOk;
+  float ratio = r.rpm / kmh;
+  g_lastRatio = ratio;
+  for (int k = 0; k < 5; k++) {
+    float ref = rpmPerKmh(k);
+    if (ratio >= ref * (1.0f - VEH_GEAR_TOL_PCT / 100.0f) && ratio <= ref * (1.0f + VEH_GEAR_TOL_PCT / 100.0f)) {
+      g_gear = (char)('1' + k);
+      return;
+    }
+  }
+  g_gear = 0;  // どのギアにも合わない(変速の途中など)
+}
+
+void getSignals(Signals *out, uint32_t now) {
+  State r;
+  platLock();
+  r = g;
+  platUnlock();
+  bool rpmOk = within(r.rpmMs, now, VEH_TIMEOUT_MS);
+  bool speedOk = within(r.speedMs, now, VEH_TIMEOUT_MS);
+  bool clutchOk = within(r.clutchMs, now, VEH_TIMEOUT_MS);
+  bool waterOk = within(r.engMs, now, VEH_WATER_TIMEOUT_MS);
+  bool engOk = within(r.engMs, now, VEH_TIMEOUT_MS);  // 0A18A001(ブースト・リバース)が届いている
+  bool fuelOk = r.fuelHave && within(r.fuelSeenMs, now, VEH_FUEL_TIMEOUT_MS);
+  updateGear(rpmOk, speedOk, clutchOk, r);
+  char gear = (engOk && r.reverse) ? 'R' : g_gear;  // R のビットは推定より優先
+
+  // 値の刻みは 1.x の c6_can_link が値のフレームで送っていたときと同じにする(表示と判定が変わらないように)
+  out->rpmOk = rpmOk;
+  out->throttleOk = rpmOk;
+  out->speedOk = speedOk;
+  out->waterOk = waterOk;
+  out->boostOk = engOk;
+  out->fuelOk = fuelOk;
+  out->gearOk = gear != 0;
+  out->rpm = r.rpm;
+  out->speedKmh = (uint16_t)((uint32_t)r.speedRaw * 100 / 128) / 100.0f;
+  out->throttlePct = (uint8_t)(((uint32_t)r.accel * 200 + 127) / 255) / 2.0f;
+  int w = r.water < -3276 ? -3276 : (r.water > 3276 ? 3276 : r.water);
+  out->waterC = (int16_t)(w * 10) / 10.0f;
+  // 0 L = VEH_FUEL_EMPTY_RAW、35 L = VEH_FUEL_FULL_RAW の直線で % に(0 L 側は仮)
+  float pct = (r.fuelLp - VEH_FUEL_EMPTY_RAW) * 100.0f / (VEH_FUEL_FULL_RAW - VEH_FUEL_EMPTY_RAW);
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  out->fuelPct = (uint8_t)(pct * 2.0f + 0.5f) / 2.0f;
+  int bc = (int)(r.boostRaw * VEH_BOOST_BAR_PER_LSB * 100.0f + 0.5f);
+  out->boostBar = (int16_t)(bc > 32767 ? 32767 : bc) / 100.0f;
+  out->gear = gear;
+}
+
+void fuelInfo(FuelInfo *out, uint32_t now) {
+  platLock();
+  out->have = g.fuelHave;
+  out->restored = g.fuelRestored;
+  out->restoredTenths = g.fuelRestoredTenths;
+  out->seen = within(g.fuelSeenMs, now, VEH_FUEL_TIMEOUT_MS);
+  out->raw = g.fuelRaw;
+  out->hp = g.fuelHp;
+  out->lp = g.fuelLp;
+  out->stable = g.fuelStable;
+  out->armed = g.fuelArmed;
+  out->zeroFrames = g.fuelZero;
+  out->refuels = g.fuelRefuels;
+  platUnlock();
+}
+
+float lastRatio() {
+  return g_lastRatio;
+}
+
+}  // namespace veh
 
 // ================================================================ cantab
 namespace cantab {
@@ -850,12 +1115,13 @@ void filterCommand(const uint8_t *data, size_t len) {
   }
 }
 
-bool filterPass(uint32_t pid, uint32_t nowMs) {
+bool filterPass(uint32_t pid, uint32_t nowMs, uint16_t minMs) {
   if (g_allowAll) {
-    if (g_allInterval == 0) return true;
+    const uint16_t iv = g_allInterval > minMs ? g_allInterval : minMs;
+    if (iv == 0) return true;
     for (int i = 0; i < g_allN; i++) {
       if (g_allPid[i] == pid) {
-        if ((uint32_t)(nowMs - g_allMs[i]) < g_allInterval) return false;
+        if ((uint32_t)(nowMs - g_allMs[i]) < iv) return false;
         g_allMs[i] = nowMs;
         return true;
       }
@@ -869,7 +1135,8 @@ bool filterPass(uint32_t pid, uint32_t nowMs) {
   }
   for (int i = 0; i < g_n; i++) {
     if (g_pid[i] != pid) continue;
-    if (g_interval[i] && g_lastMs[i] && (uint32_t)(nowMs - g_lastMs[i]) < g_interval[i]) return false;
+    const uint16_t iv = g_interval[i] > minMs ? g_interval[i] : minMs;
+    if (iv && g_lastMs[i] && (uint32_t)(nowMs - g_lastMs[i]) < iv) return false;
     g_lastMs[i] = nowMs;
     return true;
   }

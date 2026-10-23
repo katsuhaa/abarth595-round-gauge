@@ -1,6 +1,7 @@
 // app.h - 表示器の中で受け渡すデータと、各部の入口
 //
 // mlink  : UART で届いたバイト列をフレームに分け、最新の値と受信の状態を持つ
+// veh    : 車の CAN の生データから表示に使う値(回転数・車速・水温・ブースト・燃料・ギアなど)を作る(2026-10-23 に c6_can_link から移した)
 // cantab : CAN の生データの表(CAN確認画面用)。変化を記録するたびに候補を絞り込む、値の履歴
 // trip   : 全開の時間と走行時間(電源 ON からの累計)、3000rpm 超・以下の累計時間(NVS に保存)
 // ui     : 画面(ui.h)
@@ -122,8 +123,36 @@ uint32_t baud();  // いま受信に使う速度 [bps]
 void graceUntil(uint32_t untilMs);
 // 受信元が切り替わった(デモ表示の入・切)。次のフレームでは連番の飛びを欠落として数えない
 void resyncSeq();
+// 表示に使う値。値のフレーム(MlSignals)が LINK_TIMEOUT_MS 以内に届いていればその値(c6_display_debug・デモ表示・1.x の c6_can_link)、
+// 届いていなければ CAN の生データから作った値(veh。2.0.0 の c6_can_link)。linkUp はどちらでも「何かのフレームを LINK_TIMEOUT_MS 以内に受けた」
 void getSignals(Signals *out, uint32_t nowMs);
 void getStats(LinkStats *out);
+bool usingRaw(uint32_t nowMs);  // いま getSignals が生データから作った値を返す(値のフレームが来ていない)
+}
+
+// ---------------------------------------------------------------- veh(車の CAN の生データから表示に使う値を作る。config.h の VEH_*)
+namespace veh {
+void begin();  // 状態を全部消す(燃料の前回の値も)。setup() で NVS から戻す前に呼ぶ
+// CAN の生データを 1 フレーム受けるたびに呼ぶ(受信タスク。mlink が呼ぶ)
+void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *data, uint32_t nowMs);
+// 表示に使う値(linkUp・sim・scene 以外)を out に入れる。out は呼ぶ側で 0 にしておく
+void getSignals(Signals *out, uint32_t nowMs);
+// 燃料のなましの値(lp)の保存と復元(NVS)。値は生の値の 10 倍(0.1 L 単位)の整数
+void fuelRestore(int tenths);       // 起動時に、前回保存した値を入れる(0 以下は「無い」)
+bool fuelSaveValue(int *tenths);    // 保存する値。なましの値がまだ無ければ false
+struct FuelInfo {
+  bool have;            // なましの値がある(前回の値か、正しい生の値を受けた)
+  bool restored;        // この起動で前回の値から始めた
+  int restoredTenths;   // そのときの値(生の値の 10 倍)
+  bool seen;            // 0C014003 を VEH_FUEL_TIMEOUT_MS 以内に受けている(b5 = 0 も含む)
+  uint8_t raw;          // 最後に使った生の値(b5)
+  float hp, lp;
+  bool stable, armed;
+  uint32_t zeroFrames;  // 捨てた b5 = 0 のフレームの数
+  uint32_t refuels;     // 給油とみなした回数
+};
+void fuelInfo(FuelInfo *out, uint32_t nowMs);
+float lastRatio();  // ギアの推定に使った最後の比 [rpm per km/h](シリアル用)
 }
 
 // ---------------------------------------------------------------- cantab
@@ -216,8 +245,9 @@ size_t encodeCan(uint32_t id, const uint8_t *d, uint8_t dlc, uint8_t out[20]);
 // PID フィルタ(0x0002 に書かれる命令)。RaceChrono は「全部拒否」→「この PID を n ms 間隔で」を PID ごとに送ってくる
 void filterReset();
 void filterCommand(const uint8_t *data, size_t len);
-// この PID を今送ってよいか(フィルタと、PID ごとの最短間隔)。送るときは lastSent を更新する
-bool filterPass(uint32_t pid, uint32_t nowMs);
+// この PID を今送ってよいか(フィルタと、PID ごとの最短間隔)。送るときは lastSent を更新する。
+// minMs: RaceChrono が頼む間隔がこれより短いときは、この間隔にする(車の CAN は config.h の RC_CAN_MIN_MS、IMU は 0)
+bool filterPass(uint32_t pid, uint32_t nowMs, uint16_t minMs = 0);
 int filterCount();        // 許可している PID の数(全部許可のときは -1)
 }
 

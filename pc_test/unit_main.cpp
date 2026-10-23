@@ -1,4 +1,5 @@
-// unit_main.cpp - PC 上の単体試験: UART データの受け取り方、画面の操作(タップ)、設定、自動で戻る
+// unit_main.cpp - PC 上の単体試験: UART データの受け取り方、画面の操作(タップ)、設定、自動で戻る、
+//                 車の CAN の生データから値を作る(veh。../logs/ の 10/22 の実車ログも流す)
 #include "../meter_display/app.h"
 #include "../meter_display/gfx.h"
 #include "../meter_display/ui.h"
@@ -1097,6 +1098,21 @@ int main() {
       rcdiy::filterCommand(a, 7);
     }
     CHECK(rcdiy::filterCount() == 48 && rcdiy::filterPass(47, 5000) && !rcdiy::filterPass(59, 5000), "許可の表は 48 個まで(それ以上は無視)");
+    // 車の CAN は RC_CAN_MIN_MS より詰めない(2.0.0: c6_can_link が 20 ms 間隔で送るようになったので、RaceChrono へ送る量を 1.x と同じに保つ)
+    rcdiy::filterReset();
+    uint8_t allow20[] = { 2, 0x00, 0x14, 0x06, 0x18, 0xA0, 0x01 };  // RaceChrono が 20 ms 間隔を頼む
+    rcdiy::filterCommand(allow20, sizeof(allow20));
+    CHECK(rcdiy::filterPass(0x0618A001, 6000, RC_CAN_MIN_MS) && !rcdiy::filterPass(0x0618A001, 6020, RC_CAN_MIN_MS) && !rcdiy::filterPass(0x0618A001, 6049, RC_CAN_MIN_MS)
+              && rcdiy::filterPass(0x0618A001, 6050, RC_CAN_MIN_MS),
+          "車の CAN: 頼まれた間隔(20 ms)より RC_CAN_MIN_MS(50 ms)が長ければ 50 ms");
+    CHECK(rcdiy::filterPass(0x0618A001, 6070), "最短の間隔を渡さないとき(IMU)は頼まれた間隔のまま");
+    uint8_t allow200[] = { 2, 0x00, 0xC8, 0x02, 0x10, 0xA0, 0x06 };  // 200 ms
+    rcdiy::filterCommand(allow200, sizeof(allow200));
+    CHECK(rcdiy::filterPass(0x0210A006, 7000, RC_CAN_MIN_MS) && !rcdiy::filterPass(0x0210A006, 7100, RC_CAN_MIN_MS) && rcdiy::filterPass(0x0210A006, 7200, RC_CAN_MIN_MS),
+          "車の CAN: 頼まれた間隔の方が長ければそちら(200 ms)");
+    rcdiy::filterCommand(all0, 3);
+    CHECK(rcdiy::filterPass(0x77, 8000, RC_CAN_MIN_MS) && !rcdiy::filterPass(0x77, 8030, RC_CAN_MIN_MS) && rcdiy::filterPass(0x77, 8050, RC_CAN_MIN_MS) && rcdiy::filterPass(0x78, 8050, RC_CAN_MIN_MS),
+          "全部許可(間隔 0)でも、車の CAN は PID ごとに RC_CAN_MIN_MS");
     rcdiy::filterReset();
   }
 
@@ -1371,6 +1387,188 @@ int main() {
     r.rpmOk = false;
     trip::update(r, 2200);
     CHECK(trip::aboveMs() == 400 && trip::belowMs() == 400, "3000rpm 超・以下の時間を数える(信号が無い間は数えない)");
+  }
+
+  // ---------------- 22. 車の CAN の生データから値を作る(2.0.0。c6_can_link 2.0.0 は値のフレームを送らず、生データだけを送る)
+  {
+    veh::begin();
+    mlink::begin();
+    cantab::begin();
+    uint8_t seq = 0;
+    auto canFrame = [&](uint8_t bus, uint32_t id, const uint8_t *d, uint8_t dlc, uint32_t t) {
+      uint8_t p[sizeof(MlCanHead) + 8];
+      MlCanHead h;
+      h.info = (uint8_t)((bus ? 0x80 : 0) | 0x40 | (dlc & 0x0F));  // 29 ビット ID
+      h.id = id;
+      memcpy(p, &h, sizeof(h));
+      memcpy(p + sizeof(h), d, dlc);
+      auto f = frame(ML_TYPE_CAN, seq++, p, (uint8_t)(sizeof(h) + dlc));
+      mlink::feed(f.data(), f.size(), t);
+    };
+    uint32_t t = 500000;
+    const uint8_t rpm3000[8] = { 0, 0, 0x0B, 0xB8, 0, 0, 0, 255 };  // 3000 rpm、アクセル 255(100 %)
+    const uint8_t kmh60[8] = { 0, 0, 0, 0, 0x1E, 0x00, 0, 0 };     // 7680 ÷ 128 = 60 km/h
+    const uint8_t eng[8] = { 0, 0, 0, 130, 65, 0, 0, 0 };          // 水温 130 − 40 = 90 ℃、ブースト 65 × 0.01 = 0.65 bar
+    const uint8_t clutch[8] = { 0, 0, 0, 0, 0, 0x20, 0, 0 };
+    canFrame(0, 0x0618A001, rpm3000, 8, t);
+    canFrame(0, 0x0210A006, kmh60, 8, t);
+    canFrame(0, 0x0A18A001, eng, 8, t);
+    canFrame(0, 0x0628A001, clutch, 8, t);
+    mlink::getSignals(&s, t);
+    CHECK(s.linkUp && mlink::usingRaw(t) && s.rpmOk && s.rpm == 3000 && s.throttleOk && s.throttlePct == 100.0f, "生データ: 回転数・アクセル(0618A001 b2-3、b7)");
+    CHECK(s.speedOk && s.speedKmh == 60.0f, "生データ: 車速(0210A006 b4-5 ÷ 128)");
+    CHECK(s.waterOk && s.waterC == 90.0f && s.boostOk && fabsf(s.boostBar - 0.65f) < 0.0001f, "生データ: 水温 b3 − 40、ブースト b4 × 0.01 bar(0A18A001)");
+    CHECK(s.gearOk && s.gear == '3', "生データ: 3000 rpm ÷ 60 km/h = 50 → 3 速(仮の変速比、クラッチを踏んでいても止めない)");
+    CHECK(!s.fuelOk && !s.sim && s.scene == 0, "生データ: 燃料はまだ無い。模擬ではない");
+    const uint8_t engR[8] = { 0, 0, 0, 130, 0, 0, 0, 0x04 };
+    canFrame(0, 0x0A18A001, engR, 8, t + 20);
+    mlink::getSignals(&s, t + 20);
+    CHECK(s.gearOk && s.gear == 'R', "生データ: 0A18A001 b7 bit2 = R(推定より優先)");
+    const uint8_t kmh1[8] = { 0, 0, 0, 0, 0x00, 0x80, 0, 0 };  // 1 km/h
+    canFrame(0, 0x0A18A001, eng, 8, t + 40);
+    canFrame(0, 0x0210A006, kmh1, 8, t + 40);
+    mlink::getSignals(&s, t + 40);
+    CHECK(s.gearOk && s.gear == 'N', "生データ: 2 km/h 未満は N");
+    const uint8_t rpm5400[8] = { 0, 0, 0x15, 0x18, 0, 0, 0, 0 };
+    canFrame(0, 0x0618A001, rpm5400, 8, t + 60);
+    canFrame(0, 0x0210A006, kmh60, 8, t + 60);
+    mlink::getSignals(&s, t + 60);
+    CHECK(!s.gearOk && s.throttlePct == 0.0f, "生データ: 5400 rpm ÷ 60 km/h = 90 → 1 速(116)と 2 速(67)の ±12 % の間(変速の途中扱い)= 分からない");
+    // 「信号なし」: 同じ ID が VEH_TIMEOUT_MS 来なければ外す(線のほかのフレームは来ていて、受信はある)
+    const uint8_t fuelZero[8] = { 0, 0, 0x59, 0x95, 0x88, 0x00, 0, 0 };
+    canFrame(1, 0x0C014003, fuelZero, 8, t + 60 + VEH_TIMEOUT_MS);
+    mlink::getSignals(&s, t + 60 + VEH_TIMEOUT_MS);
+    CHECK(s.linkUp && s.rpmOk && s.speedOk, "生データ: VEH_TIMEOUT_MS ちょうどまでは信号あり");
+    mlink::getSignals(&s, t + 61 + VEH_TIMEOUT_MS);
+    CHECK(s.linkUp && !s.rpmOk && !s.speedOk && !s.throttleOk && !s.gearOk && s.waterOk, "生データ: VEH_TIMEOUT_MS を過ぎた値は信号なし(水温は VEH_WATER_TIMEOUT_MS)");
+    CHECK(!s.fuelOk, "燃料: b5 = 0(IG ON 直後)だけでは値なし(前回の値も無いとき)");
+    veh::FuelInfo fi;
+    veh::fuelInfo(&fi, t + 61 + VEH_TIMEOUT_MS);
+    CHECK(fi.zeroFrames == 1 && !fi.have && fi.seen, "燃料: b5 = 0 は数えて捨てる");
+    const uint8_t fuel155[8] = { 0, 0, 0x59, 0x95, 0x80, 155, 0, 0 };
+    canFrame(1, 0x0C014003, fuel155, 8, t + 1060 + VEH_TIMEOUT_MS);
+    mlink::getSignals(&s, t + 1060 + VEH_TIMEOUT_MS);
+    CHECK(s.fuelOk && s.fuelPct == 71.5f, "燃料: 最初の正しい値から始める(155 → (155 − 120) ÷ 49 = 71.4 % → 0.5 % 刻みで 71.5)");
+    int tenths = 0;
+    CHECK(veh::fuelSaveValue(&tenths) && tenths == 1550, "燃料: 保存する値は生の値の 10 倍");
+
+    // 前回の値から始める(電源を入れ直した)
+    veh::begin();
+    CHECK(!veh::fuelSaveValue(&tenths), "燃料: 値が無いときは保存しない");
+    veh::fuelRestore(1600);
+    uint32_t t2 = t + 100000;
+    canFrame(1, 0x0C014003, fuelZero, 8, t2);
+    mlink::getSignals(&s, t2);
+    CHECK(s.fuelOk && s.fuelPct == 81.5f, "燃料: IG ON 直後(b5 = 0 の間)から前回の値を出す(160 → 81.6 % → 81.5)");
+    const uint8_t fuel162[8] = { 0, 0, 0x59, 0x95, 0x80, 162, 0, 0 };
+    canFrame(1, 0x0C014003, fuel162, 8, t2 + 1000);
+    mlink::getSignals(&s, t2 + 1000);
+    veh::fuelInfo(&fi, t2 + 1000);
+    CHECK(s.fuelPct == 81.5f && fi.refuels == 0 && fi.restored && fi.lp == 160.0f, "燃料: 最初の値が前回 + 5 L 未満なら前回の値を続ける(停めた場所の傾き)");
+    veh::begin();
+    veh::fuelRestore(1400);
+    const uint8_t fuel169[8] = { 0, 0, 0x59, 0x95, 0x81, 169, 0, 0 };
+    canFrame(1, 0x0C014003, fuelZero, 8, t2 + 2000);
+    canFrame(1, 0x0C014003, fuel169, 8, t2 + 3000);
+    mlink::getSignals(&s, t2 + 3000);
+    veh::fuelInfo(&fi, t2 + 3000);
+    CHECK(s.fuelOk && s.fuelPct == 100.0f && fi.refuels == 1, "燃料: 最初の値が前回 + 5 L 以上なら給油とみなし、その値から(140 → 169)");
+    CHECK(veh::fuelSaveValue(&tenths) && tenths == 1690, "燃料: 給油のあとの値を保存する");
+    // 途切れずに受けている間は、増える方向へは跳ばない(なまし)
+    canFrame(1, 0x0C014003, fuel155, 8, t2 + 4000);
+    mlink::getSignals(&s, t2 + 4000);
+    CHECK(s.fuelPct > 99.0f && s.fuelPct < 100.5f, "燃料: 1 回の低い値ではほとんど下がらない(600 秒のなまし)");
+
+    // 値のフレームが届いている間はそちらを使う(c6_display_debug・デモ表示・1.x の c6_can_link)
+    MlSignals m = sigMsg(4200);
+    auto f = frame(ML_TYPE_SIGNALS, seq++, &m, sizeof(m));
+    mlink::feed(f.data(), f.size(), t2 + 5000);
+    canFrame(0, 0x0618A001, rpm3000, 8, t2 + 5000);
+    mlink::getSignals(&s, t2 + 5000);
+    CHECK(s.linkUp && !mlink::usingRaw(t2 + 5000) && s.rpm == 4200 && s.gear == '3' && s.fuelPct == 62.0f, "値のフレームが届いている間はそちらを使う");
+    canFrame(0, 0x0618A001, rpm3000, 8, t2 + 5000 + LINK_TIMEOUT_MS + 1);
+    mlink::getSignals(&s, t2 + 5000 + LINK_TIMEOUT_MS + 1);
+    CHECK(s.linkUp && mlink::usingRaw(t2 + 5000 + LINK_TIMEOUT_MS + 1) && s.rpm == 3000, "値のフレームが LINK_TIMEOUT_MS 来なければ生データから作る");
+    mlink::getSignals(&s, t2 + 5002 + 2 * LINK_TIMEOUT_MS);
+    CHECK(!s.linkUp && !s.rpmOk, "どのフレームも LINK_TIMEOUT_MS 来なければ受信なし");
+
+    // 壊れた・短いフレームで落ちない(値は範囲の端)
+    veh::begin();
+    uint8_t rnd[8];
+    uint32_t r = 12345;
+    for (int i = 0; i < 20000; i++) {
+      for (int b = 0; b < 8; b++) rnd[b] = (uint8_t)((r = r * 1103515245u + 12345u) >> 16);
+      static const uint32_t IDS[] = { 0x0618A001, 0x0210A006, 0x0628A001, 0x0A18A001, 0x0C014003, 0x12345678 };
+      uint32_t id = IDS[(r >> 8) % 6];
+      veh::onFrame((uint8_t)((r >> 4) & 1), (uint8_t)((r >> 5) & 1), id, (uint8_t)((r >> 12) % 9), rnd, t2 + 10000 + (uint32_t)i * 7);
+      if (i % 50 == 0) {
+        Signals v;
+        memset(&v, 0, sizeof(v));
+        veh::getSignals(&v, t2 + 10000 + (uint32_t)i * 7);
+        CHECK(v.fuelPct >= 0.0f && v.fuelPct <= 100.0f && v.speedKmh >= 0.0f && v.speedKmh < 512.0f && v.throttlePct <= 100.0f && v.waterC >= -40.0f && v.waterC <= 215.0f,
+              "でたらめな生データでも値は範囲の中");
+      }
+    }
+  }
+
+  // ---------------- 22a. 10/22 の実車ログ(logs/ の L 行)を流す: IG ON 直後の b5 = 0 で燃料が 0 にならない、R とブーストが出る
+  {
+    struct LogRun {
+      const char *path;
+      int lines;
+      uint32_t zero;
+      float fuelMin, fuelAfterRefuel, boostMax;
+      bool sawR, sawGear;
+    };
+    auto run = [&](const char *path, uint32_t refuelFrom, LogRun *out) -> bool {
+      FILE *fp = fopen(path, "r");
+      if (!fp) return false;
+      veh::begin();
+      memset(out, 0, sizeof(*out));
+      out->path = path;
+      out->fuelMin = 1000;
+      out->fuelAfterRefuel = 1000;
+      char line[256];
+      while (fgets(line, sizeof(line), fp)) {
+        char bus;
+        unsigned long tm;
+        unsigned id, len, b[8];
+        if (sscanf(line, "L %c %lu %x %u %x %x %x %x %x %x %x %x", &bus, &tm, &id, &len, &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &b[6], &b[7]) < 4 || len > 8) continue;
+        uint8_t d[8] = { 0 };
+        for (unsigned k = 0; k < len; k++) d[k] = (uint8_t)b[k];
+        veh::onFrame(bus == 'B' ? 1 : 0, 1, id, (uint8_t)len, d, (uint32_t)tm);
+        out->lines++;
+        Signals v;
+        memset(&v, 0, sizeof(v));
+        veh::getSignals(&v, (uint32_t)tm);
+        if (v.fuelOk && v.fuelPct < out->fuelMin) out->fuelMin = v.fuelPct;
+        if (refuelFrom && tm >= refuelFrom && v.fuelOk && v.fuelPct < out->fuelAfterRefuel) out->fuelAfterRefuel = v.fuelPct;
+        if (v.boostOk && v.boostBar > out->boostMax) out->boostMax = v.boostBar;
+        if (v.gearOk && v.gear == 'R') out->sawR = true;
+        if (v.gearOk && v.gear >= '1' && v.gear <= '5') out->sawGear = true;
+      }
+      fclose(fp);
+      veh::FuelInfo fi;
+      veh::fuelInfo(&fi, 0);
+      out->zero = fi.zeroFrames;
+      return true;
+    };
+    LogRun lr;
+    if (run("../logs/can_reverse.txt", 0, &lr)) {
+      printf("  実車ログ %s: %d 行、b5 = 0 を捨てた %u 回、燃料の最小 %.1f %%、R %s\n", lr.path, lr.lines, (unsigned)lr.zero, (double)lr.fuelMin, lr.sawR ? "あり" : "なし");
+      CHECK(lr.zero >= 1 && lr.fuelMin > 50.0f, "実車ログ(リバース): IG ON 直後の b5 = 0 で燃料が 0 にならない(1.1.0 は約 15 分 0 % だった)");
+      CHECK(lr.sawR, "実車ログ(リバース): R が出る");
+    } else {
+      printf("  (../logs/can_reverse.txt が無いので、実車ログの試験は飛ばす)\n");
+    }
+    if (run("../logs/can_boost.txt", 0, &lr)) {
+      printf("  実車ログ %s: %d 行、ブーストの最大 %.2f bar、ギア %s\n", lr.path, lr.lines, (double)lr.boostMax, lr.sawGear ? "あり" : "なし");
+      CHECK(fabsf(lr.boostMax - 0.67f) < 0.001f && lr.sawGear, "実車ログ(ブースト): ログの b4 の最大 0x43 = 67 → 0.67 bar、走行中にギアが出る");
+    }
+    if (run("../logs/can_fuel.txt", 850932, &lr)) {
+      printf("  実車ログ %s: %d 行、b5 = 0 を捨てた %u 回、給油(10/22 846.9 秒に IG ON)のあとの燃料の最小 %.1f %%\n", lr.path, lr.lines, (unsigned)lr.zero, (double)lr.fuelAfterRefuel);
+      CHECK(lr.zero >= 1 && lr.fuelAfterRefuel >= 95.0f, "実車ログ(給油): 給油後の IG ON から満タン近くを出し続ける(0 % にならない)");
+    }
   }
 
   printf("単体試験: %d 個 OK、%d 個 NG、無かった文字 %u\n", passes, fails, (unsigned)gfx::missingGlyphs());
