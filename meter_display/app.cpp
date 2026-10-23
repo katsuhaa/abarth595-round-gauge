@@ -295,6 +295,7 @@ struct State {
   uint32_t fuelSeenMs;    // 0C014003 を最後に受けた時刻(b5 = 0 も含む)
   uint32_t fuelMs;        // 最後に使った(正しい)値の時刻(0 = この起動でまだ。途切れたあとの判定にも使う)
   uint8_t fuelRaw;        // 最後に使った生の値
+  uint8_t fuelLastB5;     // 最後に受けた b5(0 も含む)
   float fuelHp;           // 短い指数平均(VEH_FUEL_HP_S)
   float fuelLp;           // 長い指数平均(VEH_FUEL_LP_S)= 表示に使う値
   bool fuelHave;          // fuelLp に値がある(前回の値、または正しい生の値)
@@ -416,6 +417,7 @@ void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *
   } else if (id == VEH_ID_FUEL && dlc >= 6) {
     platLock();
     g.fuelSeenMs = stamp(now);
+    g.fuelLastB5 = d[5];
     if (d[5] == 0) {
       g.fuelZero++;  // IG ON 直後の「まだ測れていない」値(b4 = 0x88、b5 = 0)。使わない
     } else {
@@ -501,6 +503,7 @@ void fuelInfo(FuelInfo *out, uint32_t now) {
   out->restoredTenths = g.fuelRestoredTenths;
   out->seen = within(g.fuelSeenMs, now, VEH_FUEL_TIMEOUT_MS);
   out->raw = g.fuelRaw;
+  out->lastB5 = g.fuelLastB5;
   out->hp = g.fuelHp;
   out->lp = g.fuelLp;
   out->stable = g.fuelStable;

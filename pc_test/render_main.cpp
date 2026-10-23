@@ -36,7 +36,10 @@ static Signals sig(int rpm, char gear, float water, float fuel, bool wOk = true,
 }
 
 static uint32_t now = 100000;  // (now / 50) が偶数 = 点滅の点灯側
+static bool g_keepPeak = false;  // 次の絵だけ、前の絵のピークホールドを残す(ふだんは絵ごとに消す)
 static void shot(const char *name, const Signals &s, ui::Screen sc, int a = 0, int b = 0) {
+  if (!g_keepPeak) ui::testPeakReset();
+  g_keepPeak = false;
   ui::testShow(sc, a, b);
   ui::testTouch(now);  // 時刻が進んでいても自動で走行画面に戻らないように(10/22: Data の絵が走行画面になっていた)
   ui::update(s, ls, ps, si, now);
@@ -69,7 +72,7 @@ int main(int argc, char **argv) {
   shot("DriveRed", sig(6300, '3', 97, 41), ui::SC_DRIVE);
   shot("DriveNoData", sig(3400, '2', 0, 0, false, false), ui::SC_DRIVE);
 
-  // ---- アナログ計(仕様書に無いページ)。ピークホールドが前の絵の回転数に残らないよう、絵ごとに 10 秒進める
+  // ---- アナログ計(仕様書に無いページ)。絵ごとに 10 秒進める(ピークホールドは shot が絵ごとに消す)
   shot("Boost", sig(4200, '3', 92, 62, true, true, 1.25f), ui::SC_BOOST);
   now += 10000;
   shot("BoostIdle", sig(850, 'N', 88, 62, true, true, -0.52f), ui::SC_BOOST);        // 負圧: 帯は 0(目印だけ)
@@ -85,7 +88,8 @@ int main(int argc, char **argv) {
   shot("BoostHot", sig(5600, '4', 112, 12, true, true, 0.9f), ui::SC_BOOST);         // 水温の異常と燃料の異常(右下の弧とアイコンが赤)
   now += 10000;
   shot("BoostPeakUp", sig(6400, '3', 92, 62, true, true, 1.4f), ui::SC_BOOST);       // 6400 まで上げてから
-  now += 200;                                                                         // (時刻は進める。戻ると印が下がり切ったことになる)
+  now += 200;
+  g_keepPeak = true;
   shot("BoostPeak", sig(4200, '3', 92, 62, true, true, 0.6f), ui::SC_BOOST);         // 4200 に下げる: ピークホールドの印が 6400 に残る
   now += 10000;
 
@@ -93,9 +97,11 @@ int main(int argc, char **argv) {
   {
     shot("DrivePeakUp", sig(6000, '3', 92, 62), ui::SC_DRIVE);
     now += 200;
+    g_keepPeak = true;
     shot("DrivePeak", sig(4200, '3', 92, 62), ui::SC_DRIVE);   // ピーク 6000 が残る
     now += 10000;
-    shot("DriveLowPeak", sig(2600, '2', 92, 62), ui::SC_DRIVE);  // ピークは下がりきって今の回転数
+    g_keepPeak = true;
+    shot("DriveLowPeak", sig(2600, '2', 92, 62), ui::SC_DRIVE);  // 10 秒たつとピークは今の回転数まで下がり切って、三角形は消える
     // N が 1 分続いた: ギアの所に「▼ 3000rpm」と経過時間(2:35)
     Signals n = sig(850, 'N', 96, 55);
     uint32_t t0 = now;
@@ -204,27 +210,28 @@ int main(int argc, char **argv) {
     memset(&si.rc, 0, sizeof(si.rc));
   }
 
-  // ---- 長押しの表示(サーキットを押したまま 0.25 秒)
+  // ---- 長押しの表示(押したまま、表示を出してから外周が 6 割ほど進んだ所。2.2.0: 表示は HOLD_SHOW_MS = 長押しの半分から)
   {
     Signals s = sig(4200, '3', 92, 62);
+    const uint32_t at = HOLD_SHOW_MS + (HOLD_MS - HOLD_SHOW_MS) * 6 / 10;
     ui::testShow(ui::SC_DRIVE);
     ui::testTouch(now);
     ui::update(s, ls, ps, si, now);
     ui::touchDown(233, 233, now);
-    ui::update(s, ls, ps, si, now + 120);
-    ui::update(s, ls, ps, si, now + 250);
+    ui::update(s, ls, ps, si, now + HOLD_SHOW_MS + 10);
+    ui::update(s, ls, ps, si, now + at);
     saveShot("HoldCircuit");
-    ui::touchUp(now + 260);
+    ui::touchUp(now + at + 10);
     ui::testShow(ui::SC_BOOST);
-    ui::touchDown(233, 233, now + 1000);
-    ui::update(s, ls, ps, si, now + 1250);
-    saveShot("HoldTach");
-    ui::touchUp(now + 1260);
-    ui::testShow(ui::SC_DATA);
     ui::touchDown(233, 233, now + 2000);
-    ui::update(s, ls, ps, si, now + 2250);
+    ui::update(s, ls, ps, si, now + 2000 + at);
+    saveShot("HoldTach");
+    ui::touchUp(now + 2000 + at + 10);
+    ui::testShow(ui::SC_DATA);
+    ui::touchDown(233, 233, now + 4000);
+    ui::update(s, ls, ps, si, now + 4000 + at);
     saveShot("HoldData");
-    ui::touchUp(now + 2260);
+    ui::touchUp(now + 4000 + at + 10);
     gfx::dirtyClear();
     now += 20000;
   }

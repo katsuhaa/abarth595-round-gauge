@@ -194,19 +194,21 @@ int main() {
   upd(live, t);
   CHECK(ui::screen() == ui::SC_DRIVE, "サーキットから");
   // スワイプ: 左へ = 次、右へ = 前(サーキット → タコ → データ → サーキット)
-  swipe(live, t, -120, 10);
+  swipe(live, t, -200, 10);
   CHECK(ui::screen() == ui::SC_BOOST, "スワイプ: 左へでタコ(次)");
-  swipe(live, t, -120, -20);
+  swipe(live, t, -(SWIPE_MIN_PX + 10), -20);
   CHECK(ui::screen() == ui::SC_DATA, "スワイプ: 左へでデータ(次)");
-  swipe(live, t, -120, 0);
+  swipe(live, t, -200, 0);
   CHECK(ui::screen() == ui::SC_DRIVE, "スワイプ: データの次はサーキット");
-  swipe(live, t, 120, 0);
+  swipe(live, t, 200, 0);
   CHECK(ui::screen() == ui::SC_DATA, "スワイプ: 右へで前(サーキットの前はデータ)");
-  swipe(live, t, 120, 0);
+  swipe(live, t, 200, 0);
   CHECK(ui::screen() == ui::SC_BOOST && !ui::testHolding(), "スワイプ: 右へで前(データの前はタコ)。長押しの表示は出ない");
   swipe(live, t, -(SWIPE_MIN_PX - 10), 0);
-  CHECK(ui::screen() == ui::SC_BOOST, "スワイプ: 横の動きが SWIPE_MIN_PX 未満なら替えない");
-  swipe(live, t, -100, 60);
+  CHECK(ui::screen() == ui::SC_BOOST, "スワイプ: 横の動きが SWIPE_MIN_PX 未満なら替えない(2.2.0: 80 px では替わっていた幅)");
+  swipe(live, t, -80, 0);
+  CHECK(ui::screen() == ui::SC_BOOST, "スワイプ: 2.1.0 で替わっていた 80 px では替えない");
+  swipe(live, t, -200, 110);
   CHECK(ui::screen() == ui::SC_BOOST, "スワイプ: 斜め(横が縦の SWIPE_DIR_RATIO 倍未満)なら替えない");
   swipe(live, t, 0, -150);
   CHECK(ui::screen() == ui::SC_BOOST, "スワイプ: 縦は何もしない");
@@ -372,7 +374,7 @@ int main() {
   CHECK(ui::homeScreen() == ui::SC_BOOST, "タコを 1 分見ていたら覚える");
   upd(live, t += 4 * 60000);
   CHECK(ui::screen() == ui::SC_BOOST, "タコ: 4 分たっても自動では変わらない");
-  swipe(live, t, -120, 0);
+  swipe(live, t, -200, 0);
   CHECK(ui::screen() == ui::SC_DATA, "左へスワイプでデータ");
   longPress(live, t);
   CHECK(ui::screen() == ui::SC_SET_LIST, "データ: 長押しで設定");
@@ -620,9 +622,9 @@ int main() {
     b.boostOk = true; b.boostBar = 1.2f;
     static uint16_t fbS[gfx::W * gfx::H];
     b.rpm = 3000;
+    // 直前の 6000 rpm のピークホールドを消してから、基準の絵を取る
+    ui::testPeakReset();
     ui::update(b, ls, ps, si, ts + 2000);
-    // 直前の 6000 rpm のピークホールドの印が下がり切るまで待ってから、基準の絵を取る(印は針の下)
-    ui::update(b, ls, ps, si, ts + 2000 + TACH_PEAK_HOLD_MS + 3000u * 1000u / TACH_PEAK_FALL_RPM_PER_S);
     const uint32_t t0 = ts + 2100 + TACH_PEAK_HOLD_MS + 3000u * 1000u / TACH_PEAK_FALL_RPM_PER_S;
     ui::update(b, ls, ps, si, t0);
     memcpy(fbS, fb, sizeof(fbS));
@@ -634,12 +636,26 @@ int main() {
     b.boostBar = 1.2f;
     ui::update(b, ls, ps, si, t0 + 20);
     CHECK(memcmp(fbS, fb, sizeof(fbS)) != 0, "アナログ計: 針を戻した直後はピークホールドの印が 6000 に残る(最初の絵と違う)");
-    // 印は TACH_PEAK_HOLD_MS 止まってから TACH_PEAK_FALL_RPM_PER_S で下がる。3000 まで下がり切ると最初の絵に戻る
+    // 印は TACH_PEAK_HOLD_MS 止まってから TACH_PEAK_FALL_RPM_PER_S で下がる。3000 まで下がり切ると印は消え、最初の絵に戻る
     const uint32_t tFall = t0 + 10 + TACH_PEAK_HOLD_MS + 3000u * 1000u / TACH_PEAK_FALL_RPM_PER_S;
     ui::update(b, ls, ps, si, tFall - 200);
-    CHECK(memcmp(fbS, fb, sizeof(fbS)) != 0, "アナログ計: 下がり切る手前では印がまだ針より上にある");
+    CHECK(memcmp(fbS, fb, sizeof(fbS)) != 0 && ui::testPeakDrawn(), "アナログ計: 下がり切る手前では印がまだ針より上にある");
     ui::update(b, ls, ps, si, tFall + 100);
-    CHECK(memcmp(fbS, fb, sizeof(fbS)) == 0, "アナログ計: 印が今の回転数まで下がると最初の絵と 1 画素も違わない(針・帯・印の跡が残らない)");
+    CHECK(memcmp(fbS, fb, sizeof(fbS)) == 0 && !ui::testPeakDrawn(), "アナログ計: 印が今の回転数まで下がると消え、最初の絵と 1 画素も違わない(針・帯・印の跡が残らない)");
+    // 2.2.0: 回転数がピークを超えたら印を消し、下がるとその新しいピークに印を出す
+    b.rpm = 6000;
+    ui::update(b, ls, ps, si, tFall + 110);
+    b.rpm = 4000;
+    ui::update(b, ls, ps, si, tFall + 120);
+    CHECK(ui::testPeakDrawn(), "アナログ計: 6000 から下がると印を出す");
+    b.rpm = 6200;
+    ui::update(b, ls, ps, si, tFall + 130);
+    CHECK(!ui::testPeakDrawn(), "アナログ計: 回転数がピーク(6000)を超えたら印を消す");
+    b.rpm = 3000;
+    ui::update(b, ls, ps, si, tFall + 140);
+    CHECK(ui::testPeakDrawn(), "アナログ計: 下がると新しいピーク(6200)に印を出す");
+    ui::update(b, ls, ps, si, tFall + 150 + TACH_PEAK_HOLD_MS + 3200u * 1000u / TACH_PEAK_FALL_RPM_PER_S);
+    CHECK(memcmp(fbS, fb, sizeof(fbS)) == 0, "アナログ計: 新しいピークも時間で下がり切ると、最初の絵に戻る");
     gfx::dirtyClear();
     ui::testShow(ui::SC_DATA);
     ui::update(b, ls, ps, si, tFall + 1000);
@@ -1648,7 +1664,7 @@ int main() {
     CHECK(vd == 1 && strcmp(v, "max 1 ms (1000 fps)") == 0, "描画: 1 ms 未満は 1 ms(0 で割らない)");
     // 画面に描いて、字が全部あること(値の書体に無い字を使っていない)と、下の 6 個目の点の色
     const uint32_t miss0 = gfx::missingGlyphs();
-    auto dot5 = [&]() { return fb[330 * gfx::W + (int)(233 - 26 * 3 + 26 * 5)]; };
+    auto dot5 = [&]() { return fb[330 * gfx::W + (int)(233 - 13 * (8 - 1) + 26 * 5)]; };  // 2.2.0: 点は 8 個(燃料を足した)
     const uint32_t us[4] = { 0, 21400, 50001, 120000 };
     const uint16_t col[4] = { gfx::rgb(0x5A606A), gfx::rgb(0x22E36A), gfx::rgb(0xE3241B), gfx::rgb(0xE3241B) };
     bool colOk = true;
@@ -1689,7 +1705,7 @@ int main() {
     d.rpm = 4600;
     ui::update(d, ls, p, si, tp + HOLD_SHOW_MS + 70);
     CHECK(ui::pageFrame(), "数える回: 取り消したあと、押している間のふだんの回");
-    ui::touchMove(233 - 130, 236, tp + HOLD_SHOW_MS + 80);
+    ui::touchMove(233 - 200, 236, tp + HOLD_SHOW_MS + 80);
     ui::touchUp(tp += HOLD_SHOW_MS + 90);  // 左へスワイプ = タコへ
     ui::update(d, ls, p, si, tp);
     CHECK(ui::screen() == ui::SC_BOOST && !ui::pageFrame(), "数える回: スワイプで切り替えた回(タコの全体の描き直し)は数えない");
@@ -1706,6 +1722,152 @@ int main() {
     ui::update(d, ls, p, si, tp += 100);
     CHECK(!ui::pageFrame(), "数える回: 設定は数えない");
     gfx::dirtyClear();
+  }
+
+  // ---------------- 24. 2.2.0: 設定のまとめ(通信が切れていたら「正常」にしない)、受信の状態の「燃料」、ピークホールドの出し方
+  {
+    char v[48];
+    const uint32_t far = 2000000000u;  // 前の試験の「直近に増えた誤り」から離れた時刻
+    LinkStats l0;
+    memset(&l0, 0, sizeof(l0));  // 何も受けていない
+    PerfStats p0;
+    memset(&p0, 0, sizeof(p0));
+    p0.pageMaxUs = 20000;  // 描画は正常
+    SysInfo s0;
+    memset(&s0, 0, sizeof(s0));
+    s0.axpOk = true; s0.powerOnSrc = 0x04;  // 起動は正常(5V 投入)
+    // 受信の状態: 何も届かないときの「通信速度」は、起動から INFO_LINK_GRACE_MS までは灰、そのあとは赤(デモ表示の間は灰)
+    CHECK(ui::testInfoItem(0, l0, p0, s0, INFO_LINK_GRACE_MS - 1, v, sizeof(v)) == 0, "通信速度: 起動直後で受けていなければ待ち(灰)");
+    CHECK(ui::testInfoItem(0, l0, p0, s0, INFO_LINK_GRACE_MS + 1, v, sizeof(v)) == 2, "通信速度: 起動から INFO_LINK_GRACE_MS たっても受けていなければ異常(赤)");
+    set.demoOn = 1;
+    CHECK(ui::testInfoItem(0, l0, p0, s0, far, v, sizeof(v)) == 0, "通信速度: デモ表示の間は受けていなくても待ち(灰)");
+    set.demoOn = 0;
+    int r = ui::testInfoSummary(false, l0, p0, s0, far, v, sizeof(v));
+    CHECK(r == 2 && strcmp(v, "異常 1") == 0, "まとめ: 受けていないときは「異常 1」(描画・起動が正常でも「正常」にしない。2.1.0 は「正常」だった)");
+    LinkStats l1 = l0;
+    l1.locked = true; l1.baud = 921600; l1.framesPerSec = 200;
+    r = ui::testInfoSummary(false, l1, p0, s0, far, v, sizeof(v));
+    CHECK(r == 0 && strcmp(v, "待ち") == 0, "まとめ: 受けているが送り元の状態がまだ届かないときは「待ち」");
+    l1.infoValid = true; l1.info.proto_ver = METER_LINK_PROTO_VER; l1.info.can_fps[0] = 900; l1.info.can_fps[1] = 140;
+    r = ui::testInfoSummary(false, l1, p0, s0, far, v, sizeof(v));
+    CHECK(r == 1 && strcmp(v, "正常") == 0, "まとめ: 通信の項目が全部正常なら「正常」");
+    PerfStats p1 = p0;
+    p1.pageMaxUs = 0;  // 描画をまだ測っていない(灰)のは、まとめに入れない
+    r = ui::testInfoSummary(false, l1, p1, s0, far, v, sizeof(v));
+    CHECK(r == 1, "まとめ: 描画をまだ測っていなくても「正常」(通信の項目ではない)");
+    l1.info.can_fps[0] = 0;  // 車の CAN が止まった
+    r = ui::testInfoSummary(false, l1, p0, s0, far, v, sizeof(v));
+    CHECK(r == 2, "まとめ: C-CAN が 0 なら「異常」");
+    l1.info.can_fps[0] = 900;
+    // RaceChrono: スマホが未接続なら「正常」にしない
+    SysInfo s1 = s0;
+    s1.rc.enabled = true; s1.rc.bleOk = true; s1.rc.connected = false; s1.rc.gpsOk = true; s1.rc.fixType = 3; s1.rc.numSV = 9;
+    s1.rc.imuOk = true; s1.rc.imuLevel = true; s1.rc.imuForward = true;
+    r = ui::testInfoSummary(true, l1, p0, s1, far, v, sizeof(v));
+    CHECK(r == 0 && strcmp(v, "待ち") == 0, "RaceChrono のまとめ: スマホが未接続なら「待ち」(GPS・IMU が正常でも「正常」にしない)");
+    s1.rc.connected = true;
+    r = ui::testInfoSummary(true, l1, p0, s1, far, v, sizeof(v));
+    CHECK(r == 1, "RaceChrono のまとめ: 接続中で GPS・IMU も正常なら「正常」");
+    s1.rc.gpsOk = false;
+    r = ui::testInfoSummary(true, l1, p0, s1, far, v, sizeof(v));
+    CHECK(r == 2, "RaceChrono のまとめ: GPS が届かなければ「異常」");
+
+    // 受信の状態の「燃料」: 0C014003 の最後の b5(0 も出す)と、なましの値
+    veh::begin();
+    uint32_t tf = far;
+    CHECK(ui::testInfoItem(7, l1, p0, s0, tf, v, sizeof(v)) == 0 && strcmp(v, "– –") == 0, "燃料: 受けていなければ「– –」");
+    uint8_t fd[8] = { 0, 0, 0x59, 0x95, 0x88, 0, 0, 0 };
+    veh::onFrame(1, 1, VEH_ID_FUEL, 8, fd, tf += 1000);
+    CHECK(ui::testInfoItem(7, l1, p0, s0, tf, v, sizeof(v)) == 0 && strcmp(v, "生 0") == 0, "燃料: b5 = 0 だけなら「生 0」(使わない値も見える)");
+    fd[4] = 0x81; fd[5] = 165;
+    veh::onFrame(1, 1, VEH_ID_FUEL, 8, fd, tf += 1000);
+    CHECK(ui::testInfoItem(7, l1, p0, s0, tf, v, sizeof(v)) == 1 && strcmp(v, "生 165 なまし 165.0") == 0, "燃料: 正しい値で「生 165 なまし 165.0」");
+    {
+      ui::testShow(ui::SC_SET_INFO, 7);  // 画面に描いて、字が全部あること
+      ui::testTouch(tf);
+      Signals dz;
+      memset(&dz, 0, sizeof(dz));
+      const uint32_t miss0 = gfx::missingGlyphs();
+      ui::update(dz, l1, p0, s0, tf);
+      CHECK(ui::screen() == ui::SC_SET_INFO && gfx::missingGlyphs() == miss0, "燃料: 名前と値の字はすべて書体にある");
+      gfx::dirtyClear();
+    }
+    veh::begin();
+
+    // ピークホールド: PEAK_MIN_RPM 以上のピークで、今の回転数が下がっているときだけ(上がっている間はグラフの裏で見えない)
+    Signals d;
+    memset(&d, 0, sizeof(d));
+    d.linkUp = d.rpmOk = d.waterOk = d.fuelOk = d.gearOk = d.speedOk = d.throttleOk = true;
+    d.waterC = 85; d.fuelPct = 60; d.gear = '3';
+    for (int scr = 0; scr < 2; scr++) {
+      const ui::Screen sc = scr ? ui::SC_BOOST : ui::SC_DRIVE;
+      const char *nm = scr ? "タコ" : "サーキット";
+      char what[160];
+      uint32_t tq = far + 100000u * (uint32_t)(scr + 1);
+      d.rpm = 2000;
+      ui::testShow(sc);
+      ui::testPeakReset();
+      ui::update(d, ls, ps, si, tq);
+      ui::update(d, ls, ps, si, tq += 5000);
+      bool rising = false;
+      for (int rpm = 2200; rpm <= 5000; rpm += 200) {
+        d.rpm = rpm;
+        ui::update(d, ls, ps, si, tq += 50);
+        rising = rising || ui::testPeakDrawn();
+      }
+      snprintf(what, sizeof(what), "ピークホールド(%s): 回転数が上がっている間は出さない", nm);
+      CHECK(!rising, what);
+      d.rpm = 3000;
+      ui::update(d, ls, ps, si, tq += 50);
+      snprintf(what, sizeof(what), "ピークホールド(%s): 5000 から 3000 に下がったら出す", nm);
+      CHECK(ui::testPeakDrawn(), what);
+      d.rpm = 5000;
+      ui::update(d, ls, ps, si, tq += 50);
+      snprintf(what, sizeof(what), "ピークホールド(%s): 回転数がピークに戻ったら隠れる", nm);
+      CHECK(!ui::testPeakDrawn(), what);
+      d.rpm = 3000;
+      ui::update(d, ls, ps, si, tq += 50);
+      ui::update(d, ls, ps, si, tq += TACH_PEAK_HOLD_MS + 2000u * 1000u / TACH_PEAK_FALL_RPM_PER_S + 100);
+      snprintf(what, sizeof(what), "ピークホールド(%s): 時間がたってピークが今の回転数まで下がり切ったら消える", nm);
+      CHECK(!ui::testPeakDrawn(), what);
+      d.rpm = 5000;
+      ui::update(d, ls, ps, si, tq += 50);
+      d.rpm = 3000;
+      ui::update(d, ls, ps, si, tq += 50);
+      d.rpm = 5200;
+      ui::update(d, ls, ps, si, tq += 50);
+      snprintf(what, sizeof(what), "ピークホールド(%s): ピーク(5000)を超えたら消す", nm);
+      CHECK(!ui::testPeakDrawn(), what);
+      d.rpm = 3000;
+      ui::update(d, ls, ps, si, tq += 50);
+      snprintf(what, sizeof(what), "ピークホールド(%s): 下がると新しいピーク(5200)で出す", nm);
+      CHECK(ui::testPeakDrawn(), what);
+      d.rpmOk = false;  // 回転数の信号が切れたらピークは消える(そこから取り直す)
+      ui::update(d, ls, ps, si, tq += 50);
+      d.rpmOk = true;
+      d.rpm = 2900;
+      ui::update(d, ls, ps, si, tq += 50);
+      d.rpm = 1200;
+      ui::update(d, ls, ps, si, tq += 50);
+      snprintf(what, sizeof(what), "ピークホールド(%s): PEAK_MIN_RPM 未満のピーク(2900)は、下がっても出さない", nm);
+      CHECK(!ui::testPeakDrawn(), what);
+      gfx::dirtyClear();
+    }
+    // サーキット: 三角形の所のマスが点いている間は出さない(ピーク 5000 = 10 マス目。4900 では 9 マス目まで点く → 出す)
+    {
+      uint32_t tq = far + 500000u;
+      ui::testShow(ui::SC_DRIVE);
+      ui::testPeakReset();
+      d.rpm = 2000;
+      ui::update(d, ls, ps, si, tq);
+      ui::update(d, ls, ps, si, tq += 5000);
+      d.rpm = 5000;
+      ui::update(d, ls, ps, si, tq += 50);
+      d.rpm = 4900;
+      ui::update(d, ls, ps, si, tq += 50);
+      CHECK(ui::testPeakDrawn(), "ピークホールド(サーキット): 1 マス下がったら(5000 → 4900)三角形を出す");
+      gfx::dirtyClear();
+    }
   }
 
   printf("単体試験: %d 個 OK、%d 個 NG、無かった文字 %u\n", passes, fails, (unsigned)gfx::missingGlyphs());

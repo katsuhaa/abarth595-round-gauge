@@ -72,7 +72,11 @@ void testTouch(uint32_t nowMs);  // 試験用: 「操作した」ことにして
 void testRedraw();  // 次の update で、今の画面を最初から描き直す(少しずつ描いた結果と比べるため)
 int testSetItem();  // 試験用: 設定で見ている項目
 bool testHolding(); // 試験用: 長押しの表示を出している
-// 試験用: 受信の状態の項目 i(0〜6)の値の文字を out に入れ、判定を返す(0 = 待ち、1 = 正常、2 = 異常)
+// 試験用: 受信の状態の項目 i(0〜7)の値の文字を out に入れ、判定を返す(0 = 待ち、1 = 正常、2 = 異常)
 int testInfoItem(int i, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs, char *out, size_t n);
+// 試験用: 設定の項目に出すまとめ(rc = true なら RaceChrono、false なら受信の状態)の文字を out に入れ、0 = 待ち、1 = 正常、2 = 異常を返す
+int testInfoSummary(bool rc, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs, char *out, size_t n);
+bool testPeakDrawn();  // 試験用: ピークホールドの印(タコは回転計の印、サーキットは三角形)を描いてある
+void testPeakReset();  // 試験用: ピークホールドの記録を消す(前の絵・試験のピークを残さない)
 
 }  // namespace ui

@@ -149,6 +149,7 @@ struct FuelInfo {
   int restoredTenths;   // そのときの値(生の値の 10 倍)
   bool seen;            // 0C014003 を VEH_FUEL_TIMEOUT_MS 以内に受けている(b5 = 0 も含む)
   uint8_t raw;          // 最後に使った生の値(b5)
+  uint8_t lastB5;       // 最後に受けた b5(使わない 0 も含む。受信の状態の「燃料」に出す)
   float hp, lp;
   bool stable, armed;
   uint32_t zeroFrames;  // 捨てた b5 = 0 のフレームの数

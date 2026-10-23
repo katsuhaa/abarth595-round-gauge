@@ -496,7 +496,7 @@ static void drawGearPanel(const Signals &s, int idleSec) {
 
 // 回転数のピークホールド(10/23): 輪の両側、画面の端に付く黄色の三角形(config.h の PEAK_TRI_*)。
 // 位置はピークの回転数が輪のマスのどこに当たるか(1 マス目〜12 マス目、マスの間は比例)。左側の角度 a、右側は 180 − a
-static int peakTriKey();
+static int peakTriKey(const Signals &s);
 static gfx::Rect ptsRect(const gfx::Pt *p, int n);
 static bool rectsOverlap(const gfx::Rect &a, const gfx::Rect &b);
 static void peakTriPoints(int key, bool right, gfx::Pt p[3]) {
@@ -576,7 +576,7 @@ static void updDrive(const Signals &s, uint32_t now) {
     gfx::fillAll(g_bgCol);
     platBlinkTick();
     for (int k = 0; k < RING_SEGS; k++) drawSeg(k, want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k]);
-    g_triKey = peakTriKey();
+    g_triKey = peakTriKey(s);
     if (g_triKey >= 0) drawPeakTris(g_triKey);
     platBlinkTick();
     drawWaterPanel(s, true);
@@ -594,7 +594,7 @@ static void updDrive(const Signals &s, uint32_t now) {
   }
   // 輪のマスとピークの三角形。三角形はマスに重なるので、三角形が動いたとき・重なるマスを描き直すときは、
   // 三角形を包む四角を背景で消し、そこに掛かるマスを全部描き直してから三角形を描く(最初から描いたものと同じになる)
-  const int tk = peakTriKey();
+  const int tk = peakTriKey(s);
   bool redo[RING_SEGS];
   for (int k = 0; k < RING_SEGS; k++) {
     uint16_t c = want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k];
@@ -702,8 +702,8 @@ static int needleKey(const Signals &s) {
 static int tachKey(const Signals &s) {
   return s.rpmOk ? (int)(tachAngle((float)s.rpm) * 4.0f + 0.5f) : -1;
 }
-// ピークホールドの記録(update のたびに呼ぶ)。回転数が上がれば最高を更新。TACH_PEAK_HOLD_MS 止まってから
-// TACH_PEAK_FALL_RPM_PER_S で今の回転数まで下がる。同じ時刻で 2 回呼んでも結果は変わらない(最初から描いたものと比べるため)
+// ピークホールドの記録(update のたびに呼ぶ)。回転数が最高を超えれば最高を更新(印は消える。peakVisible)。TACH_PEAK_HOLD_MS 止まってから
+// TACH_PEAK_FALL_RPM_PER_S で今の回転数まで下がる(下がり切ったら印は消える)。同じ時刻で 2 回呼んでも結果は変わらない(最初から描いたものと比べるため)
 static void peakTrack(const Signals &s, uint32_t now) {
   if (!s.rpmOk) {
     g_peakRpm = -1.0f;
@@ -721,13 +721,21 @@ static void peakTrack(const Signals &s, uint32_t now) {
   }
   g_peakLastMs = now;
 }
-static int peakKey() {
-  return g_peakRpm >= 0 ? (int)(tachAngle(g_peakRpm) * 4.0f + 0.5f) : -1;
+// ピークホールドの印を出すか(2.2.0): ピークが PEAK_MIN_RPM 以上で、今の回転数がピークより下がっているときだけ。
+// 回転数が上がっている間(ピーク = 今の回転数)は出さない(グラフの裏にあって隠れている扱い)
+static bool peakVisible(const Signals &s) {
+  return g_peakRpm >= (float)PEAK_MIN_RPM && s.rpmOk && (float)s.rpm < g_peakRpm;
 }
-static int peakTriKey() {  // サーキットの三角形の左側の角度 [1/4 度]
-  if (g_peakRpm < 0) return -1;
-  const float first = (float)(g_set->shiftRpm - 11 * RING_STEP_RPM);
+static int peakKey(const Signals &s) {  // 回転計の印の角度 [1/4 度]。-1 = 出さない(印は針の下に描く)
+  return peakVisible(s) ? (int)(tachAngle(g_peakRpm) * 4.0f + 0.5f) : -1;
+}
+static int peakTriKey(const Signals &s) {  // サーキットの三角形の左側の角度 [1/4 度]。-1 = 出さない
+  if (!peakVisible(s)) return -1;
+  const int sp = g_set->shiftRpm;
+  const float first = (float)(sp - 11 * RING_STEP_RPM);
   const float pos = clampf((g_peakRpm - first) / RING_STEP_RPM + 1.0f, 1.0f, 12.0f);
+  // 三角形の所のマス(pos の整数部。マスの間ならその下のマス)が点いている間は出さない(点いたマスの裏に隠れている扱い)
+  if (litPerSide(s.rpm, sp) >= (int)pos) return -1;
   return (int)lroundf((90.0f + RING_PITCH_DEG * pos) * 4.0f);
 }
 // 先細りの針: 角度 key [1/4 度]、根元 rIn(幅 wIn)から先 rOut(幅 wOut)まで。4 点の多角形
@@ -974,7 +982,7 @@ static void updBoost(const Signals &s, uint32_t now) {
     g_peakKey = -1;
     g_tagsDirty = true;
   }
-  int nk = needleKey(s), tk = tachKey(s), pk = peakKey(), bk = boostNumKey(s);
+  int nk = needleKey(s), tk = tachKey(s), pk = peakKey(s), bk = boostNumKey(s);
   uint32_t gk = badgeKey(s);
   bool faceItems = bk != g_boostNumKey || gk != g_badgeKey;
   if (nk == g_needleKey && tk == g_tachKey && pk == g_peakKey && !faceItems) return;
@@ -1362,12 +1370,15 @@ static Zone zoneAt(int x, int y) {
 
 // ---- 受信の状態・RaceChrono の状態の項目と判定
 // ---- 受信の状態・RaceChrono の状態: 1 項目の画面と、全項目の判定(下の点)
-static const int INFO_N = 7;
+static const int INFO_MAX = 8;     // 項目の数の最大
+static const int INFO_N_LINK = 8;  // 受信の状態の項目の数(2.2.0: 「燃料」を足した)
+static const int INFO_N_RC = 7;    // RaceChrono の状態の項目の数
 enum Verdict : uint8_t { V_WAIT, V_OK, V_NG };
 struct InfoItem {
   const char *label;
   char value[48];
   Verdict v;
+  bool core;  // 通信の項目(まとめで、緑でなければ「正常」にしない。2.2.0)
 };
 static uint32_t g_errTotal = 0, g_errIncMs = 0;    // 誤り・欠落の合計と、最後に増えた時刻
 static uint32_t g_dropTotal = 0, g_dropIncMs = 0;  // RaceChrono で捨てた数と、最後に増えた時刻
@@ -1388,14 +1399,18 @@ static void infoTrack(const LinkStats &ls, const SysInfo &si, uint32_t now) {  /
 static bool recent(uint32_t incMs, uint32_t now) {
   return incMs && (uint32_t)(now - incMs) < INFO_RECENT_MS;
 }
-static void infoItems(const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now, InfoItem it[INFO_N]) {
-  const char *L[INFO_N] = { "通信速度", "受信", "誤り・欠落", "送り元", "CAN", "描画", "起動" };
-  for (int i = 0; i < INFO_N; i++) {
+static void infoItems(const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now, InfoItem it[INFO_MAX]) {
+  const char *L[INFO_N_LINK] = { "通信速度", "受信", "誤り・欠落", "送り元", "CAN", "描画", "起動", "燃料" };
+  for (int i = 0; i < INFO_N_LINK; i++) {
     it[i].label = L[i];
     it[i].v = V_WAIT;
+    it[i].core = i <= 4;  // 通信速度・受信・誤り・欠落・送り元・CAN
   }
+  // 受けていない: バイトは届くのに読めなければ赤。何も届かないときも、起動から INFO_LINK_GRACE_MS たったら赤(2.2.0。前は灰で、
+  // まとめが「正常」になっていた)。デモ表示の間は UART を読まないので灰
+  const bool linkWait = g_set->demoOn || now < INFO_LINK_GRACE_MS;
   if (ls.locked) snprintf(it[0].value, 48, "%u bps", (unsigned)ls.baud), it[0].v = V_OK;
-  else snprintf(it[0].value, 48, "受信なし"), it[0].v = ls.bytesPerSec ? V_NG : V_WAIT;
+  else snprintf(it[0].value, 48, "受信なし"), it[0].v = (ls.bytesPerSec || !linkWait) ? V_NG : V_WAIT;
   // 受けているとき: フレーム数。受けていないとき: 届いているバイト数(0 = 線に何も来ていない。0 でない = 来ているが読めない)
   if (ls.locked) snprintf(it[1].value, 48, "%u /s", (unsigned)ls.framesPerSec), it[1].v = ls.framesPerSec ? V_OK : V_NG;
   else snprintf(it[1].value, 48, "%u バイト/秒", (unsigned)ls.bytesPerSec);
@@ -1427,12 +1442,19 @@ static void infoItems(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
   else if (si.powerOnSrc & 0x01) snprintf(it[6].value, 48, "PWR ボタン"), it[6].v = V_OK;
   else if (si.powerOnSrc & 0x10) snprintf(it[6].value, 48, "電池"), it[6].v = V_OK;
   else snprintf(it[6].value, 48, "0x%02X", si.powerOnSrc), it[6].v = V_OK;
+  // 燃料(2.2.0。燃料が 100 % から動かない件を実車で見るため): 0C014003 の最後の b5(0 も出す)と、なましの値(表示の % の元)
+  veh::FuelInfo fi;
+  veh::fuelInfo(&fi, now);
+  if (!fi.seen) snprintf(it[7].value, 48, "– –");
+  else if (!fi.have) snprintf(it[7].value, 48, "生 %u", (unsigned)fi.lastB5);
+  else snprintf(it[7].value, 48, "生 %u なまし %.1f", (unsigned)fi.lastB5, (double)fi.lp), it[7].v = V_OK;
 }
-static void rcItems(const SysInfo &si, uint32_t now, InfoItem it[INFO_N]) {
-  const char *L[INFO_N] = { "BLE", "送信", "GPS", "位置", "GPS 速度", "IMU", "向きの補正" };
-  for (int i = 0; i < INFO_N; i++) {
+static void rcItems(const SysInfo &si, uint32_t now, InfoItem it[INFO_MAX]) {
+  const char *L[INFO_N_RC] = { "BLE", "送信", "GPS", "位置", "GPS 速度", "IMU", "向きの補正" };
+  for (int i = 0; i < INFO_N_RC; i++) {
     it[i].label = L[i];
     it[i].v = V_WAIT;
+    it[i].core = i == 0 || i == 1 || i == 2 || i == 5;  // BLE・送信・GPS・IMU
   }
   const RcStats &r = si.rc;
   const bool fix = r.gpsOk && r.fixType >= 2;
@@ -1457,16 +1479,17 @@ static void rcItems(const SysInfo &si, uint32_t now, InfoItem it[INFO_N]) {
 static uint16_t verdictCol(Verdict v) {
   return v == V_OK ? C_OK : v == V_NG ? C_ALARM : C_DOT;
 }
-// 全項目の判定のまとめ(設定の項目に出す): 異常があれば「異常 n」、無くて正常があれば「正常」、それ以外は「待ち」
-static void verdictSummary(const InfoItem it[INFO_N], char *out, size_t n, uint16_t *col) {
-  int ng = 0, ok = 0;
-  for (int i = 0; i < INFO_N; i++) {
+// 全項目の判定のまとめ(設定の項目に出す): 異常があれば「異常 n」。無くても、通信の項目(core)が 1 つでも正常でなければ「待ち」。
+// 通信の項目が全部正常のときだけ「正常」(2.2.0。前は正常が 1 つでもあれば「正常」で、通信が切れていても「正常」と出ていた)
+static void verdictSummary(const InfoItem *it, int cnt, char *out, size_t n, uint16_t *col) {
+  int ng = 0, coreNotOk = 0;
+  for (int i = 0; i < cnt; i++) {
     ng += it[i].v == V_NG;
-    ok += it[i].v == V_OK;
+    coreNotOk += it[i].core && it[i].v != V_OK;
   }
   if (ng) snprintf(out, n, "異常 %d", ng), *col = C_ALARM;
-  else if (ok) snprintf(out, n, "正常"), *col = C_WHITE;
-  else snprintf(out, n, "待ち"), *col = C_LABEL2;
+  else if (coreNotOk) snprintf(out, n, "待ち"), *col = C_LABEL2;
+  else snprintf(out, n, "正常"), *col = C_WHITE;
 }
 
 // ================================================================ 設定画面(8 章。10/23 に作り直し: 1 画面 1 項目 × 10)
@@ -1516,14 +1539,14 @@ static void setItemValue(const Item &it, const LinkStats &ls, const PerfStats &p
   } else if (it.kind == K_TIME) {
     snprintf(v, n, "%u|%u", (unsigned)(trip::aboveMs() / 1000), (unsigned)(trip::belowMs() / 1000));
   } else if (it.kind == K_INFO) {
-    InfoItem items[INFO_N];
+    InfoItem items[INFO_MAX];
     infoItems(ls, ps, si, now, items);
-    verdictSummary(items, v, n, col);
+    verdictSummary(items, INFO_N_LINK, v, n, col);
   } else if (it.kind == K_RC) {
-    InfoItem items[INFO_N];
+    InfoItem items[INFO_MAX];
     rcItems(si, now, items);
     if (!si.rc.enabled) snprintf(v, n, "切"), *col = C_LABEL2;
-    else verdictSummary(items, v, n, col);
+    else verdictSummary(items, INFO_N_RC, v, n, col);
   } else {
     snprintf(v, n, "-");
   }
@@ -1623,18 +1646,18 @@ static void updSetReset() {
 }
 
 // ---- 受信の状態・RaceChrono の状態の中: 1 項目の画面と、全項目の判定(下の点)
-static void drawInfoItem(const InfoItem it[INFO_N], bool resetOp) {
+static void drawInfoItem(const InfoItem *it, int cnt, bool resetOp) {
   gfx::fillAll(C_BG);
   g_tagsDirty = true;  // 全部を塗り直したので「SIM」の印も描き直す
   drawTopBack();
-  if (g_infoItem < 0 || g_infoItem >= INFO_N) g_infoItem = 0;
+  if (g_infoItem < 0 || g_infoItem >= cnt) g_infoItem = 0;
   const InfoItem &c = it[g_infoItem];
   drawName(c.label);
   fitTextC(FP_VALUE, 3, 320, 233, 290, c.value, c.v == V_NG ? C_ALARM : (c.v == V_OK ? C_WHITE : C_LABEL2));
   drawSideArrows();
-  uint16_t cols[INFO_N];
-  for (int i = 0; i < INFO_N; i++) cols[i] = verdictCol(it[i].v);
-  drawDots(INFO_N, g_infoItem, cols, 330);
+  uint16_t cols[INFO_MAX];
+  for (int i = 0; i < cnt; i++) cols[i] = verdictCol(it[i].v);
+  drawDots(cnt, g_infoItem, cols, 330);
   if (resetOp) drawBottom("向きを取り直す");  // RaceChrono の「向きの補正」: 覚えた向きを捨てる
 }
 // 値は 0.5 秒ごとに描き直す(項目を送ったとき、開いたときはすぐ)
@@ -1642,9 +1665,9 @@ static void updSetInfo(const LinkStats &ls, const PerfStats &ps, const SysInfo &
   if (!g_full && (uint32_t)(now - g_infoMs) < 500) return;
   g_full = false;
   g_infoMs = now;
-  InfoItem it[INFO_N];
+  InfoItem it[INFO_MAX];
   infoItems(ls, ps, si, now, it);
-  drawInfoItem(it, false);
+  drawInfoItem(it, INFO_N_LINK, false);
 }
 static bool g_rcResetShown = false;  // 「向きを取り直す」を出している(タップの判定用)
 static bool rcResetOp(const SysInfo &si) {
@@ -1654,10 +1677,10 @@ static void updSetRc(const SysInfo &si, uint32_t now) {
   if (!g_full && (uint32_t)(now - g_infoMs) < 500) return;
   g_full = false;
   g_infoMs = now;
-  InfoItem it[INFO_N];
+  InfoItem it[INFO_MAX];
   rcItems(si, now, it);
   g_rcResetShown = rcResetOp(si);
-  drawInfoItem(it, g_rcResetShown);
+  drawInfoItem(it, INFO_N_RC, g_rcResetShown);
 }
 
 // ================================================================ CAN確認(設定の 10 項目目。10/23)
@@ -2133,7 +2156,9 @@ static void holdShow(uint32_t now) {
     drawHoldShow();
     g_holdShown = true;
   }
-  drawHoldProgress((float)el / HOLD_MS);
+  // 外周は表示を出したところ(HOLD_SHOW_MS)から HOLD_MS までに一周する(2.2.0。出した瞬間に半分まで飛ばない)
+  const float span = (float)(HOLD_MS - HOLD_SHOW_MS);
+  drawHoldProgress(el > HOLD_SHOW_MS ? (float)(el - HOLD_SHOW_MS) / span : 0.0f);
 }
 
 // ================================================================ 入口
@@ -2242,7 +2267,8 @@ void tap(int x, int y, uint32_t nowMs) {
       if (z == Z_TOP) {
         go(SC_SET_LIST);
       } else if (z == Z_LEFT || z == Z_RIGHT) {
-        g_infoItem = (g_infoItem + INFO_N + (z == Z_LEFT ? -1 : 1)) % INFO_N;
+        const int cnt = g_sc == SC_SET_RC ? INFO_N_RC : INFO_N_LINK;
+        g_infoItem = (g_infoItem + cnt + (z == Z_LEFT ? -1 : 1)) % cnt;
         g_full = true;
       } else if (z == Z_BOT && g_sc == SC_SET_RC && g_infoItem == 6 && g_rcResetShown) {
         platResetImuCal();
@@ -2460,10 +2486,28 @@ int testSetItem() {
 bool testHolding() {
   return g_holdShown;
 }
+int testInfoSummary(bool rc, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs, char *out, size_t n) {
+  InfoItem it[INFO_MAX];
+  uint16_t col = C_LABEL2;
+  if (rc) {
+    rcItems(si, nowMs, it);
+    verdictSummary(it, INFO_N_RC, out, n, &col);
+  } else {
+    infoItems(ls, ps, si, nowMs, it);
+    verdictSummary(it, INFO_N_LINK, out, n, &col);
+  }
+  return col == C_ALARM ? 2 : (col == C_WHITE ? 1 : 0);
+}
+void testPeakReset() {
+  g_peakRpm = -1.0f;
+}
+bool testPeakDrawn() {
+  return g_sc == SC_BOOST ? g_peakKey >= 0 : g_triKey >= 0;
+}
 int testInfoItem(int i, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs, char *out, size_t n) {
-  InfoItem it[INFO_N];
+  InfoItem it[INFO_MAX];
   infoItems(ls, ps, si, nowMs, it);
-  if (i < 0 || i >= INFO_N) return -1;
+  if (i < 0 || i >= INFO_N_LINK) return -1;
   snprintf(out, n, "%s", it[i].value);
   return it[i].v;
 }
