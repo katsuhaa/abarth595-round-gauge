@@ -19,7 +19,8 @@
  *   ヘッダのピンは、端から数えた位置ではなく基板の印字で確かめること(公式の HARDWARE_REFERENCE.md と回路図で、
  *   ピン番号と信号の対応が食い違っている。回路図では 6 番 = GPIO16、7 番 = GPIO17、8 番 = GPIO18)。
  *
- * 操作: 画面のタップだけ(仕様書 2 章)。走行 → アナログ計(回転計 + ブースト計) → データ → CAN確認 → 設定 → 走行。
+ * 操作(2.1.0): サーキット・タコ・データは、左へスワイプで次の画面、右へスワイプで前の画面(サーキット → タコ → データ → サーキット)。
+ *   長押し(0.4 秒)で設定。短いタップは何もしない。設定の中はタップ(上・下の帯と左右の半分)。しきい値は config.h の HOLD_*・SWIPE_*。
  *   電源を入れた直後はオープニング(輪が点く → 自己診断。config.h の OPENING_MS。タップで飛ばせる)。2026-10-21
  *
  * デモ表示: 設定 →「⌄」→「デモ」を「入」にすると、XIAO をつながずに模擬の値(c6_display_debug と同じ場面 1〜9)を出す。
@@ -40,7 +41,7 @@
  *
  * 書き込んだ直後の見え方(XIAO をつながなくても確かめられる):
  *   走行画面が出て、輪は全部消え、ギアは「–」、水温と燃料は「– –」(信号がないときの表示)。
- *   タップで画面が切り替わる。設定 →「⌄」→「受信の状態」で、受信・描画・起動のきっかけが見られる。
+ *   左右のスワイプで画面が切り替わる。長押しで設定 →「受信の状態」で、受信・描画・起動のきっかけが見られる。
  *   画面が真っ赤 = 画面用のメモリー(PSRAM)を取れなかった。真っ暗のまま = 画面の初期化まで進んでいない(シリアルを見る)。
  *
  * シリアル(USB。USB CDC なのでモニター側の速度の設定は無視される。何 bps でもよい):
@@ -69,7 +70,7 @@
  *     PSRAM            → OPI PSRAM
  *   どちらも、違っているとコンパイルがエラーで止まる(下の #error)。「USB Mode」が既定値(Hardware CDC and JTAG)で
  *   ないときも同じ。
- *   スケッチは約 1.2MB で、既定の Partition Scheme(1.2MB APP)の 92 %(2.0.1、2026-10-23)。Flash Size も既定値のままで動く。
+ *   スケッチは約 1.2MB で、既定の Partition Scheme(1.2MB APP)の 92 %(2.1.0、2026-10-23)。Flash Size も既定値のままで動く。
  *   コンパイルの最後に「Sketch too big」と出るようになったら、Partition Scheme を「Huge APP (3MB No OTA/1MB SPIFFS)」にする
  *   (設定の保存領域はどちらでも同じ場所にあり、保存した値は消えない)。
  *   「コンパイラの警告」を「すべて」にすると NimBLE-Arduino の nimconfig.h から「redefined」の警告がたくさん出るが、
@@ -323,6 +324,7 @@ static volatile bool g_tpIrq = false;
 static bool g_tpDown = false;
 static uint32_t g_tpLastMs = 0;
 static uint32_t g_tpDownMs = 0, g_tpGapMax = 0, g_tpReports = 0;
+static int g_tpX0 = 0, g_tpY0 = 0, g_tpX = 0, g_tpY = 0;  // 触れた所と、最後に知らされた所(シリアルにスワイプの動きを出す)
 static bool g_tpI2cOk = false;              // 直近の読み取りで、タッチ IC が I2C に応答した
 
 enum { TP_NONE, TP_DOWN, TP_UP };  // touchRead の戻り値。TP_NONE = 読めなかった、または中身が正しくない
@@ -392,13 +394,15 @@ static int touchRead(int *x, int *y) {
   return r;
 }
 
-// 触れた瞬間に ui::touchDown、離したら ui::touchUp(短ければタップ、サーキット・タコ・データの長押しは ui が画面を切り替える)
+// 触れた瞬間に ui::touchDown、押している間の知らせごとに ui::touchMove、離したら ui::touchUp
+// (サーキット・タコ・データは、左右のスワイプで画面を替え、長押しで設定。ほかの画面は離したときにタップ)
 static void touchRelease(uint32_t now, const char *why) {
   int before = (int)ui::screen();
   g_tpDown = false;
   ui::touchUp(now);
-  Serial.printf("タッチ: 離した(%s)%lu ms 押していた、知らせ %lu 回、押している間の知らせの間隔 最大 %lu ms  画面: %s → %s\n", why, (unsigned long)(now - g_tpDownMs),
-                (unsigned long)g_tpReports, (unsigned long)g_tpGapMax, screenName(before), screenName((int)ui::screen()));
+  Serial.printf("タッチ: 離した(%s)%lu ms 押していた、動き 横 %+d 縦 %+d、知らせ %lu 回、押している間の知らせの間隔 最大 %lu ms  画面: %s → %s\n", why,
+                (unsigned long)(now - g_tpDownMs), g_tpX - g_tpX0, g_tpY - g_tpY0, (unsigned long)g_tpReports, (unsigned long)g_tpGapMax, screenName(before),
+                screenName((int)ui::screen()));
 }
 static void touchPoll(uint32_t now) {
   if (g_tpDown && (uint32_t)(now - g_tpLastMs) >= TP_HOLD_GAP_MS) touchRelease(now, "知らせがとぎれた");
@@ -416,12 +420,17 @@ static void touchPoll(uint32_t now) {
       g_tpDownMs = now;
       g_tpGapMax = 0;
       g_tpReports = 1;
+      g_tpX0 = g_tpX = x;
+      g_tpY0 = g_tpY = y;
       ui::touchDown(x, y, now);
       Serial.printf("タッチ: 触れた (%d, %d)  画面: %s\n", x, y, screenName((int)ui::screen()));
     } else {
       uint32_t gap = now - g_tpLastMs;
       if (gap > g_tpGapMax) g_tpGapMax = gap;
       g_tpReports++;
+      g_tpX = x;
+      g_tpY = y;
+      ui::touchMove(x, y, now);  // スワイプの判定と、動いたら長押しを取り消すため
     }
     g_tpLastMs = now ? now : 1;
   }

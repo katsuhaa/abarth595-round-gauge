@@ -23,12 +23,14 @@ enum Screen : uint8_t {
 
 // home = 前回「覚えた画面」(サーキット・タコ・データ。NVS から)。オープニングのあとと、設定から時間で戻るときに出す
 void begin(Settings *settings, uint8_t home = SC_DRIVE);
-// タッチ(config.h の HOLD_* と ZONE_*)。基板は触れた瞬間に touchDown、離したら touchUp を呼ぶ。
-// サーキット・タコ・データでは、HOLD_MS より前に離すとタップ(設定へ)、押し続けると HOLD_MS ごとに次の画面。
-// ほかの画面は離したときにタップとして扱う(位置は触れた所)
+// タッチ(config.h の HOLD_*・SWIPE_* と ZONE_*)。基板は触れた瞬間に touchDown、押している間の知らせごとに touchMove、
+// 離したら touchUp を呼ぶ。
+// サーキット・タコ・データ(2.1.0): 左へスワイプ = 次の画面、右へスワイプ = 前の画面(離したときに決める)。長押し HOLD_MS = 設定。
+// 短いタップは何もしない。ほかの画面は離したときにタップとして扱う(位置は触れた所)
 void touchDown(int x, int y, uint32_t nowMs);
+void touchMove(int x, int y, uint32_t nowMs);
 void touchUp(uint32_t nowMs);
-// タップを 1 つ(試験用にも使う。touchUp が短いタッチのときに呼ぶ)
+// タップを 1 つ(試験用にも使う。touchUp が、サーキット・タコ・データ以外の画面で呼ぶ。サーキット・タコ・データでは何もしない)
 void tap(int x, int y, uint32_t nowMs);
 // 覚えた画面(HOME_CONFIRM_MS 続けて見ていた サーキット・タコ・データ)。基板はこれを TIME_SAVE_MS ごとに NVS へ書く
 uint8_t homeScreen();

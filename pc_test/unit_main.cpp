@@ -164,47 +164,97 @@ int main() {
     CHECK(st.framesOk == ok0, "長さの合わない CAN フレームは使わない");
   }
 
-  // ---------------- 6. 画面の操作(10/23): サーキット・タコ・データは長押しで次、タップで設定。設定の中は上・下の帯と左右の半分
+  // ---------------- 6. 画面の操作(2.1.0): サーキット・タコ・データは左右のスワイプで画面を替え、長押しで設定。短いタップは何もしない。
+  //                  設定の中は上・下の帯と左右の半分
   Signals live;
   memset(&live, 0, sizeof(live));
   live.linkUp = live.rpmOk = live.waterOk = live.fuelOk = live.gearOk = live.speedOk = live.throttleOk = true;
   live.rpm = 3000; live.waterC = 90; live.fuelPct = 50; live.gear = '2';
   const int TOPX = 233, TOPY = 60, BOTX = 233, BOTY = 400, LX = 100, RX = 366, MY = 233;
   uint32_t t = 10000;
+  // 長押し(HOLD_MS)で設定に入って離す
+  auto longPress = [&](const Signals &sg, uint32_t &tt) {
+    ui::touchDown(233, 233, tt += 100);
+    ui::update(sg, ls, ps, si, tt + HOLD_SHOW_MS + 10);
+    ui::update(sg, ls, ps, si, tt + HOLD_MS);
+    ui::touchUp(tt += HOLD_MS + 50);
+    upd(sg, tt);
+  };
+  // 真ん中から (dx, dy) だけ指を動かして離す(途中の知らせ 2 回、全部で 100 ms)
+  auto swipe = [&](const Signals &sg, uint32_t &tt, int dx, int dy) {
+    ui::touchDown(233, 233, tt += 100);
+    ui::update(sg, ls, ps, si, tt + 20);
+    ui::touchMove(233 + dx / 2, 233 + dy / 2, tt + 40);
+    ui::touchMove(233 + dx, 233 + dy, tt + 80);
+    ui::update(sg, ls, ps, si, tt + 80);
+    ui::touchUp(tt += 100);
+    upd(sg, tt);
+  };
   ui::testShow(ui::SC_DRIVE);
   upd(live, t);
   CHECK(ui::screen() == ui::SC_DRIVE, "サーキットから");
-  // 長押し
-  ui::touchDown(233, 233, t += 100);
-  ui::update(live, ls, ps, si, t + HOLD_SHOW_MS - 10);
-  CHECK(!ui::testHolding(), "長押し: HOLD_SHOW_MS より前は表示を出さない");
-  ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 10);
-  CHECK(ui::testHolding() && ui::screen() == ui::SC_DRIVE, "長押し: 押している間は表示を出す(まだ切り替えない)");
-  ui::update(live, ls, ps, si, t + HOLD_MS);
-  CHECK(ui::screen() == ui::SC_BOOST, "長押し HOLD_MS でタコへ");
-  ui::update(live, ls, ps, si, t + 2 * HOLD_MS);
-  CHECK(ui::screen() == ui::SC_DATA, "押したままなら HOLD_MS ごとに次(データ)");
-  ui::update(live, ls, ps, si, t + 3 * HOLD_MS);
-  CHECK(ui::screen() == ui::SC_DRIVE, "データの次はサーキット");
-  ui::update(live, ls, ps, si, t + 4 * HOLD_MS);
-  ui::touchUp(t += 4 * HOLD_MS + 50);
-  upd(live, t);
-  CHECK(ui::screen() == ui::SC_BOOST && !ui::testHolding(), "離しても設定には行かない(長押しのあと)");
-  gfx::dirtyClear();
-  // 短いタッチ = タップ = 設定(前回の項目)
+  // スワイプ: 左へ = 次、右へ = 前(サーキット → タコ → データ → サーキット)
+  swipe(live, t, -120, 10);
+  CHECK(ui::screen() == ui::SC_BOOST, "スワイプ: 左へでタコ(次)");
+  swipe(live, t, -120, -20);
+  CHECK(ui::screen() == ui::SC_DATA, "スワイプ: 左へでデータ(次)");
+  swipe(live, t, -120, 0);
+  CHECK(ui::screen() == ui::SC_DRIVE, "スワイプ: データの次はサーキット");
+  swipe(live, t, 120, 0);
+  CHECK(ui::screen() == ui::SC_DATA, "スワイプ: 右へで前(サーキットの前はデータ)");
+  swipe(live, t, 120, 0);
+  CHECK(ui::screen() == ui::SC_BOOST && !ui::testHolding(), "スワイプ: 右へで前(データの前はタコ)。長押しの表示は出ない");
+  swipe(live, t, -(SWIPE_MIN_PX - 10), 0);
+  CHECK(ui::screen() == ui::SC_BOOST, "スワイプ: 横の動きが SWIPE_MIN_PX 未満なら替えない");
+  swipe(live, t, -100, 60);
+  CHECK(ui::screen() == ui::SC_BOOST, "スワイプ: 斜め(横が縦の SWIPE_DIR_RATIO 倍未満)なら替えない");
+  swipe(live, t, 0, -150);
+  CHECK(ui::screen() == ui::SC_BOOST, "スワイプ: 縦は何もしない");
+  // 短いタッチ(タップ)は何もしない(すぐ設定に入ると、元に戻るのが面倒なため)
   ui::touchDown(233, 233, t += 100);
   ui::update(live, ls, ps, si, t + 50);
   ui::touchUp(t += 150);
   upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "タコ: 短いタッチで設定の 1 項目目");
+  CHECK(ui::screen() == ui::SC_BOOST && !ui::testHolding(), "タコ: 短いタッチは何もしない");
+  ui::tap(233, 233, t += 100); upd(live, t);
+  CHECK(ui::screen() == ui::SC_BOOST, "タコ: タップ(ui::tap)も何もしない");
+  // 長押し: HOLD_SHOW_MS から暗くして「設定」、HOLD_MS で設定へ。押したままでも画面は回らず、離してもタップにしない
+  ui::touchDown(233, 233, t += 100);
+  ui::update(live, ls, ps, si, t + HOLD_SHOW_MS - 10);
+  CHECK(!ui::testHolding(), "長押し: HOLD_SHOW_MS より前は表示を出さない");
+  ui::touchMove(236, 231, t + HOLD_SHOW_MS);  // HOLD_CANCEL_PX 未満のずれは取り消さない
+  ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 10);
+  CHECK(ui::testHolding() && ui::screen() == ui::SC_BOOST, "長押し: 押している間は表示を出す(まだ設定に入らない)");
+  ui::update(live, ls, ps, si, t + HOLD_MS);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "長押し HOLD_MS で設定の 1 項目目");
+  ui::update(live, ls, ps, si, t + 3 * HOLD_MS);
+  CHECK(ui::screen() == ui::SC_SET_LIST, "押したままでも設定のまま(画面は回らない)");
+  ui::touchUp(t += 3 * HOLD_MS + 50);
+  upd(live, t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0 && !ui::testHolding(), "離してもタップにしない(設定の項目はそのまま)");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_BOOST, "設定: 上の帯「設定」で来た画面(タコ)へ");
-  ui::tap(233, 233, t += 100); upd(live, t);
+  // 長押しの取り消し: 表示を出したあと HOLD_CANCEL_PX 以上動いたら、表示を消して設定に入らない
+  ui::touchDown(233, 233, t += 100);
+  ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 10);
+  CHECK(ui::testHolding(), "取り消し: まず長押しの表示が出る");
+  ui::touchMove(233, 233 + HOLD_CANCEL_PX, t + HOLD_SHOW_MS + 20);
+  ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 30);
+  CHECK(!ui::testHolding() && ui::screen() == ui::SC_BOOST, "取り消し: HOLD_CANCEL_PX 動いたら表示を消す");
+  ui::update(live, ls, ps, si, t + 2 * HOLD_MS);
+  CHECK(ui::screen() == ui::SC_BOOST && !ui::testHolding(), "取り消し: HOLD_MS を過ぎても設定に入らない");
+  ui::touchUp(t += 2 * HOLD_MS + 10);
+  upd(live, t);
+  CHECK(ui::screen() == ui::SC_BOOST, "取り消し: 離しても何もしない(縦の動きはスワイプでない)");
+  gfx::dirtyClear();
+  // 設定(長押しで入る。前回見ていた項目から)
+  longPress(live, t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "長押しで設定へ");
   ui::tap(RX, MY, t += 100); upd(live, t);
   ui::tap(RX, MY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "設定: 右半分で次の項目");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  ui::tap(233, 233, t += 100); upd(live, t);
+  longPress(live, t);
   CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "設定は前回見ていた項目から(電源を切るまで覚える)");
   ui::tap(LX, MY, t += 100); upd(live, t);
   ui::tap(LX, MY, t += 100); upd(live, t);
@@ -322,19 +372,17 @@ int main() {
   CHECK(ui::homeScreen() == ui::SC_BOOST, "タコを 1 分見ていたら覚える");
   upd(live, t += 4 * 60000);
   CHECK(ui::screen() == ui::SC_BOOST, "タコ: 4 分たっても自動では変わらない");
-  ui::touchDown(233, 233, t += 100);
-  upd(live, t + HOLD_MS);
-  ui::touchUp(t += HOLD_MS + 70);
-  CHECK(ui::screen() == ui::SC_DATA, "長押しでデータ");
-  ui::tap(233, 233, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST, "データ: タップで設定");
+  swipe(live, t, -120, 0);
+  CHECK(ui::screen() == ui::SC_DATA, "左へスワイプでデータ");
+  longPress(live, t);
+  CHECK(ui::screen() == ui::SC_SET_LIST, "データ: 長押しで設定");
   upd(live, t + 3 * 60000 - 2000);
   CHECK(ui::screen() == ui::SC_SET_LIST, "3 分たつ前は戻らない");
   upd(live, t + 3 * 60000 + 200);
   CHECK(ui::screen() == ui::SC_BOOST, "3 分で覚えた画面(タコ)に戻る(来た画面のデータではない)");
   t += 3 * 60000 + 1000;
   set.autoReturnMin = 1;
-  ui::tap(233, 233, t += 100); upd(live, t);
+  longPress(live, t);
   ui::testShow(ui::SC_SET_LIST, 0);
   ui::tap(BOTX, BOTY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT, "設定の変更画面へ");
@@ -1627,7 +1675,7 @@ int main() {
     ui::update(d, ls, p, si, tp += 20);
     CHECK(ui::pageFrame() && gfx::dirtyCount() > 0, "数える回: サーキットのふだんの回(回転数が変わって描き直した所がある)");
     gfx::dirtyClear();
-    // 長押しの表示: 出し始めた回(画面全体を暗くする)と、出している間は数えない
+    // 長押しの表示: 出し始めた回(画面全体を暗くする)と、出している間は数えない。動いて取り消し、表示を消した回(全体の描き直し)も数えない
     ui::touchDown(233, 233, tp += 20);
     ui::update(d, ls, p, si, tp + 50);
     CHECK(ui::pageFrame(), "数える回: 押した直後(長押しの表示の前)はふだんの回");
@@ -1635,11 +1683,16 @@ int main() {
     CHECK(ui::testHolding() && !ui::pageFrame(), "数える回: 長押しの表示を出し始めた回は数えない");
     ui::update(d, ls, p, si, tp + HOLD_SHOW_MS + 30);
     CHECK(!ui::pageFrame(), "数える回: 長押しの表示を出している間は数えない");
-    ui::update(d, ls, p, si, tp + HOLD_MS);
-    CHECK(ui::screen() == ui::SC_BOOST && !ui::pageFrame(), "数える回: 長押しで切り替えた回(タコの全体の描き直し)は数えない");
-    ui::touchUp(tp += HOLD_MS + 20);
+    ui::touchMove(233 - HOLD_CANCEL_PX - 10, 233, tp + HOLD_SHOW_MS + 40);
+    ui::update(d, ls, p, si, tp + HOLD_SHOW_MS + 50);
+    CHECK(ui::screen() == ui::SC_DRIVE && !ui::testHolding() && !ui::pageFrame(), "数える回: 動いて長押しを取り消し、表示を消した回(全体の描き直し)は数えない");
+    d.rpm = 4600;
+    ui::update(d, ls, p, si, tp + HOLD_SHOW_MS + 70);
+    CHECK(ui::pageFrame(), "数える回: 取り消したあと、押している間のふだんの回");
+    ui::touchMove(233 - 130, 236, tp + HOLD_SHOW_MS + 80);
+    ui::touchUp(tp += HOLD_SHOW_MS + 90);  // 左へスワイプ = タコへ
     ui::update(d, ls, p, si, tp);
-    CHECK(ui::screen() == ui::SC_BOOST && !ui::pageFrame(), "数える回: 離して暗い表示を消した回(全体の描き直し)は数えない");
+    CHECK(ui::screen() == ui::SC_BOOST && !ui::pageFrame(), "数える回: スワイプで切り替えた回(タコの全体の描き直し)は数えない");
     d.rpm = 3100;
     ui::update(d, ls, p, si, tp += 20);
     CHECK(ui::pageFrame(), "数える回: タコのふだんの回");

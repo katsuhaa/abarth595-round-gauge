@@ -2067,15 +2067,18 @@ static void updTags(const Signals &s, bool redrawn) {
   g_sceneShown = scene;
 }
 
-// ================================================================ 長押しの表示(サーキット・タコ・データ。config.h の HOLD_*)
-// 押している間: 画面を暗くし、外周が HOLD_MS で一周していき、上に次の画面名。表示の間は画面の描き直しを止める
+// ================================================================ スワイプと長押し(サーキット・タコ・データ。config.h の HOLD_*・SWIPE_*)
+// 左右のスワイプで画面を替える(離したときに決める)。長押し HOLD_MS で設定へ。押している間: 画面を暗くし、外周が HOLD_MS で
+// 一周していき、上に「設定」。表示の間は画面の描き直しを止める。指が HOLD_CANCEL_PX 以上動いたら長押しを取り消す
 static const uint16_t C_HOLD_TRACK = rgb(0x1A2433);
 static const uint16_t C_HOLD_PILL = rgb(0x0B1220);
 static struct {
   bool down;
-  int x, y;
-  uint32_t t0;      // 触れた時刻(画面を切り替えたら、その時刻)
-  bool switched;    // 長押しで画面を切り替えた(離してもタップにしない)
+  int x, y;         // 触れた所
+  int lx, ly;       // 最後に知らされた所(スワイプの判定)
+  uint32_t t0;      // 触れた時刻
+  bool moved;       // HOLD_CANCEL_PX 以上動いた(長押しを取り消した)
+  bool switched;    // 長押しで設定に入った(離してもタップにしない)
 } g_touch;
 static float g_holdDeg = 0;  // 外周に描いた角度
 
@@ -2085,16 +2088,16 @@ static bool isMain(Screen sc) {
 static Screen nextMain(Screen sc) {
   return sc == SC_DRIVE ? SC_BOOST : sc == SC_BOOST ? SC_DATA : SC_DRIVE;
 }
-static const char *mainName(Screen sc) {
-  return sc == SC_DRIVE ? "サーキット" : sc == SC_BOOST ? "タコ" : "データ";
+static Screen prevMain(Screen sc) {
+  return sc == SC_DRIVE ? SC_DATA : sc == SC_BOOST ? SC_DRIVE : SC_BOOST;
 }
-static void drawHoldShow() {  // 暗くして、外周の地と次の画面名
+static void drawHoldShow() {  // 暗くして、外周の地と「設定」
   uint16_t *f = gfx::frame();
   for (int i = 0; i < gfx::W * gfx::H; i++) f[i] = gfx::blend(f[i], 0x0000, 153);
   gfx::addDirty(0, 0, gfx::W, gfx::H);
   gfx::fillArc(233, 233, 221, 233, 0, 360, C_HOLD_TRACK);
-  const char *nm = mainName(nextMain(g_sc));
-  const FontData &fn = strlen(nm) <= 9 ? FONT_JP600_56 : FONT_JP600_48;  // 3 文字まで 56 px(「サーキット」は 48 px)
+  const char *nm = "設定";
+  const FontData &fn = FONT_JP600_48;  // 56 px の書体には「設定」の字が無い(タコ・データの字だけ)
   const float w = gfx::textWidth(fn, nm) + 96;
   const float x = 233 - w * 0.5f;
   gfx::frameRoundRect(x, 74, w, 78, 39, 3, C_ACCENT, C_HOLD_PILL);
@@ -2111,22 +2114,22 @@ static void drawHoldProgress(float frac) {
   gfx::fillArc(233, 233, 221, 233, 270 + g_holdDeg, 270 + deg, C_ACCENT);
   g_holdDeg = deg;
 }
-// update の最初で呼ぶ。長押しで画面を切り替える
+// update の最初で呼ぶ。長押しで設定へ(前回見ていた項目)
 static void holdStep(uint32_t now) {
-  if (!g_touch.down || !isMain(g_sc)) return;
+  if (!g_touch.down || !isMain(g_sc) || g_touch.moved || g_touch.switched) return;
   if ((uint32_t)(now - g_touch.t0) >= HOLD_MS) {
     g_lastActMs = now;
-    go(nextMain(g_sc));
-    g_touch.t0 = now;
+    g_homeCur = g_sc;
+    go(SC_SET_LIST);
     g_touch.switched = true;
   }
 }
 // 画面を描いたあとで呼ぶ。押している間の表示
 static void holdShow(uint32_t now) {
-  if (!g_touch.down || !isMain(g_sc)) return;
+  if (!g_touch.down || !isMain(g_sc) || g_touch.moved) return;
   const uint32_t el = now - g_touch.t0;
   if (!g_holdShown) {
-    if (el < HOLD_SHOW_MS && !g_touch.switched) return;
+    if (el < HOLD_SHOW_MS) return;
     drawHoldShow();
     g_holdShown = true;
   }
@@ -2178,9 +2181,7 @@ void tap(int x, int y, uint32_t nowMs) {
       break;
     case SC_DRIVE:
     case SC_BOOST:
-    case SC_DATA:  // タップ = 設定(前回見ていた項目)
-      g_homeCur = g_sc;
-      go(SC_SET_LIST);
+    case SC_DATA:  // 2.1.0: タップは何もしない(設定は長押し、画面の切り替えはスワイプ)
       break;
     case SC_SET_LIST: {
       const Item &it = ITEMS[g_setItem];
@@ -2305,10 +2306,25 @@ void tap(int x, int y, uint32_t nowMs) {
 void touchDown(int x, int y, uint32_t nowMs) {
   g_lastActMs = nowMs;
   g_touch.down = true;
-  g_touch.x = x;
-  g_touch.y = y;
+  g_touch.x = g_touch.lx = x;
+  g_touch.y = g_touch.ly = y;
   g_touch.t0 = nowMs;
+  g_touch.moved = false;
   g_touch.switched = false;
+}
+void touchMove(int x, int y, uint32_t nowMs) {
+  if (!g_touch.down) return;
+  g_touch.lx = x;
+  g_touch.ly = y;
+  const int dx = x - g_touch.x, dy = y - g_touch.y;
+  if (!g_touch.moved && dx * dx + dy * dy >= HOLD_CANCEL_PX * HOLD_CANCEL_PX) {
+    g_touch.moved = true;  // 長押しを取り消す(スワイプの途中で設定に入らない)
+    g_lastActMs = nowMs;
+    if (g_holdShown && isMain(g_sc)) {  // 暗くした表示を消す(今の画面を描き直す)
+      g_holdShown = false;
+      g_full = true;
+    }
+  }
 }
 void touchUp(uint32_t nowMs) {
   if (!g_touch.down) return;
@@ -2318,7 +2334,14 @@ void touchUp(uint32_t nowMs) {
     g_holdShown = false;
     g_full = true;
   }
-  if (!g_touch.switched) tap(g_touch.x, g_touch.y, nowMs);
+  if (g_touch.switched) return;  // 長押しで設定に入った。離してもタップにしない
+  if (isMain(g_sc)) {  // サーキット・タコ・データ: 横のスワイプだけ。短いタップは何もしない
+    const int dx = g_touch.lx - g_touch.x, dy = g_touch.ly - g_touch.y;
+    const int ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+    if (ax >= SWIPE_MIN_PX && ax >= SWIPE_DIR_RATIO * ay) go(dx < 0 ? nextMain(g_sc) : prevMain(g_sc));
+    return;
+  }
+  tap(g_touch.x, g_touch.y, nowMs);
 }
 
 void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now) {

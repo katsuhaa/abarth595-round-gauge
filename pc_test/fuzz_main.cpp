@@ -90,6 +90,7 @@ int main(int argc, char **argv) {
     uint32_t quietUntil = 0;
     bool held = false;        // 押したまま(長押しの試験)
     uint32_t releaseAt = 0;
+    int heldX = 0, heldY = 0, heldDx = 0;  // 押している所と、1 回に動かす横の量(0 = 動かさない。2.1.0: スワイプと長押しの取り消し)
     for (uint32_t i = 0; i < steps; i++) {
       now += 1 + rndN(chance(20) ? 400 : 30);
       if (chance(2)) now += 30000 + rndN(400000);  // たまに長い間を空ける(自動で戻る、受信の途切れ)
@@ -132,12 +133,19 @@ int main(int argc, char **argv) {
       mlink::tick(now);
       cantab::tick(now);
       mlink::autoBaud(now, rndN(200));
-      // ---- タッチ(10/23: 触れる・離す。サーキット・タコ・データの長押しで画面が変わる。ほかは離したときにタップ)
+      // ---- タッチ(触れる・動かす・離す。2.1.0: サーキット・タコ・データは横のスワイプで画面が変わり、長押しで設定。ほかは離したときにタップ)
       ui::Screen cur = ui::screen();
       if (cur == ui::SC_SET_LIST && chance(10)) {  // 中の画面はタップの並びが長くて滅多に届かないので、たまに直接出す
         static const ui::Screen deep[] = { ui::SC_SET_RC, ui::SC_SET_INFO, ui::SC_CAN, ui::SC_CAN_ID, ui::SC_SET_RESET, ui::SC_CAN_REDO };
         cur = deep[rndN(sizeof(deep) / sizeof(deep[0]))];
         ui::testShow(cur);
+      }
+      if (held && heldDx && chance(400)) {  // 押している間の動き(横に進めて、縦は少し揺らす)
+        heldX += heldDx + (int)rndN(11) - 5;
+        heldY += (int)rndN(11) - 5;
+        heldX = heldX < 0 ? 0 : (heldX >= gfx::W ? gfx::W - 1 : heldX);
+        heldY = heldY < 0 ? 0 : (heldY >= gfx::H ? gfx::H - 1 : heldY);
+        ui::touchMove(heldX, heldY, now);
       }
       if (held && (int32_t)(now - releaseAt) >= 0) {
         ui::touchUp(now);
@@ -160,6 +168,9 @@ int main(int argc, char **argv) {
         } else {
           ui::touchDown(x, y, now);
           held = true;
+          heldX = x;
+          heldY = y;
+          heldDx = chance(500) ? 0 : (int)rndN(41) - 20;  // 半分は横に動かす(スワイプになるもの、ならないもの)
           releaseAt = now + (chance(500) ? rndN(HOLD_MS) : rndN(2000));
         }
         taps++;
