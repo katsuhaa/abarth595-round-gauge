@@ -171,6 +171,7 @@ int main(int argc, char **argv) {
       trip::update(s, now);
       ps.fps = rndN(100);
       ps.loopMaxMs = rndN(60);
+      ps.pageMaxUs = chance(100) ? 0 : rndN(120000);  // 受信の状態の「描画」(0 = まだ測っていない)
       si.axpOk = chance(900);
       si.powerOnSrc = (uint8_t)rnd();
       si.rc.enabled = chance(900);

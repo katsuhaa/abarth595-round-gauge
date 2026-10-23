@@ -163,6 +163,7 @@ static float mixDraw(const FontData &fa, const FontData &fj, float x, float base
 
 
 static bool g_holdShown = false;  // 長押しの表示(画面を暗くして次の画面名)を出している
+static bool g_pageFrame = false;  // 直前の update が、サーキット・タコをふだんどおり描いた回(pageFrame)
 static Screen g_homeSaved = SC_DRIVE;  // 覚えた画面(次の起動・時間で戻るとき)
 static Screen g_homeCur = SC_DRIVE;    // 今の(最後に見た)サーキット・タコ・データ(設定の「設定」で戻る先)
 static uint32_t g_homeSinceMs = 0;  // 今のサーキット・タコ・データを出し始めた時刻(覚える画面の判定)
@@ -1411,8 +1412,15 @@ static void infoItems(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
     snprintf(it[4].value, 48, "C %u B %u", (unsigned)ls.info.can_fps[0], (unsigned)ls.info.can_fps[1]);
     it[4].v = ls.info.can_fps[0] ? V_OK : V_NG;  // C-CAN が来ていなければ異常(B-CAN は 0 でもよい)
   }
-  snprintf(it[5].value, 48, "%u fps %u ms", (unsigned)ps.fps, (unsigned)ps.loopMaxMs);
-  it[5].v = ps.fps >= INFO_MIN_FPS ? V_OK : V_NG;
+  // 描画(2.0.1): サーキット・タコで 1 回描いて送るのにかかった最長(切り上げの ms)と、それを 1 回の時間とした回数/秒。
+  // 値の書体(64 / 44 / 34 px)に「最長」の字が無いので「max」と書く
+  if (ps.pageMaxUs) {
+    const unsigned ms = (unsigned)((ps.pageMaxUs + 999) / 1000);
+    snprintf(it[5].value, 48, "max %u ms (%u fps)", ms, 1000u / ms);
+    it[5].v = ms > INFO_PAGE_MAX_MS ? V_NG : V_OK;
+  } else {
+    snprintf(it[5].value, 48, "– –");
+  }
   // AXP2101 のレジスタ 0x20: bit0 = PWR ボタン、bit2 = VBUS(5V)が入った、bit4 = 電池をつないだ
   if (!si.axpOk) snprintf(it[6].value, 48, "不明");
   else if (si.powerOnSrc & 0x04) snprintf(it[6].value, 48, "5V 投入"), it[6].v = V_OK;
@@ -2345,6 +2353,7 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
   }
 
   g_alarmOff = ((now / ALARM_BLINK_HALF_MS) & 1) != 0;  // 異常の表示の点滅
+  g_pageFrame = false;
   bool redrawn = g_full;
   blinkPoll(s, now);  // 回転数の点滅(サーキットとタコだけ。ほかの画面では点灯側に戻る)
   peakTrack(s, now);  // 回転数のピークホールド(どの画面でも記録する)
@@ -2383,6 +2392,12 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
   if (g_full) return;  // update の中で画面が切り替わった。次の回に描く
   updTags(s, redrawn);
   holdShow(now);
+  // サーキット・タコをふだんどおり描いた回(受信の状態の「描画」に使う)。画面を切り替えた回の全体の描き直しと、
+  // 長押しの表示(この回に出し始めた場合も含む)は除く
+  g_pageFrame = (g_sc == SC_DRIVE || g_sc == SC_BOOST) && !redrawn && !g_holdShown;
+}
+bool pageFrame() {
+  return g_pageFrame;
 }
 
 void testRedraw() {
@@ -2421,6 +2436,13 @@ int testSetItem() {
 }
 bool testHolding() {
   return g_holdShown;
+}
+int testInfoItem(int i, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs, char *out, size_t n) {
+  InfoItem it[INFO_N];
+  infoItems(ls, ps, si, nowMs, it);
+  if (i < 0 || i >= INFO_N) return -1;
+  snprintf(out, n, "%s", it[i].value);
+  return it[i].v;
 }
 
 }  // namespace ui

@@ -1,5 +1,5 @@
 // unit_main.cpp - PC 上の単体試験: UART データの受け取り方、画面の操作(タップ)、設定、自動で戻る、
-//                 車の CAN の生データから値を作る(veh。../logs/ の 10/22 の実車ログも流す)
+//                 車の CAN の生データから値を作る(veh。../logs/ の 10/22 の実車ログも流す)、受信の状態の「描画」(2.0.1)
 #include "../meter_display/app.h"
 #include "../meter_display/gfx.h"
 #include "../meter_display/ui.h"
@@ -1569,6 +1569,90 @@ int main() {
       printf("  実車ログ %s: %d 行、b5 = 0 を捨てた %u 回、給油(10/22 846.9 秒に IG ON)のあとの燃料の最小 %.1f %%\n", lr.path, lr.lines, (unsigned)lr.zero, (double)lr.fuelAfterRefuel);
       CHECK(lr.zero >= 1 && lr.fuelAfterRefuel >= 95.0f, "実車ログ(給油): 給油後の IG ON から満タン近くを出し続ける(0 % にならない)");
     }
+  }
+
+  // ---------------- 23. 受信の状態の「描画」(2.0.1): サーキット・タコで 1 回描いて送るのにかかった最長(PerfStats::pageMaxUs)。
+  //                    数える回(ui::pageFrame)は、サーキット・タコをふだんどおり描いた回だけ(画面の切り替えと長押しの表示は除く)
+  {
+    Signals d;
+    memset(&d, 0, sizeof(d));
+    d.linkUp = d.rpmOk = d.waterOk = d.fuelOk = d.gearOk = d.speedOk = d.throttleOk = true;
+    d.rpm = 2500; d.waterC = 85; d.fuelPct = 60; d.gear = '3';
+    uint32_t tp = 90000000;
+    // 値の文字と判定(0 = 待ち、1 = 正常、2 = 異常)
+    char v[48];
+    PerfStats p;
+    memset(&p, 0, sizeof(p));
+    p.fps = 2; p.loopMaxMs = 77;  // 2.0.0 まではこれで「2 fps 77 ms」の赤だった(受信の状態の画面を見ている間は必ず 2)
+    int vd = ui::testInfoItem(5, ls, p, si, tp, v, sizeof(v));
+    CHECK(vd == 0 && strcmp(v, "– –") == 0, "描画: まだ測っていなければ「– –」の灰(送った回数は使わない)");
+    p.pageMaxUs = 21400;
+    vd = ui::testInfoItem(5, ls, p, si, tp, v, sizeof(v));
+    CHECK(vd == 1 && strcmp(v, "max 22 ms (45 fps)") == 0, "描画: 21.4 ms → 切り上げて「max 22 ms (45 fps)」の正常");
+    p.pageMaxUs = 50000;
+    vd = ui::testInfoItem(5, ls, p, si, tp, v, sizeof(v));
+    CHECK(vd == 1 && strcmp(v, "max 50 ms (20 fps)") == 0, "描画: 50 ms ちょうどは正常(INFO_PAGE_MAX_MS を超えたら異常)");
+    p.pageMaxUs = 50001;
+    vd = ui::testInfoItem(5, ls, p, si, tp, v, sizeof(v));
+    CHECK(vd == 2 && strcmp(v, "max 51 ms (19 fps)") == 0, "描画: 50 ms を超えたら異常");
+    p.pageMaxUs = 1;
+    vd = ui::testInfoItem(5, ls, p, si, tp, v, sizeof(v));
+    CHECK(vd == 1 && strcmp(v, "max 1 ms (1000 fps)") == 0, "描画: 1 ms 未満は 1 ms(0 で割らない)");
+    // 画面に描いて、字が全部あること(値の書体に無い字を使っていない)と、下の 6 個目の点の色
+    const uint32_t miss0 = gfx::missingGlyphs();
+    auto dot5 = [&]() { return fb[330 * gfx::W + (int)(233 - 26 * 3 + 26 * 5)]; };
+    const uint32_t us[4] = { 0, 21400, 50001, 120000 };
+    const uint16_t col[4] = { gfx::rgb(0x5A606A), gfx::rgb(0x22E36A), gfx::rgb(0xE3241B), gfx::rgb(0xE3241B) };
+    bool colOk = true;
+    for (int k = 0; k < 4; k++) {
+      p.pageMaxUs = us[k];
+      ui::testShow(ui::SC_SET_INFO, 0);  // 0 項目目を見ているので、6 個目の点はその項目の判定の色(小さい点)
+      ui::testTouch(tp += 600);          // 設定から時間で戻らないように
+      ui::update(d, ls, p, si, tp);
+      if (ui::screen() != ui::SC_SET_INFO || dot5() != col[k]) colOk = false;
+      ui::testShow(ui::SC_SET_INFO, 5);  // 「描画」の画面そのもの
+      ui::testTouch(tp += 600);
+      ui::update(d, ls, p, si, tp);
+      if (ui::screen() != ui::SC_SET_INFO) colOk = false;
+    }
+    CHECK(colOk, "描画: 下の 6 個目の点は 測っていない = 灰、正常 = 緑、異常 = 赤");
+    CHECK(gfx::missingGlyphs() == miss0, "描画: 値の字はすべて書体にある(「最長」は書体に無いので max)");
+    gfx::dirtyClear();
+
+    // 数える回: サーキットに入った回(全体の描き直し)は数えない。そのあとのふだんの回は数える
+    ui::testShow(ui::SC_DRIVE);
+    ui::update(d, ls, p, si, tp += 100);
+    CHECK(!ui::pageFrame(), "数える回: サーキットに切り替えた回の全体の描き直しは数えない");
+    d.rpm = 4200;
+    ui::update(d, ls, p, si, tp += 20);
+    CHECK(ui::pageFrame() && gfx::dirtyCount() > 0, "数える回: サーキットのふだんの回(回転数が変わって描き直した所がある)");
+    gfx::dirtyClear();
+    // 長押しの表示: 出し始めた回(画面全体を暗くする)と、出している間は数えない
+    ui::touchDown(233, 233, tp += 20);
+    ui::update(d, ls, p, si, tp + 50);
+    CHECK(ui::pageFrame(), "数える回: 押した直後(長押しの表示の前)はふだんの回");
+    ui::update(d, ls, p, si, tp + HOLD_SHOW_MS + 10);
+    CHECK(ui::testHolding() && !ui::pageFrame(), "数える回: 長押しの表示を出し始めた回は数えない");
+    ui::update(d, ls, p, si, tp + HOLD_SHOW_MS + 30);
+    CHECK(!ui::pageFrame(), "数える回: 長押しの表示を出している間は数えない");
+    ui::update(d, ls, p, si, tp + HOLD_MS);
+    CHECK(ui::screen() == ui::SC_BOOST && !ui::pageFrame(), "数える回: 長押しで切り替えた回(タコの全体の描き直し)は数えない");
+    ui::touchUp(tp += HOLD_MS + 20);
+    ui::update(d, ls, p, si, tp);
+    CHECK(ui::screen() == ui::SC_BOOST && !ui::pageFrame(), "数える回: 離して暗い表示を消した回(全体の描き直し)は数えない");
+    d.rpm = 3100;
+    ui::update(d, ls, p, si, tp += 20);
+    CHECK(ui::pageFrame(), "数える回: タコのふだんの回");
+    ui::testShow(ui::SC_DATA);
+    ui::update(d, ls, p, si, tp += 100);
+    d.rpm = 3300;
+    ui::update(d, ls, p, si, tp += 100);
+    CHECK(!ui::pageFrame(), "数える回: データは数えない");
+    ui::testShow(ui::SC_SET_LIST, 7);
+    ui::update(d, ls, p, si, tp += 100);
+    ui::update(d, ls, p, si, tp += 100);
+    CHECK(!ui::pageFrame(), "数える回: 設定は数えない");
+    gfx::dirtyClear();
   }
 
   printf("単体試験: %d 個 OK、%d 個 NG、無かった文字 %u\n", passes, fails, (unsigned)gfx::missingGlyphs());

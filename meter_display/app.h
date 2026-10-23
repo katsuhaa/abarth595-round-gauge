@@ -54,6 +54,9 @@ struct PerfStats {
   uint32_t renderMaxMs; // 直近 1 秒で、描画にかかった最長の時間
   uint32_t flushMaxMs;  // 直近 1 秒で、画面へ送るのにかかった最長の時間
   uint32_t loopMaxMs;   // 直近 1 秒で、1 周にかかった最長の時間
+  // 前にサーキット・タコを出していた間(今出していればその間)に、1 回描いて送るのにかかった最長の時間 [µs]。0 = まだ測っていない。
+  // 画面を切り替えた回の全体の描き直しと、長押しの表示は数えない(ui::pageFrame)。受信の状態の「描画」に出す
+  uint32_t pageMaxUs;
 };
 
 // RaceChrono へ送る側(BLE・GPS・IMU)の状態。「RaceChrono」の画面に出す

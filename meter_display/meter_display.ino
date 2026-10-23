@@ -69,7 +69,7 @@
  *     PSRAM            → OPI PSRAM
  *   どちらも、違っているとコンパイルがエラーで止まる(下の #error)。「USB Mode」が既定値(Hardware CDC and JTAG)で
  *   ないときも同じ。
- *   スケッチは約 1.2MB で、既定の Partition Scheme(1.2MB APP)の 92 %(2.0.0、2026-10-23)。Flash Size も既定値のままで動く。
+ *   スケッチは約 1.2MB で、既定の Partition Scheme(1.2MB APP)の 92 %(2.0.1、2026-10-23)。Flash Size も既定値のままで動く。
  *   コンパイルの最後に「Sketch too big」と出るようになったら、Partition Scheme を「Huge APP (3MB No OTA/1MB SPIFFS)」にする
  *   (設定の保存領域はどちらでも同じ場所にあり、保存した値は消えない)。
  *   「コンパイラの警告」を「すべて」にすると NimBLE-Arduino の nimconfig.h から「redefined」の警告がたくさん出るが、
@@ -369,11 +369,10 @@ static int touchReadRaw(int *x, int *y) {
   if (Wire.requestFrom(TP_ADDR, (uint8_t)sizeof(b)) != sizeof(b)) return TP_NONE;
   Wire.readBytes(b, sizeof(b));
   g_tpI2cOk = true;
-  Wire.beginTransmission(TP_ADDR);  // 読み取り済みの知らせ
-  Wire.write(0xD0);
-  Wire.write(0x00);
-  Wire.write(0xAB);
-  Wire.endTransmission();
+  // 2.0.1: 読んだあとに D0 00 AB(読み取り済みの知らせ)を書くのをやめた。書くと報告の先頭が 0xAB になり、次の知らせの前に
+  // もう一度読むと b[0] = 0xAB(状態 0x0B ≠ 0x06)で返って、下の判定で「離した」になっていた(長押しが途中で切れてタップになる)。
+  // ESPHome #21010(CST9220)と同じ症状で、PR #21034 も書くのをやめて直した。Waveshare の ESP-IDF ドライバー
+  // (esp_lcd_touch_cst9217)も読むだけで書かない。書かなければ、読み直しても同じ知らせ(触れている)が返る
   if (b[6] != 0xAB) return TP_NONE;
   uint8_t n = b[5] & 0x7F;
   if (n > 2) return TP_NONE;
@@ -432,7 +431,7 @@ static void touchPoll(uint32_t now) {
 static SemaphoreHandle_t g_mutex = nullptr;
 static Preferences g_prefs;
 static Settings g_set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT };
-static PerfStats g_perf = { 0, 0, 0, 0 };
+static PerfStats g_perf = { 0, 0, 0, 0, 0 };
 
 void platLock() {
   if (g_mutex) xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -1482,6 +1481,7 @@ void setup() {
 void loop() {
   static uint32_t statMs = 0, logMs = 0, frames = 0, logFrames = 0;
   static uint32_t renderMax = 0, flushMax = 0, loopMax = 0;
+  static bool onPagePrev = false, pageNew = true;  // 前の周がサーキット・タコだったか / 次に数える回から測り直す
   uint32_t now = millis();
 
   // シリアルモニターをいつ開いても見られるよう、起動時の結果を 60 秒ごとに出し直す
@@ -1500,6 +1500,7 @@ void loop() {
   mlink::getStats(&ls);
   trip::update(s, now);
   saveTimes(now, false);
+  uint32_t tu = micros();  // サーキット・タコの「1 回描いて送る時間」はここから(タッチ・受信・保存の時間は入れない)
   ui::update(s, ls, g_perf, g_sys, now);  // この中で ui::blinkPoll も呼ばれる(切り替わると platBlink)
   uint32_t t1 = micros();
 
@@ -1543,6 +1544,19 @@ void loop() {
   }
   ui::blinkPoll(s, millis());  // 送り終えた直後にも見る(次の loop() の描画を待たない)
 
+  // 受信の状態の「描画」(2.0.1): サーキット・タコで 1 回描いて送るのにかかった最長。サーキット・タコに入り直したら測り直し、
+  // ほかの画面にいる間は前の値のまま。画面を切り替えた回の全体の描き直しと、長押しの表示は数えない(ui::pageFrame)
+  const ui::Screen scNow = ui::screen();
+  const bool onPage = scNow == ui::SC_DRIVE || scNow == ui::SC_BOOST;
+  if (onPage && !onPagePrev) pageNew = true;
+  onPagePrev = onPage;
+  if (n && ui::pageFrame()) {
+    uint32_t us = t2 - tu;
+    if (us == 0) us = 1;  // 0 は「まだ測っていない」の印なので使わない
+    if (pageNew || us > g_perf.pageMaxUs) g_perf.pageMaxUs = us;
+    pageNew = false;
+  }
+
   uint32_t rm = (t1 - t0) / 1000, fm = (t2 - t1) / 1000, lm = (t2 - t0) / 1000;
   if (rm > renderMax) renderMax = rm;
   if (fm > flushMax) flushMax = fm;
@@ -1558,9 +1572,11 @@ void loop() {
   }
   if ((uint32_t)(now - logMs) >= 5000) {
     logMs = now;
-    Serial.printf("t=%lus 画面=%s | 描画 %lu 回/秒 最長: 描く %lu ms 送る %lu ms 1周 %lu ms | 受信 %lu bps%s %lu フレーム/秒 %lu バイト/秒 CRC誤り %lu 欠落 %lu 捨てた %lu バイト 送り側で捨てた %lu フレーム%s | 無い文字 %lu | 自己診断 %s\n",
+    char pageTxt[16] = "– –";  // サーキット・タコの 1 回 最長(受信の状態の「描画」と同じ値。切り上げの ms)
+    if (g_perf.pageMaxUs) snprintf(pageTxt, sizeof(pageTxt), "%lu ms", (unsigned long)((g_perf.pageMaxUs + 999) / 1000));
+    Serial.printf("t=%lus 画面=%s | 描画 %lu 回/秒 最長: 描く %lu ms 送る %lu ms 1周 %lu ms サーキット・タコの 1 回 %s | 受信 %lu bps%s %lu フレーム/秒 %lu バイト/秒 CRC誤り %lu 欠落 %lu 捨てた %lu バイト 送り側で捨てた %lu フレーム%s | 無い文字 %lu | 自己診断 %s\n",
                   (unsigned long)(now / 1000), screenName((int)ui::screen()), (unsigned long)g_perf.fps, (unsigned long)g_perf.renderMaxMs, (unsigned long)g_perf.flushMaxMs,
-                  (unsigned long)g_perf.loopMaxMs, (unsigned long)ls.baud, (ls.locked || (s.linkUp && s.sim)) ? "" : "(受信なし)", (unsigned long)ls.framesPerSec, (unsigned long)ls.bytesPerSec, (unsigned long)ls.crcErrors,
+                  (unsigned long)g_perf.loopMaxMs, pageTxt, (unsigned long)ls.baud, (ls.locked || (s.linkUp && s.sim)) ? "" : "(受信なし)", (unsigned long)ls.framesPerSec, (unsigned long)ls.bytesPerSec, (unsigned long)ls.crcErrors,
                   (unsigned long)ls.lostFrames, (unsigned long)ls.junkBytes, (unsigned long)(ls.infoValid ? ls.info.tx_drop : 0), (s.linkUp && s.sim) ? " 模擬" : "",
                   (unsigned long)gfx::missingGlyphs(), selfCheckOk() ? "OK" : "NG");
     // 回転数の点滅(この 5 秒に切り替えがあったときだけ): 点灯・消灯の時間と、予定の時刻からの遅れ。遅れが消灯の時間の 2 割を超えたら NG

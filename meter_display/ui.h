@@ -34,6 +34,9 @@ void tap(int x, int y, uint32_t nowMs);
 uint8_t homeScreen();
 // 変わった所だけを画面メモリに描く。画面へ送るのは呼び出し側(gfx の「書き換えた範囲」を使う)
 void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs);
+// 直前の update が、サーキット・タコをふだんどおり描いた回なら true。画面を切り替えた回の全体の描き直しと、長押しの表示の回は false。
+// 基板は、この回に描いて送るのにかかった時間で PerfStats::pageMaxUs(受信の状態の「描画」)を作る
+bool pageFrame();
 Screen screen();
 // 走行画面とブースト計で、画面全体の点滅(config.h の BLINK_WHOLE_SCREEN)の消灯の間なら true。
 // BLINK_BY_BRIGHTNESS 0 のとき: true の間、呼び出し側は画面メモリーの代わりに一色を送り、false に戻ったら画面全体を送り直す。
@@ -67,5 +70,7 @@ void testTouch(uint32_t nowMs);  // 試験用: 「操作した」ことにして
 void testRedraw();  // 次の update で、今の画面を最初から描き直す(少しずつ描いた結果と比べるため)
 int testSetItem();  // 試験用: 設定で見ている項目
 bool testHolding(); // 試験用: 長押しの表示を出している
+// 試験用: 受信の状態の項目 i(0〜6)の値の文字を out に入れ、判定を返す(0 = 待ち、1 = 正常、2 = 異常)
+int testInfoItem(int i, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs, char *out, size_t n);
 
 }  // namespace ui

@@ -183,7 +183,7 @@ int main(int argc, char **argv) {
     ls.baud = 921600; ls.locked = true; ls.framesPerSec = 248; ls.crcErrors = 0; ls.lostFrames = 0; ls.infoValid = true;
     ls.info.proto_ver = METER_LINK_PROTO_VER; ls.info.flags = ML_F_SIM; ls.info.can_fps[0] = 1015; ls.info.can_fps[1] = 143;
     strcpy(ls.info.name, "c6dbg r1");
-    ps.fps = 58; ps.loopMaxMs = 21;
+    ps.fps = 58; ps.loopMaxMs = 21; ps.pageMaxUs = 21400;
     si.axpOk = true; si.powerOnSrc = 0x04;
     shot("Info", s, ui::SC_SET_INFO, 0);
     shot("Info2", s, ui::SC_SET_INFO, 3);
