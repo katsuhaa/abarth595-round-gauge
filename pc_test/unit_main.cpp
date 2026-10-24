@@ -11,6 +11,8 @@
 
 extern int g_hostBrightness, g_hostSaves, g_hostImuResets, g_hostBlank, g_hostBlinks, g_hostLevel, g_hostTimeSaves;
 extern bool g_hostSaveOk;
+extern size_t g_hostCanPreN;
+extern int g_hostCanPreSaves;
 static uint16_t fb[gfx::W * gfx::H];
 static float scratch[gfx::W * (gfx::H + 2)];
 static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT };
@@ -442,6 +444,27 @@ int main() {
     upd(live, t);
     CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0 && !ui::testGuide() && countIn(ACC, 100, 380, 366, 466) < 6000 && countIn(TRACK, 0, 0, 466, 30) == 0,
           "取り消して離したら、帯と外周は元に戻る");
+    // 2.7.0: 外周が出たあと(HOLD_SHOW_MS から)HOLD_MS の前に、動かさずに離したら何もしない(本人「長押しを認識して、アニメーションが
+    // 出た後に指を離した場合は何も動作しないほうがいい」。2.6.0 までは、その所のタップになって次・前・戻るに移っていた)
+    ui::touchDown(RX, MY, t += 100);
+    ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
+    ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 10);
+    ui::touchUp(t += HOLD_SHOW_MS + 200);
+    upd(live, t);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0 && !ui::testGuide() && countIn(ACC, 100, 380, 366, 466) < 6000 && countIn(TRACK, 0, 0, 466, 30) == 0,
+          "外周が出てから HOLD_MS の前に離したら何もしない(次へ動かない。帯と外周は元に戻る。2.7.0)");
+    ui::touchDown(TOPX, TOPY, t += 100);
+    ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
+    ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 10);
+    ui::touchUp(t += HOLD_MS - 100);
+    upd(live, t);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "上の帯でも、外周が出てから離したら戻らない(2.7.0)");
+    ui::touchDown(RX, MY, t += 100);
+    ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
+    ui::touchUp(t += HOLD_SHOW_MS - 50);
+    upd(live, t);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1, "外周が出る前(HOLD_SHOW_MS より前)に離したのはタップ(次)");
+    prev(t);
     for (int k = 0; k < 3; k++) {  // 上の帯・真ん中・左半分の長押しでも開く
       static const int px[3] = { TOPX, MY, LX }, py[3] = { TOPY, MY, MY };
       ui::touchDown(px[k], py[k], t += 100);
@@ -490,7 +513,9 @@ int main() {
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 0 && ui::testPage() == 0, "CAN の下「長押しで開く」で中(1 ページ目 = 通信速度)");
   prev(t);
-  CHECK(ui::testPage() == 6, "CAN の中: 最初の前は最後の CAN確認(2.4.3)");
+  CHECK(ui::testPage() == 7, "CAN の中: 最初の前は最後の「前後で比べる」(2.6.0)");
+  prev(t);
+  CHECK(ui::testPage() == 6, "CAN の中: その前が CAN確認(2.4.3)");
   // CAN確認(2.4.0: CAN の「C-CAN・B-CAN」の下「CAN確認」。CAN のメニューは 1 つ)
   {
     uint8_t d[8] = { 0, 0x19, 0x10, 0x68, 7, 0x18, 0x46, 0x77 };
@@ -1959,49 +1984,43 @@ int main() {
     mlink::getSignals(&s, t + 60);
     CHECK(!s.gearOk && s.throttlePct == 0.0f, "生データ: 5400 rpm ÷ 60 km/h = 90 → 1 速(116)と 2 速(67)の ±12 % の間(変速の途中扱い)= 分からない");
     // 「信号なし」: 同じ ID が VEH_TIMEOUT_MS 来なければ外す(線のほかのフレームは来ていて、受信はある)
-    const uint8_t fuelZero[8] = { 0, 0, 0x59, 0x95, 0x88, 0x00, 0, 0 };
-    canFrame(1, 0x0C014003, fuelZero, 8, t + 60 + VEH_TIMEOUT_MS);
+    // 燃料(2.7.0): C-CAN 0A18A000 b5 = %。b5 = 0 はエンジンが止まっている間などの測れていない値(10/22 のログの形のまま)
+    const uint8_t fuelZero[8] = { 0x00, 0x09, 0x18, 0x7B, 0x02, 0x00, 0x00, 0x3D };
+    canFrame(0, 0x0A18A000, fuelZero, 8, t + 60 + VEH_TIMEOUT_MS);
     mlink::getSignals(&s, t + 60 + VEH_TIMEOUT_MS);
     CHECK(s.linkUp && s.rpmOk && s.speedOk, "生データ: VEH_TIMEOUT_MS ちょうどまでは信号あり");
     mlink::getSignals(&s, t + 61 + VEH_TIMEOUT_MS);
     CHECK(s.linkUp && !s.rpmOk && !s.speedOk && !s.throttleOk && !s.gearOk && s.waterOk, "生データ: VEH_TIMEOUT_MS を過ぎた値は信号なし(水温は VEH_WATER_TIMEOUT_MS)");
-    CHECK(!s.fuelOk, "燃料: b5 = 0(IG ON 直後)だけでは値なし(前回の値も無いとき)");
+    CHECK(!s.fuelOk, "燃料: b5 = 0(エンジンをかける前)だけでは値なし");
     veh::FuelInfo fi;
     veh::fuelInfo(&fi, t + 61 + VEH_TIMEOUT_MS);
-    CHECK(fi.zeroFrames == 1 && !fi.have && fi.seen, "燃料: b5 = 0 は数えて捨てる");
-    const uint8_t fuel155[8] = { 0, 0, 0x59, 0x95, 0x80, 155, 0, 0 };
-    canFrame(1, 0x0C014003, fuel155, 8, t + 1060 + VEH_TIMEOUT_MS);
+    CHECK(fi.ignored == 1 && !fi.have && fi.seen, "燃料: b5 = 0 は数えて捨てる");
+    uint8_t fuelV[8] = { 0x20, 0x0D, 0x40, 0x7B, 0x00, 31, 0x20, 0x3D };
+    canFrame(0, 0x0A18A000, fuelV, 8, t + 1060 + VEH_TIMEOUT_MS);
     mlink::getSignals(&s, t + 1060 + VEH_TIMEOUT_MS);
-    CHECK(s.fuelOk && s.fuelPct == 71.5f, "燃料: 最初の正しい値から始める(155 → (155 − 120) ÷ 49 = 71.4 % → 0.5 % 刻みで 71.5)");
-    int tenths = 0;
-    CHECK(veh::fuelSaveValue(&tenths) && tenths == 1550, "燃料: 保存する値は生の値の 10 倍");
-
-    // 前回の値から始める(電源を入れ直した)
-    veh::begin();
-    CHECK(!veh::fuelSaveValue(&tenths), "燃料: 値が無いときは保存しない");
-    veh::fuelRestore(1600);
+    CHECK(s.fuelOk && s.fuelPct == 31.0f, "燃料: b5 をそのまま %(31 → 31 %。なましはしない)");
     uint32_t t2 = t + 100000;
-    canFrame(1, 0x0C014003, fuelZero, 8, t2);
+    canFrame(0, 0x0A18A000, fuelZero, 8, t2);
     mlink::getSignals(&s, t2);
-    CHECK(s.fuelOk && s.fuelPct == 81.5f, "燃料: IG ON 直後(b5 = 0 の間)から前回の値を出す(160 → 81.6 % → 81.5)");
-    const uint8_t fuel162[8] = { 0, 0, 0x59, 0x95, 0x80, 162, 0, 0 };
-    canFrame(1, 0x0C014003, fuel162, 8, t2 + 1000);
+    CHECK(s.fuelOk && s.fuelPct == 31.0f, "燃料: エンジンを止めて b5 = 0 になっても、前の値のまま");
+    fuelV[5] = 100;
+    canFrame(0, 0x0A18A000, fuelV, 8, t2 + 1000);
     mlink::getSignals(&s, t2 + 1000);
-    veh::fuelInfo(&fi, t2 + 1000);
-    CHECK(s.fuelPct == 81.5f && fi.refuels == 0 && fi.restored && fi.lp == 160.0f, "燃料: 最初の値が前回 + 5 L 未満なら前回の値を続ける(停めた場所の傾き)");
+    CHECK(s.fuelOk && s.fuelPct == 100.0f, "燃料: 給油してエンジンをかけたら、すぐその値(31 → 100)");
+    fuelV[5] = 0xFF;
+    canFrame(0, 0x0A18A000, fuelV, 8, t2 + 2000);
+    canFrame(1, 0x0A18A000, fuelZero, 8, t2 + 2000);  // B-CAN の同じ ID は使わない(c6_can_link は C-CAN を bus 0 で送る)
+    fuelV[5] = 50;
+    canFrame(1, 0x0A18A000, fuelV, 8, t2 + 2000);
+    mlink::getSignals(&s, t2 + 2000);
+    veh::fuelInfo(&fi, t2 + 2000);
+    CHECK(s.fuelPct == 100.0f && fi.ignored == 3 && fi.lastB5 == 0xFF, "燃料: 100 を超える b5 は数えて捨てる。B-CAN の同じ ID は使わない");
+    mlink::getSignals(&s, t2 + 2001 + VEH_FUEL_TIMEOUT_MS);
+    CHECK(!s.fuelOk, "燃料: VEH_FUEL_TIMEOUT_MS 来なければ値なし");
     veh::begin();
-    veh::fuelRestore(1400);
-    const uint8_t fuel169[8] = { 0, 0, 0x59, 0x95, 0x81, 169, 0, 0 };
-    canFrame(1, 0x0C014003, fuelZero, 8, t2 + 2000);
-    canFrame(1, 0x0C014003, fuel169, 8, t2 + 3000);
+    canFrame(0, 0x0A18A000, fuelZero, 8, t2 + 3000);
     mlink::getSignals(&s, t2 + 3000);
-    veh::fuelInfo(&fi, t2 + 3000);
-    CHECK(s.fuelOk && s.fuelPct == 100.0f && fi.refuels == 1, "燃料: 最初の値が前回 + 5 L 以上なら給油とみなし、その値から(140 → 169)");
-    CHECK(veh::fuelSaveValue(&tenths) && tenths == 1690, "燃料: 給油のあとの値を保存する");
-    // 途切れずに受けている間は、増える方向へは跳ばない(なまし)
-    canFrame(1, 0x0C014003, fuel155, 8, t2 + 4000);
-    mlink::getSignals(&s, t2 + 4000);
-    CHECK(s.fuelPct > 99.0f && s.fuelPct < 100.5f, "燃料: 1 回の低い値ではほとんど下がらない(600 秒のなまし)");
+    CHECK(!s.fuelOk, "燃料: 電源を入れ直したら、エンジンがかかる(b5 が 0 でなくなる)まで値なし(前の値は保存しない。2.7.0)");
 
     // 値のフレームが届いている間はそちらを使う(c6_display_debug・デモ表示・1.x の c6_can_link)
     MlSignals m = sigMsg(4200);
@@ -2022,7 +2041,7 @@ int main() {
     uint32_t r = 12345;
     for (int i = 0; i < 20000; i++) {
       for (int b = 0; b < 8; b++) rnd[b] = (uint8_t)((r = r * 1103515245u + 12345u) >> 16);
-      static const uint32_t IDS[] = { 0x0618A001, 0x0210A006, 0x0628A001, 0x0A18A001, 0x0C014003, 0x12345678 };
+      static const uint32_t IDS[] = { 0x0618A001, 0x0210A006, 0x0628A001, 0x0A18A001, 0x0A18A000, 0x12345678 };
       uint32_t id = IDS[(r >> 8) % 6];
       veh::onFrame((uint8_t)((r >> 4) & 1), (uint8_t)((r >> 5) & 1), id, (uint8_t)((r >> 12) % 9), rnd, t2 + 10000 + (uint32_t)i * 7);
       if (i % 50 == 0) {
@@ -2035,23 +2054,25 @@ int main() {
     }
   }
 
-  // ---------------- 22a. 10/22 の実車ログ(logs/ の L 行)を流す: IG ON 直後の b5 = 0 で燃料が 0 にならない、R とブーストが出る
+  // ---------------- 22a. 10/22 の実車ログ(logs/ の L 行)を流す: 燃料(2.7.0: 0A18A000 b5 = %)は落ち着いた値で、エンジンが止まって
+  //                     b5 = 0 になっても前の値のまま。給油で 31 → 100。R とブーストが出る
   {
     struct LogRun {
       const char *path;
       int lines;
-      uint32_t zero;
-      float fuelMin, fuelAfterRefuel, boostMax;
+      uint32_t ignored;
+      float fuelMin[2], fuelMax[2];  // [0] = split より前、[1] = split から(値なしの回は数えない)
+      float boostMax;
       bool sawR, sawGear;
     };
-    auto run = [&](const char *path, uint32_t refuelFrom, LogRun *out) -> bool {
+    auto run = [&](const char *path, uint32_t split, LogRun *out) -> bool {
       FILE *fp = fopen(path, "r");
       if (!fp) return false;
       veh::begin();
       memset(out, 0, sizeof(*out));
       out->path = path;
-      out->fuelMin = 1000;
-      out->fuelAfterRefuel = 1000;
+      out->fuelMin[0] = out->fuelMin[1] = 1000;
+      out->fuelMax[0] = out->fuelMax[1] = -1;
       char line[256];
       while (fgets(line, sizeof(line), fp)) {
         char bus;
@@ -2065,8 +2086,9 @@ int main() {
         Signals v;
         memset(&v, 0, sizeof(v));
         veh::getSignals(&v, (uint32_t)tm);
-        if (v.fuelOk && v.fuelPct < out->fuelMin) out->fuelMin = v.fuelPct;
-        if (refuelFrom && tm >= refuelFrom && v.fuelOk && v.fuelPct < out->fuelAfterRefuel) out->fuelAfterRefuel = v.fuelPct;
+        const int k = tm >= split ? 1 : 0;
+        if (v.fuelOk && v.fuelPct < out->fuelMin[k]) out->fuelMin[k] = v.fuelPct;
+        if (v.fuelOk && v.fuelPct > out->fuelMax[k]) out->fuelMax[k] = v.fuelPct;
         if (v.boostOk && v.boostBar > out->boostMax) out->boostMax = v.boostBar;
         if (v.gearOk && v.gear == 'R') out->sawR = true;
         if (v.gearOk && v.gear >= '1' && v.gear <= '5') out->sawGear = true;
@@ -2074,24 +2096,28 @@ int main() {
       fclose(fp);
       veh::FuelInfo fi;
       veh::fuelInfo(&fi, 0);
-      out->zero = fi.zeroFrames;
+      out->ignored = fi.ignored;
       return true;
     };
     LogRun lr;
-    if (run("../logs/can_reverse.txt", 0, &lr)) {
-      printf("  実車ログ %s: %d 行、b5 = 0 を捨てた %u 回、燃料の最小 %.1f %%、R %s\n", lr.path, lr.lines, (unsigned)lr.zero, (double)lr.fuelMin, lr.sawR ? "あり" : "なし");
-      CHECK(lr.zero >= 1 && lr.fuelMin > 50.0f, "実車ログ(リバース): IG ON 直後の b5 = 0 で燃料が 0 にならない(1.1.0 は約 15 分 0 % だった)");
+    if (run("../logs/can_reverse.txt", UINT32_MAX, &lr)) {
+      printf("  実車ログ %s: %d 行、捨てた b5 %u 回、燃料 %.0f〜%.0f %%、R %s\n", lr.path, lr.lines, (unsigned)lr.ignored, (double)lr.fuelMin[0], (double)lr.fuelMax[0], lr.sawR ? "あり" : "なし");
+      CHECK(lr.ignored >= 1 && lr.fuelMin[0] == 34.0f && lr.fuelMax[0] == 35.0f, "実車ログ(リバース): 燃料は 35 → 34 %(エンジンをかける前の b5 = 0 は捨てる)");
       CHECK(lr.sawR, "実車ログ(リバース): R が出る");
     } else {
       printf("  (../logs/can_reverse.txt が無いので、実車ログの試験は飛ばす)\n");
     }
-    if (run("../logs/can_boost.txt", 0, &lr)) {
-      printf("  実車ログ %s: %d 行、ブーストの最大 %.2f bar、ギア %s\n", lr.path, lr.lines, (double)lr.boostMax, lr.sawGear ? "あり" : "なし");
+    if (run("../logs/can_boost.txt", UINT32_MAX, &lr)) {
+      printf("  実車ログ %s: %d 行、ブーストの最大 %.2f bar、ギア %s、燃料 %.0f〜%.0f %%\n", lr.path, lr.lines, (double)lr.boostMax, lr.sawGear ? "あり" : "なし", (double)lr.fuelMin[0],
+             (double)lr.fuelMax[0]);
       CHECK(fabsf(lr.boostMax - 0.67f) < 0.001f && lr.sawGear, "実車ログ(ブースト): ログの b4 の最大 0x43 = 67 → 0.67 bar、走行中にギアが出る");
+      CHECK(lr.fuelMin[0] == 33.0f && lr.fuelMax[0] == 34.0f, "実車ログ(ブースト): 燃料は 33〜34 %");
     }
-    if (run("../logs/can_fuel.txt", 850932, &lr)) {
-      printf("  実車ログ %s: %d 行、b5 = 0 を捨てた %u 回、給油(10/22 846.9 秒に IG ON)のあとの燃料の最小 %.1f %%\n", lr.path, lr.lines, (unsigned)lr.zero, (double)lr.fuelAfterRefuel);
-      CHECK(lr.zero >= 1 && lr.fuelAfterRefuel >= 95.0f, "実車ログ(給油): 給油後の IG ON から満タン近くを出し続ける(0 % にならない)");
+    if (run("../logs/can_fuel.txt", 848686, &lr)) {
+      printf("  実車ログ %s: %d 行、捨てた b5 %u 回、燃料 給油の前 %.0f〜%.0f %%(712 秒にエンジンを止めてからも前の値のまま)、給油の後 %.0f〜%.0f %%\n", lr.path, lr.lines,
+             (unsigned)lr.ignored, (double)lr.fuelMin[0], (double)lr.fuelMax[0], (double)lr.fuelMin[1], (double)lr.fuelMax[1]);
+      CHECK(lr.ignored >= 1 && lr.fuelMin[0] == 31.0f && lr.fuelMax[0] == 33.0f, "実車ログ(給油): 給油の前は 33 → 31 %(残り 30 % ほど)。エンジンを止めた間の b5 = 0 は捨てる");
+      CHECK(lr.fuelMin[1] == 100.0f && lr.fuelMax[1] == 100.0f, "実車ログ(給油): 給油してエンジンをかけたら 100 % を出し続ける(満タン)");
     }
   }
 
@@ -2272,7 +2298,8 @@ int main() {
     l1.info.can_fps[0] = 900;
     CHECK(ui::testInfoItem(0, 3, l1, p0, s0, far, v, sizeof(v)) == 1, "CAN の 4 ページ目 = CANリーダー");
     CHECK(ui::testInfoItem(0, 6, l1, p0, s0, far, v, sizeof(v)) == 0 && strcmp(v, "記録 0 回") == 0, "CAN の 7 ページ目 = CAN確認(判定なし。2.4.3)");
-    CHECK(ui::testInfoItem(0, 7, l1, p0, s0, far, v, sizeof(v)) == -1 && ui::testInfoItem(5, 0, l1, p0, s0, far, v, sizeof(v)) == -1, "無いページ・グループは -1");
+    CHECK(ui::testInfoItem(0, 7, l1, p0, s0, far, v, sizeof(v)) == 0, "CAN の 8 ページ目 = 前後で比べる(判定なし。2.6.0)");
+    CHECK(ui::testInfoItem(0, 8, l1, p0, s0, far, v, sizeof(v)) == -1 && ui::testInfoItem(5, 0, l1, p0, s0, far, v, sizeof(v)) == -1, "無いページ・グループは -1");
     // 本体の状態の CPU など(2.4.3): 基板が入れる前は「– –」、入れたら型式・クロック・温度・空き
     CHECK(ui::testInfoItem(4, 1, l1, p0, s0, far, v, sizeof(v)) == 0 && strcmp(v, "– –") == 0, "CPU: まだ入っていなければ「– –」");
     {
@@ -2329,16 +2356,17 @@ int main() {
     CHECK(ui::testInfoSummary(1, l1, p0, s1, far, v, sizeof(v)) == 2, "GPS のまとめ: 届かなければ「異常」");
     CHECK(ui::testInfoSummary(3, l1, p0, s1, far, v, sizeof(v)) == 1, "RaceChrono のまとめ: GPS が届かなくても数えない(GPS は 1 か所だけ。2.4.0)");
 
-    // CAN の「燃料」: 0C014003 の最後の b5(0 も出す)と、なましの値
+    // CAN の「燃料」(2.7.0): 表示に使っている %(C-CAN 0A18A000 b5)
     veh::begin();
     uint32_t tf = far;
     CHECK(ui::testInfoItem(0, 5, l1, p0, s0, tf, v, sizeof(v)) == 0 && strcmp(v, "– –") == 0, "燃料: 受けていなければ「– –」");
-    uint8_t fd[8] = { 0, 0, 0x59, 0x95, 0x88, 0, 0, 0 };
-    veh::onFrame(1, 1, VEH_ID_FUEL, 8, fd, tf += 1000);
-    CHECK(ui::testInfoItem(0, 5, l1, p0, s0, tf, v, sizeof(v)) == 0 && strcmp(v, "生 0") == 0, "燃料: b5 = 0 だけなら「生 0」(使わない値も見える)");
-    fd[4] = 0x81; fd[5] = 165;
-    veh::onFrame(1, 1, VEH_ID_FUEL, 8, fd, tf += 1000);
-    CHECK(ui::testInfoItem(0, 5, l1, p0, s0, tf, v, sizeof(v)) == 1 && strcmp(v, "生 165 なまし 165.0") == 0, "燃料: 正しい値で「生 165 なまし 165.0」");
+    uint8_t fd[8] = { 0x00, 0x09, 0x18, 0x7B, 0x02, 0, 0, 0x3D };
+    veh::onFrame(0, 1, VEH_ID_FUEL, 8, fd, tf += 1000);
+    CHECK(ui::testInfoItem(0, 5, l1, p0, s0, tf, v, sizeof(v)) == 0 && strcmp(v, "– –") == 0, "燃料: b5 = 0(エンジンをかける前)だけなら「– –」");
+    fd[2] = 0x40; fd[4] = 0x00; fd[5] = 31;
+    veh::onFrame(0, 1, VEH_ID_FUEL, 8, fd, tf += 1000);
+    CHECK(ui::testInfoItem(0, 5, l1, p0, s0, tf, v, sizeof(v)) == 1 && strcmp(v, "31 %") == 0, "燃料: 使える値で「31 %」(緑)");
+    CHECK(ui::testInfoItem(0, 5, l1, p0, s0, tf + VEH_FUEL_TIMEOUT_MS + 1, v, sizeof(v)) == 0 && strcmp(v, "– –") == 0, "燃料: 来なくなったら「– –」");
     {
       // 画面に描いて、字が全部あること(受信の状態・全グループの全ページと、本体の状態)
       Signals dz;
@@ -2620,6 +2648,319 @@ int main() {
     CHECK(bad == 0, "データの輪: 振り切りで全周が赤。字がいちばん長くなる値と SIM の印でも、中の絵は輪に掛からない");
     CHECK(inner == 0, "データの輪: 中の絵は半径 217 まで(輪の内側の縁との間はあいている)");
     trip::setTimes(0, 0);
+    gfx::dirtyClear();
+  }
+
+  // ---------------- 27. 2.6.0: CAN確認の「前後で比べる」(本人 10/24「長く変化する燃料のような CAN ID を絞り込めないか」)。
+  //                  前を記録 → 電源を切って給油 → 入れ直して後を記録 で、ゆっくり変わる値のバイトを見つける(config.h の CAN_PP_*)。
+  //                  2.7.0: 燃料は C-CAN 0A18A000 b5(%)。前はエンジンを切る前に記録する
+  {
+    Signals d;
+    memset(&d, 0, sizeof(d));
+    d.linkUp = d.rpmOk = d.waterOk = d.fuelOk = d.gearOk = d.speedOk = d.throttleOk = true;
+    d.rpm = 800; d.waterC = 85; d.fuelPct = 60; d.gear = 'N';
+    // 3 つの ID を 10 ms ごとに流す。燃料 = 0A18A000 b5(静か)、カウンター = 0A18A001 b0・b1(いつも変わる)、
+    // 0x123: b0 = 静かで、あとで少しだけ変わる値(差 3)、b3 = 電源を入れ直すと 0 に戻る値
+    auto feed = [&](uint32_t from, uint32_t to, uint8_t fuel, uint8_t small, uint8_t reset) {
+      for (uint32_t tt = from; tt < to; tt += 10) {
+        const uint8_t a[8] = { 0x20, 0x0D, 0x40, 0x7B, 0x00, fuel, 0x20, 0x3D };
+        const uint8_t b[8] = { (uint8_t)(tt / 10), (uint8_t)(tt / 7), 1, 2, 3, 4, 5, 6 };
+        const uint8_t c[4] = { small, 7, 8, reset };
+        cantab::onFrame(0, 1, 0x0A18A000, 8, a, tt);
+        cantab::onFrame(0, 1, 0x0A18A001, 8, b, tt);
+        cantab::onFrame(0, 0, 0x123, 4, c, tt);
+        cantab::tick(tt);
+      }
+    };
+    auto countIn = [&](uint16_t col, int x0, int y0, int x1, int y1) {
+      int n = 0;
+      for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) n += fb[y * gfx::W + x] == col;
+      return n;
+    };
+    const uint16_t ACC = gfx::rgb(0x5FD0FF), WAITC = gfx::rgb(0x5A606A);
+    char val[48];
+    uint32_t tp = 2200000000u;
+    g_hostCanPreN = 0;
+    cantab::begin();  // 電源を入れたところ(表も前の記録も空)
+    CHECK(cantab::ppWaitMs(tp) == -1 && !cantab::ppHasPre() && !cantab::ppHasResult(), "前後で比べる: 何も受けていない間は -1(帯に「受信なし」)");
+    ui::testShow(ui::SC_SET_GRP, 7, 0);
+    ui::testTouch(tp);
+    ui::update(d, ls, ps, si, tp);
+    holdOpen(d, tp);
+    CHECK(ui::screen() == ui::SC_CAN_PP, "CAN の最後のページ「前後で比べる」の下「長押しで開く」で前後で比べるの画面");
+    CHECK(ui::testInfoItem(0, 7, ls, ps, si, tp, val, sizeof(val)) == 0 && strcmp(val, "記録なし") == 0, "ページの値: 前の記録が無ければ「記録なし」");
+    const uint32_t t0 = tp;
+    feed(t0, t0 + 5000, 31, 50, 43);
+    tp = t0 + 5000;
+    upd(d, tp);
+    ui::tap(BOTX, BOTY, tp += 10); upd(d, tp);
+    CHECK(!cantab::ppHasPre() && countIn(WAITC, 100, 380, 366, 466) > 300 && countIn(ACC, 100, 380, 366, 466) == 0,
+          "受信が始まって CAN_PP_SETTLE_MS たつまでは、下の帯に残りの秒を灰で出し、押しても記録しない");
+    feed(t0 + 5000, t0 + 16000, 31, 50, 43);
+    tp = t0 + 16000;
+    upd(d, tp);
+    CHECK(cantab::ppWaitMs(tp) == 0 && countIn(ACC, 100, 380, 366, 466) > 1000, "CAN_PP_SETTLE_MS たったら下の帯は「前を記録」(水色)");
+    const int saves0 = g_hostCanPreSaves;
+    ui::tap(BOTX, BOTY, tp); upd(d, tp);
+    CHECK(cantab::ppHasPre() && !cantab::ppHasResult() && g_hostCanPreSaves == saves0 + 1 && g_hostCanPreN > 0, "下「前を記録」で前を記録して保存する");
+    CHECK(ui::testInfoItem(0, 7, ls, ps, si, tp, val, sizeof(val)) == 0 && strcmp(val, "前を記録した") == 0, "ページの値: 「前を記録した」");
+    // 電源を切って給油(燃料 31 → 100 %)。入れ直すと表は空になり、前の記録は保存から戻る
+    g_hostCanPreSaves = 0;
+    cantab::begin();
+    CHECK(cantab::ppHasPre() && !cantab::ppHasResult(), "電源を入れ直しても前の記録は残る(保存から戻す)");
+    const uint32_t t2 = t0 + 300000;
+    feed(t2, t2 + 4000, 0, 50, 0);             // 入れた直後(エンジンをかけるまで)は燃料の値が 0
+    feed(t2 + 4000, t2 + 16000, 100, 53, 0);   // 0x123 b0 は 50 → 53(差 3。候補にしない)、b3 は 43 → 0
+    tp = t2 + 10000;
+    ui::testShow(ui::SC_CAN_PP);
+    upd(d, tp);
+    ui::tap(BOTX, BOTY, tp += 10); upd(d, tp);
+    CHECK(!cantab::ppHasResult() && countIn(WAITC, 100, 380, 366, 466) > 300, "後も、受信が始まって CAN_PP_SETTLE_MS たつまでは記録しない");
+    tp = t2 + 16000;
+    upd(d, tp);
+    ui::tap(BOTX, BOTY, tp); upd(d, tp);
+    cantab::PpResult r[CAN_PP_MAX];
+    int up = -1, down = -1;
+    const int m = cantab::ppResults(r, CAN_PP_MAX, &up, &down);
+    CHECK(cantab::ppHasResult() && m == 2 && up == 1 && down == 1 && g_hostCanPreSaves == 0,
+          "下「後を記録」: 候補 = 前も後も静かで差が CAN_PP_MIN_DIFF 以上(カウンターと差 3 のバイトは外れる。前の記録は書き直さない)");
+    cantab::View v0, v1;
+    CHECK(m == 2 && cantab::getView(r[0].entry, &v0) && v0.id == 0x0A18A000 && r[0].byte == 5 && r[0].pre == 31 && r[0].post == 100,
+          "増えたものが先: 0A18A000 b5 31 → 100(+69)");
+    CHECK(m == 2 && cantab::getView(r[1].entry, &v1) && v1.id == 0x123 && r[1].byte == 3 && r[1].pre == 43 && r[1].post == 0, "減ったものがあと: 123 b3 43 → 0");
+    CHECK(ui::testInfoItem(0, 7, ls, ps, si, tp, val, sizeof(val)) == 0 && strcmp(val, "候補 2 件") == 0, "ページの値: 「候補 2 件」");
+    ui::tap(RX, MY, tp += 100); upd(d, tp);
+    CHECK(ui::screen() == ui::SC_CAN_ID && countIn(ACC, 60, 210, 406, 310) > 100, "右半分「一覧」で 1 バイトずつ(候補のバイトは水色)");
+    next(tp);
+    CHECK(ui::screen() == ui::SC_CAN_ID, "一覧: 送りで次の候補");
+    holdOpen(d, tp);
+    CHECK(ui::screen() == ui::SC_CAN_DETAIL, "一覧: 下「長押しで開く」で詳細");
+    ui::tap(TOPX, TOPY, tp += 100); upd(d, tp);
+    ui::tap(TOPX, TOPY, tp += 100); upd(d, tp);
+    CHECK(ui::screen() == ui::SC_CAN_PP, "詳細 → 一覧 → 上「‹ 戻る」で前後で比べるの画面");
+    ui::tap(LX, MY, tp += 100); upd(d, tp);
+    CHECK(ui::screen() == ui::SC_CAN_REDO, "左半分「やり直す」で確認");
+    ui::tap(TOPX, TOPY, tp += 100); upd(d, tp);
+    CHECK(ui::screen() == ui::SC_CAN_PP && cantab::ppHasPre() && cantab::ppHasResult(), "確認: 上「‹ 戻る」は消さない");
+    ui::tap(LX, MY, tp += 100); upd(d, tp);
+    ui::tap(BOTX, BOTY, tp += 100); upd(d, tp);
+    CHECK(ui::screen() == ui::SC_CAN_PP && !cantab::ppHasPre() && !cantab::ppHasResult() && g_hostCanPreN == 0, "確認: 下「やり直す」で前の記録(保存も)と候補を消す");
+    CHECK(cantab::recordCount() == 0, "前後で比べるのやり直しは、変化を記録の記録には触らない");
+    ui::tap(TOPX, TOPY, tp += 100); upd(d, tp);
+    CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 0 && ui::testPage() == 7, "上「‹ 戻る」で CAN の「前後で比べる」のページ");
+    // 10/22 の給油の実車ログ(../logs/can_fuel.txt があれば): 給油所で止まって、エンジンを切る前(712.0 秒に切った)の 711 秒に前を記録 →
+    // 電源を切って給油 → 846.9 秒に入れ直し(すぐエンジンをかけた)、862 秒(15 秒後)に後を記録。燃料(0A18A000 b5)が増えた側の
+    // 1 番目に入ること(B-CAN 06214000 b5 にも同じ値が流れていて、差が同じなので 2 番目までのどちらか)。2.6.0 の試験は 715 秒に前を
+    // 記録していて、前の 10 秒にエンジンを切った所(b5 = 0)が入ったので、燃料が候補から外れていた
+    if (FILE *fp = fopen("../logs/can_fuel.txt", "r")) {
+      const uint32_t PRE = 711000, IG_ON = 846900, POST = 862000;
+      g_hostCanPreN = 0;
+      cantab::begin();
+      bool preOk = false, restarted = false;
+      int post = -1;
+      uint32_t nextTick = 0;
+      bool ticking = false;
+      auto tickTo = [&](uint32_t tm) {
+        while (nextTick <= tm) {
+          cantab::tick(nextTick);
+          nextTick += CAN_HIST_INTERVAL_MS;
+        }
+      };
+      char line[256];
+      while (post < 0 && fgets(line, sizeof(line), fp)) {
+        char bus;
+        unsigned long tml;
+        unsigned id, len, b[8];
+        if (sscanf(line, "L %c %lu %x %u %x %x %x %x %x %x %x %x", &bus, &tml, &id, &len, &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &b[6], &b[7]) < 4 || len > 8) continue;
+        const uint32_t tm = (uint32_t)tml;
+        if (!ticking) {
+          ticking = true;
+          nextTick = tm;
+        }
+        if (!preOk && tm >= PRE) {
+          tickTo(PRE);
+          preOk = cantab::ppRecordPre(PRE);
+        }
+        if (preOk && !restarted) {
+          if (tm < IG_ON) continue;  // 電源を切っている間(表示器は消えている)
+          cantab::begin();           // 入れ直した(前の記録は保存から戻る)
+          restarted = true;
+          nextTick = tm;
+        }
+        if (restarted && tm >= POST) {
+          tickTo(POST);
+          post = cantab::ppRecordPost(POST);
+          break;
+        }
+        tickTo(tm);
+        uint8_t dd[8] = { 0 };
+        for (unsigned k = 0; k < len; k++) dd[k] = (uint8_t)b[k];
+        cantab::onFrame(bus == 'B' ? 1 : 0, 1, id, (uint8_t)len, dd, tm);
+      }
+      fclose(fp);
+      cantab::PpResult rr[CAN_PP_MAX];
+      int lu = 0, ld = 0;
+      const int lm = post > 0 ? cantab::ppResults(rr, CAN_PP_MAX, &lu, &ld) : 0;
+      int fuelAt = -1;
+      for (int i = 0; i < lm; i++) {
+        cantab::View vv;
+        if (cantab::getView(rr[i].entry, &vv) && vv.id == 0x0A18A000 && vv.bus == 0 && rr[i].byte == 5) fuelAt = i;
+      }
+      printf("  実車ログ(10/22 の給油): 前 711 秒・後 862 秒で 候補 %d 件(増えた %d、減った %d)。燃料 0A18A000 b5 は %d 番目", post, lu, ld, fuelAt + 1);
+      if (fuelAt >= 0) printf("(%d → %d)", rr[fuelAt].pre, rr[fuelAt].post);
+      printf("\n");
+      CHECK(preOk && post > 0 && fuelAt >= 0 && fuelAt < 2 && fuelAt < lu && rr[fuelAt].pre == 31 && rr[fuelAt].post == 100 && lu <= 3,
+            "実車ログ(給油): 燃料 0A18A000 b5 31 → 100 が、増えた側(3 件まで)の 2 番目までに入る");
+    }
+    g_hostCanPreN = 0;
+    cantab::begin();
+    gfx::dirtyClear();
+  }
+
+  // ---------------- 28. 2.7.0: 押した帯の反転(本人「can確認画面などでボタンを押した時に押したことがわかりにくいので、反転表示を入れてください」)。
+  //                  上の帯とタップで動く下の帯は、タッチが決まってから離すまで反転。下の帯の操作は、離してから PRESS_FLASH_MS 反転を見せてから
+  {
+    Signals d;
+    memset(&d, 0, sizeof(d));
+    d.linkUp = d.rpmOk = true;
+    d.rpm = 800;
+    auto countIn = [&](uint16_t col, int x0, int y0, int x1, int y1) {
+      int n = 0;
+      for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) n += fb[y * gfx::W + x] == col;
+      return n;
+    };
+    const uint16_t ACC = gfx::rgb(0x5FD0FF), WHITE = gfx::rgb(0xFFFFFF);
+    auto bot = [&](uint16_t c) { return countIn(c, 100, 380, 366, 466); };
+    auto top = [&](uint16_t c) { return countIn(c, 100, 0, 366, 120); };
+    uint32_t tq = 2400000000u;
+    g_hostCanPreN = 0;
+    cantab::begin();
+    ui::testShow(ui::SC_CAN);
+    upd(d, tq);
+    const int rec0 = cantab::recordCount();
+    CHECK(bot(ACC) > 300 && bot(ACC) < 6000 && top(ACC) > 300 && top(ACC) < 6000, "CAN確認: ふだんの帯は暗い帯に水色の字");
+    ui::touchDown(BOTX, BOTY, tq += 100);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS - 30);
+    CHECK(bot(ACC) < 6000, "決まる前(TOUCH_CONFIRM_MS より前)は反転しない");
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
+    CHECK(bot(ACC) > 10000 && top(ACC) < 6000, "下「変化を記録」: 押して決まったら反転(水色の帯。上の帯は変えない)");
+    ui::touchUp(tq += 180);
+    ui::update(d, ls, ps, si, tq);
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS - 10);
+    CHECK(cantab::recordCount() == rec0 && bot(ACC) > 10000, "離してから PRESS_FLASH_MS は反転のまま(記録はまだ)");
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS);
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS + 60);
+    gfx::dirtyClear();
+    CHECK(cantab::recordCount() == rec0 + 1 && bot(ACC) < 6000 && ui::screen() == ui::SC_CAN, "PRESS_FLASH_MS で記録して、帯は元に戻る");
+    // 反転を見せている間(PRESS_FLASH_MS)のタッチは何もしない(「決定」の点滅の間と同じ)
+    ui::touchDown(BOTX, BOTY, tq += 200);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
+    ui::touchUp(tq += 150);
+    ui::touchDown(BOTX, BOTY, tq + 50);
+    ui::update(d, ls, ps, si, tq + 50 + TOUCH_CONFIRM_MS + 10);
+    ui::touchUp(tq + 200);
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS);
+    ui::update(d, ls, ps, si, tq + 200 + PRESS_FLASH_MS + 10);
+    ui::update(d, ls, ps, si, tq + 200 + PRESS_FLASH_MS + 70);
+    gfx::dirtyClear();
+    CHECK(cantab::recordCount() == rec0 + 2 && bot(ACC) < 6000, "反転を見せている間に押したのは数えない(記録は 1 回)");
+    tq += 200 + PRESS_FLASH_MS + 100;
+    // 動かしたら反転をやめ、離しても記録しない
+    tq += PRESS_FLASH_MS + 100;
+    ui::touchDown(BOTX, BOTY, tq += 100);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
+    ui::touchMove(BOTX, BOTY - HOLD_CANCEL_PX - 10, tq + TOUCH_CONFIRM_MS + 20);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 30);
+    CHECK(bot(ACC) < 6000, "指が HOLD_CANCEL_PX 以上動いたら反転をやめる");
+    ui::touchUp(tq += 200);
+    ui::update(d, ls, ps, si, tq);
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS + 10);
+    CHECK(cantab::recordCount() == rec0 + 2, "動かして離したら記録しない");
+    // 上の帯: 押している間は反転、離したらすぐ 1 つ上へ
+    tq += PRESS_FLASH_MS + 100;
+    ui::touchDown(TOPX, TOPY, tq += 100);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
+    CHECK(top(ACC) > 10000 && bot(ACC) < 6000, "上の帯「‹ 戻る」: 押して決まったら反転(下の帯は変えない)");
+    ui::touchUp(tq += 150);
+    CHECK(ui::screen() == ui::SC_SET_GRP, "上の帯は離したらすぐ 1 つ上へ");
+    upd(d, tq);
+    CHECK(top(ACC) < 6000, "移った画面の上の帯は反転しない");
+    // 設定の中(長押しで開く画面): 上の帯は押している間は反転、長押しの表示が出たらやめる。矢印では反転しない
+    ui::testShow(ui::SC_SET_LIST, 0);
+    upd(d, tq += 100);
+    ui::touchDown(RX, MY, tq += 100);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
+    CHECK(top(ACC) < 6000 && bot(ACC) < 6000, "矢印(左右の半分)を押しても帯は反転しない");
+    ui::touchUp(tq += 150);
+    upd(d, tq);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1, "矢印のタップは今までどおり(次)");
+    ui::touchDown(TOPX, TOPY, tq += 100);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
+    CHECK(top(ACC) > 10000 && top(gfx::rgb(0x000000)) > 100 && bot(ACC) < 6000, "設定の上の帯「‹ 設定」: 押して決まったら反転(版の字も地の色)");
+    ui::update(d, ls, ps, si, tq + HOLD_SHOW_MS + 10);
+    CHECK(ui::testHolding() && top(ACC) < 6000 && bot(ACC) > 10000, "長押しの表示が出たら上の帯の反転をやめる(下の帯「長押しで開く」が水色になり外周)");
+    ui::touchUp(tq += HOLD_SHOW_MS + 100);
+    upd(d, tq);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1 && top(ACC) < 6000 && bot(ACC) < 6000, "そのまま離したら何もしない(戻らない。帯は元に戻る)");
+    // 「決定」(変更の画面)は今までどおり: 押しても反転しない(ふだんが水色の帯)。離したらすぐ点滅
+    ui::testShow(ui::SC_SET_EDIT, 0);
+    upd(d, tq += 100);
+    const int accEdit = bot(ACC);
+    ui::touchDown(BOTX, BOTY, tq += 100);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
+    CHECK(accEdit > 10000 && bot(ACC) == accEdit, "「決定」は押しても反転しない(ふだんが水色の帯)");
+    ui::touchUp(tq += 150);
+    ui::update(d, ls, ps, si, tq);
+    CHECK(ui::testFlashing(), "「決定」は離したらすぐ点滅(今までどおり)");
+    ui::update(d, ls, ps, si, tq + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+    upd(d, tq += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 100);
+    CHECK(ui::screen() == ui::SC_SET_LIST, "点滅が終わったら項目の画面へ");
+    // 赤い帯(CAN確認の「やり直す」): 白い帯に赤の字。PRESS_FLASH_MS 見せてから消して戻る
+    ui::testShow(ui::SC_CAN);
+    upd(d, tq += 100);
+    ui::tap(LX, MY, tq += 100);
+    upd(d, tq);
+    CHECK(ui::screen() == ui::SC_CAN_REDO && bot(WHITE) < 6000, "CAN確認の左「やり直す」で確認の画面(赤い帯)");
+    ui::touchDown(BOTX, BOTY, tq += 100);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
+    CHECK(bot(WHITE) > 10000, "赤い帯「やり直す」: 押して決まったら反転(白い帯)");
+    ui::touchUp(tq += 150);
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS - 10);
+    CHECK(ui::screen() == ui::SC_CAN_REDO && cantab::recordCount() == rec0 + 2 && bot(WHITE) > 10000, "離して PRESS_FLASH_MS までは消さない(反転のまま)");
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS);
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS + 60);
+    gfx::dirtyClear();
+    CHECK(ui::screen() == ui::SC_CAN && cantab::recordCount() == 0 && bot(ACC) < 6000, "PRESS_FLASH_MS で消して CAN確認へ(移った画面の下の帯は反転しない)");
+    // 前後で比べる: 記録できない間(受信なし・待ち)は押しても反転しない。記録できるときは反転を見せてから記録する
+    ui::testShow(ui::SC_CAN_PP);
+    upd(d, tq += 100);
+    ui::touchDown(BOTX, BOTY, tq += 100);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
+    CHECK(bot(ACC) < 6000 && bot(WHITE) < 6000, "前後で比べる: 受信なしの間は押しても反転しない");
+    ui::touchUp(tq += 150);
+    upd(d, tq);
+    const uint8_t fa[8] = { 0x20, 0x0D, 0x40, 0x7B, 0x00, 31, 0x20, 0x3D };
+    for (uint32_t tt = tq; tt < tq + CAN_PP_SETTLE_MS + 1000; tt += 20) {
+      cantab::onFrame(0, 1, 0x0A18A000, 8, fa, tt);
+      cantab::tick(tt);
+    }
+    tq += CAN_PP_SETTLE_MS + 1000;
+    upd(d, tq);
+    ui::touchDown(BOTX, BOTY, tq += 10);
+    ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
+    CHECK(cantab::ppWaitMs(tq + TOUCH_CONFIRM_MS + 10) == 0 && bot(ACC) > 10000, "前後で比べる: 記録できるときは「前を記録」が反転");
+    ui::touchUp(tq += 150);
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS - 10);
+    CHECK(!cantab::ppHasPre() && bot(ACC) > 10000, "離して PRESS_FLASH_MS までは前を記録しない(反転した「前を記録」のまま)");
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS);
+    ui::update(d, ls, ps, si, tq + PRESS_FLASH_MS + 60);
+    gfx::dirtyClear();
+    CHECK(cantab::ppHasPre() && bot(ACC) < 6000 && ui::screen() == ui::SC_CAN_PP, "PRESS_FLASH_MS で前を記録し、帯は元に戻る(「後を記録」)");
+    g_hostCanPreN = 0;
+    cantab::begin();
+    ui::testShow(ui::SC_DRIVE);
     gfx::dirtyClear();
   }
 

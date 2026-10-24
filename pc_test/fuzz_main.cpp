@@ -143,12 +143,16 @@ int main(int argc, char **argv) {
         cur = ui::SC_OPENING;
       }
       if (cur == ui::SC_SET_LIST && chance(10)) {  // 中の画面はタップの並びが長くて滅多に届かないので、たまに直接出す
-        static const ui::Screen deep[] = { ui::SC_SET_GRP, ui::SC_SET_INFO, ui::SC_CAN, ui::SC_CAN_ID, ui::SC_SET_RESET, ui::SC_CAN_REDO, ui::SC_SET_EDIT, ui::SC_CAN_DETAIL };
+        static const ui::Screen deep[] = { ui::SC_SET_GRP, ui::SC_SET_INFO, ui::SC_CAN, ui::SC_CAN_ID, ui::SC_SET_RESET, ui::SC_CAN_REDO, ui::SC_SET_EDIT, ui::SC_CAN_DETAIL,
+                                           ui::SC_CAN_PP };  // 2.6.0: 前後で比べる
         cur = deep[rndN(sizeof(deep) / sizeof(deep[0]))];
         // 2.4.0: 設定 8 項目、受信の状態 4 グループ、グループの中は 2〜6 ページ(多すぎるページの番号も試す)。
         // 2.5.0: CAN確認の詳細も直接出す(2.4.4 から一覧の長押しで開くので、乱数のタッチでは滅多に届かない。表の番号は範囲外も試す)
         if (cur == ui::SC_CAN_DETAIL) {
           ui::testShow(cur, (int)rndN(CAN_MAX_IDS + 2) - 1, (int)rndN(9));
+        } else if (cur == ui::SC_CAN_ID || cur == ui::SC_CAN_REDO) {  // 2.6.0: 変化を記録・前後で比べるの両方から
+          const int pp = (int)rndN(2);
+          ui::testShow(cur, cur == ui::SC_CAN_REDO ? pp : 0, cur == ui::SC_CAN_ID ? pp : 0);
         } else {
           ui::testShow(cur, cur == ui::SC_SET_EDIT ? (int)rndN(8) : (cur == ui::SC_SET_INFO ? (int)rndN(5) : (cur == ui::SC_SET_GRP ? (int)rndN(7) : 0)),
                        cur == ui::SC_SET_EDIT ? (int)rndN(2) : (cur == ui::SC_SET_GRP ? (int)rndN(6) : 0));
@@ -276,9 +280,10 @@ int main(int argc, char **argv) {
   }
   mlink::getStats(&ls);
   printf("乱数試験: %u 回 × %u 歩  画面の更新 %llu 回  タップ %llu 回\n", runs, steps, (unsigned long long)updates, (unsigned long long)taps);
-  static const char *const NM[] = { "サーキット", "タコ", "データ", "CAN", "CAN詳細", "設定", "変更", "受信の状態", "グループの中", "オープニング", "CAN一覧", "CANやり直す", "時間リセット" };
+  static const char *const NM[] = { "サーキット", "タコ", "データ", "CAN", "CAN詳細", "設定", "変更", "受信の状態", "グループの中", "オープニング", "CAN一覧", "CANやり直す", "時間リセット",
+                                    "前後で比べる" };
   printf("  画面ごとの更新回数 / 照合回数:");
-  for (int k = 0; k < 13; k++) printf(" %s %llu/%llu", NM[k], (unsigned long long)seenScreen[k], (unsigned long long)cmpByScreen[k]);
+  for (int k = 0; k < (int)(sizeof(NM) / sizeof(NM[0])); k++) printf(" %s %llu/%llu", NM[k], (unsigned long long)seenScreen[k], (unsigned long long)cmpByScreen[k]);
   printf("\n  最初から描いたものとの照合 %llu 回、不一致 %llu 回\n", (unsigned long long)compares, (unsigned long long)mismatches);
   printf("  画面の外にはみ出した「書き換えた範囲」 %llu 個  無かった文字 %u  CAN の ID 数 %d(上限 %d)\n", (unsigned long long)badDirty, (unsigned)gfx::missingGlyphs(), cantab::count(), CAN_MAX_IDS);
   printf("  受信: OK %u  CRC誤り %u  欠落 %u  捨てたバイト %u\n", ls.framesOk, ls.crcErrors, ls.lostFrames, ls.junkBytes);

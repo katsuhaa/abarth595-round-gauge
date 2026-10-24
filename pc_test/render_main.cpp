@@ -49,6 +49,7 @@ static void shot(const char *name, const Signals &s, ui::Screen sc, int a = 0, i
   gfx::dirtyClear();
 }
 
+extern size_t g_hostCanPreN;  // plat_pc.cpp: 「前後で比べる」の前の記録(NVS の代わり)
 static void canFrame(uint32_t id, const uint8_t d[8], uint8_t dlc, uint32_t t, uint8_t bus = 0) {
   cantab::onFrame(bus, 1, id, dlc, d, t);
 }
@@ -227,6 +228,10 @@ int main(int argc, char **argv) {
     shot("CanBaud", s, ui::SC_SET_GRP, 0, 0);
     shot("CanReader", s, ui::SC_SET_GRP, 3, 0);
     shot("CanBus", s, ui::SC_SET_GRP, 4, 0);
+    {
+      const uint8_t f[8] = { 0x20, 0x0D, 0x40, 0x7B, 0x00, 31, 0x20, 0x3D };  // 2.7.0: 燃料 C-CAN 0A18A000 b5 = 31 %
+      veh::onFrame(0, 1, VEH_ID_FUEL, 8, f, now);
+    }
     shot("CanFuel", s, ui::SC_SET_GRP, 5, 0);
     shot("CanCheck", s, ui::SC_SET_GRP, 6, 0);
     // 本体の状態
@@ -439,6 +444,77 @@ int main(int argc, char **argv) {
     ui::testShow(ui::SC_OPENING, 0);  // 覚えた画面をサーキットに戻す
     ui::tap(233, 233, t0 + 60000);
     ui::testShow(ui::SC_DRIVE);
+  }
+  // ---- CAN確認の「前後で比べる」(2.6.0): 待ち(残りの秒)・記録なし・前を記録した・候補・一覧・やり直す・CAN のページ。
+  //      表を空にするので最後に描く(ほかの CAN確認の絵を変えない)
+  {
+    Signals s = sig(4200, '3', 92, 62);
+    g_hostCanPreN = 0;
+    cantab::begin();
+    auto feed = [&](uint32_t from, uint32_t to, uint8_t fuel, uint8_t reset) {
+      for (uint32_t tt = from; tt < to; tt += 20) {
+        uint8_t a[8] = { 0x20, 0x0D, 0x40, 0x7B, 0x00, fuel, 0x20, 0x3D };
+        uint8_t b[8] = { (uint8_t)(tt / 20), (uint8_t)(tt / 7), 1, 2, 3, 4, 5, 6 };
+        uint8_t c[8] = { 0x2B, 0x0C, 0x0B, reset, 0x0C, 0x0B, 0x2B, 0x00 };
+        canFrame(0x0A18A000, a, 8, tt);
+        canFrame(0x0A18A001, b, 8, tt);
+        canFrame(0x0A18A006, c, 8, tt);
+        cantab::tick(tt);
+      }
+    };
+    const uint32_t t0 = now;
+    feed(t0, t0 + 3000, 31, 43);
+    now = t0 + 3000;
+    shot("CanPpWait", s, ui::SC_CAN_PP);  // 下の帯に「待ち 12 秒」(灰)
+    feed(t0 + 3000, t0 + 16000, 31, 43);
+    now = t0 + 16000;
+    shot("CanPp0", s, ui::SC_CAN_PP);  // 記録なし、下「前を記録」
+    cantab::ppRecordPre(now);
+    shot("CanPp1", s, ui::SC_CAN_PP);  // 前を記録した、下「後を記録」
+    cantab::begin();  // 電源を入れ直す(前の記録は残る)
+    const uint32_t t2 = now + 600000;
+    feed(t2, t2 + 4000, 0, 0);
+    feed(t2 + 4000, t2 + 16000, 100, 0);
+    now = t2 + 16000;
+    cantab::ppRecordPost(now);
+    shot("CanPpResult", s, ui::SC_CAN_PP);       // 候補 2 件(増えた 1、減った 1)
+    shot("CanPpList", s, ui::SC_CAN_ID, 0, 1);   // 1/2  b5  31 → 100  +69
+    shot("CanPpList2", s, ui::SC_CAN_ID, 1, 1);  // 2/2  b3  43 → 0  -43
+    shot("CanPpRedo", s, ui::SC_CAN_REDO, 1);
+    shot("CanPpPage", s, ui::SC_SET_GRP, 7, 0);
+    g_hostCanPreN = 0;
+    cantab::begin();
+  }
+  // ---- 押した帯の反転(2.7.0): タッチが決まった所。CAN確認の「変化を記録」・設定の上の帯・赤い帯・前後で比べるの「前を記録」。
+  //      縦に動かして取り消してから離す(操作はしない)
+  {
+    Signals s = sig(4200, '3', 92, 62);
+    auto press = [&](const char *name, ui::Screen sc, int a, int x, int y) {
+      ui::testShow(sc, a);
+      ui::testTouch(now);
+      ui::update(s, ls, ps, si, now);
+      ui::touchDown(x, y, now + 10);
+      ui::update(s, ls, ps, si, now + 10 + TOUCH_CONFIRM_MS + 10);
+      saveShot(name);
+      printf("%-22s screen=%d\n", name, (int)ui::screen());
+      ui::touchMove(x, y > 233 ? y - HOLD_CANCEL_PX - 5 : y + HOLD_CANCEL_PX + 5, now + 10 + TOUCH_CONFIRM_MS + 15);
+      ui::touchUp(now + 10 + TOUCH_CONFIRM_MS + 20);
+      ui::update(s, ls, ps, si, now + 10 + TOUCH_CONFIRM_MS + 30);
+      gfx::dirtyClear();
+      now += 1000;
+    };
+    press("PressCan", ui::SC_CAN, 0, 233, 400);
+    press("PressSetTop", ui::SC_SET_LIST, 0, 233, 60);
+    press("PressRedo", ui::SC_CAN_REDO, 0, 233, 400);
+    uint8_t a[8] = { 0x20, 0x0D, 0x40, 0x7B, 0x00, 31, 0x20, 0x3D };
+    for (uint32_t tt = now; tt < now + 16000; tt += 20) {
+      canFrame(0x0A18A000, a, 8, tt);
+      cantab::tick(tt);
+    }
+    now += 16000;
+    press("PressPp", ui::SC_CAN_PP, 0, 233, 400);
+    g_hostCanPreN = 0;
+    cantab::begin();
   }
   printf("missing glyphs total: %u\n", (unsigned)gfx::missingGlyphs());
   return gfx::missingGlyphs() ? 1 : 0;

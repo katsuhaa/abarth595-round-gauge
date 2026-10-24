@@ -1483,6 +1483,17 @@ static const uint16_t C_OK = rgb(0x22E36A);        // 判定: 正常
 static const uint16_t C_LABEL2 = rgb(0xC8D6F0);    // 項目名(明るめ)
 static const uint16_t C_SEL_BG = rgb(0x14233A);    // CAN確認の詳細: 選んだバイトの地
 
+// タップの範囲: 0 = 上の帯、1 = 下の帯、2 = 真ん中の左半分、3 = 真ん中の右半分(前・次。変更の画面では − +、CAN確認では「やり直す」「一覧」)
+enum Zone { Z_TOP, Z_BOT, Z_LEFT, Z_RIGHT };
+static Zone zoneAt(int x, int y) {
+  if (y < ZONE_TOP_Y) return Z_TOP;
+  if (y >= ZONE_BOT_Y) return Z_BOT;
+  return x < 233 ? Z_LEFT : Z_RIGHT;
+}
+// 押している帯(2.7.0。Z_TOP・Z_BOT、-1 = なし)。drawTopBack・drawBottom はこの帯を反転して描く(水色の帯に地の色の字。赤い帯は白い帯に
+// 赤の字)。決めるのは update の初めの pressStep(タッチの節)
+static int g_pressBand = -1;
+
 // 円の中で、y0〜y1 の行を横いっぱいに塗る(円の縁は画素の途中で切れるので、行ごとに fillRectF で塗る)
 static void fillChordRows(int y0, int y1, uint16_t c) {
   for (int y = y0; y < y1; y++) {
@@ -1494,18 +1505,25 @@ static void fillChordRows(int y0, int y1, uint16_t c) {
   }
 }
 static void drawTopBack(const char *label = "戻る") {  // 上の帯「‹ 名前」(2.4.0: 英字も書ける。「‹ CAN」など)
-  fillChordRows(0, ZONE_TOP_Y, C_BAND_TOP);
+  const bool inv = g_pressBand == Z_TOP;  // 押している(2.7.0)
+  const uint16_t col = inv ? C_BG : C_ACCENT;
+  fillChordRows(0, ZONE_TOP_Y, inv ? C_ACCENT : C_BAND_TOP);
   float w = mixWidth(FONT_NUM600_48, FONT_JP600_48, label);
   float x = 233 - (w + 30) * 0.5f;
-  bigChevron(x + 8, 77, 32, -1, C_ACCENT);
-  mixDraw(FONT_NUM600_48, FONT_JP600_48, x + 30, 94, label, C_ACCENT);
+  bigChevron(x + 8, 77, 32, -1, col);
+  mixDraw(FONT_NUM600_48, FONT_JP600_48, x + 30, 94, label, col);
 }
 // 設定の項目の上の帯「‹ 設定」(2.3.0。「設定」だけでは、押すと元の画面に戻るのが分からなかった)
 static void drawTopSet() {
   drawTopBack("設定");
-  textC(FONT_NUM600_20, 233, 34, "v" METER_FW_VERSION, C_LABEL);  // 表示器の版(config.h)
+  textC(FONT_NUM600_20, 233, 34, "v" METER_FW_VERSION, g_pressBand == Z_TOP ? C_BG : C_LABEL);  // 表示器の版(config.h)
 }
 static void drawBottom(const char *label, uint16_t fill = C_BAND_BOT, uint16_t col = C_ACCENT, const FontData &fj = FONT_JP600_44) {
+  if (g_pressBand == Z_BOT) {  // 押している(2.7.0): 帯と字の色を入れ替える
+    const uint16_t f = fill;
+    fill = col;
+    col = f;
+  }
   fillChordRows(ZONE_BOT_Y, gfx::H, fill);
   mixDraw(FONT_NUM600_44, fj, 233 - mixWidth(FONT_NUM600_44, fj, label) * 0.5f, 420, label, col);
 }
@@ -1573,14 +1591,6 @@ static void drawTwoTimes(int y1, int y2, uint16_t labc) {
   fmtTime(t, sizeof(t), trip::belowMs());
   textR(FONT_NUM600_44, 384, (float)(y2 + 4), t, C_WHITE);
 }
-// タップの範囲: 0 = 上の帯、1 = 下の帯、2 = 真ん中の左半分、3 = 真ん中の右半分(前・次。変更の画面では − +、CAN確認では「やり直す」「一覧」)
-enum Zone { Z_TOP, Z_BOT, Z_LEFT, Z_RIGHT };
-static Zone zoneAt(int x, int y) {
-  if (y < ZONE_TOP_Y) return Z_TOP;
-  if (y >= ZONE_BOT_Y) return Z_BOT;
-  return x < 233 ? Z_LEFT : Z_RIGHT;
-}
-
 // ---- 受信の状態・本体の状態(2.4.0: 分け直した。本人の指示 10/24「表示内容などのカテゴライズ」)
 // 受信の状態 = データの出どころと行き先ごとのグループ: CAN(車 → CANリーダー → 表示器)・GPS・IMU・RaceChrono(表示器 → スマホ)。
 //   受信の状態の画面は 1 ページ 1 グループ(まとめ。下「開く」で中へ)。グループの中は 1 ページ 1 項目。
@@ -1589,15 +1599,15 @@ static Zone zoneAt(int x, int y) {
 enum Group : uint8_t { G_CAN, G_GPS, G_IMU, G_RC, G_SYS, G_COUNT };
 static const int N_LINK_GROUPS = 4;  // 受信の状態のグループ(CAN・GPS・IMU・RaceChrono)
 static const char *const GROUP_NAME[G_COUNT] = { "CAN", "GPS", "IMU", "RaceChrono", "本体の状態" };
-static const int GROUP_N[G_COUNT] = { 7, 3, 2, 3, 8 };  // グループの中のページの数
+static const int GROUP_N[G_COUNT] = { 8, 3, 2, 3, 8 };  // グループの中のページの数(2.6.0: CAN に「前後で比べる」)
 static const int GRP_MAX = 8;
-enum { P_CAN_BAUD, P_CAN_RX, P_CAN_ERR, P_CAN_READER, P_CAN_BUS, P_CAN_FUEL, P_CAN_CHECK };  // CAN の中のページ
+enum { P_CAN_BAUD, P_CAN_RX, P_CAN_ERR, P_CAN_READER, P_CAN_BUS, P_CAN_FUEL, P_CAN_CHECK, P_CAN_PP };  // CAN の中のページ
 enum { P_GPS_FIX, P_GPS_POS, P_GPS_SPEED };                                                   // GPS
 enum { P_IMU_ACC, P_IMU_CAL };                                                                // IMU
 enum { P_RC_SEND, P_RC_LINK, P_RC_RATE };                                                     // RaceChrono
 enum { P_SYS_FPS, P_SYS_CPU, P_SYS_CLOCK, P_SYS_TEMP, P_SYS_RAM, P_SYS_PSRAM, P_SYS_FLASH, P_SYS_BOOT };  // 本体の状態
 enum Verdict : uint8_t { V_WAIT, V_OK, V_NG };
-enum PageAct : uint8_t { A_NONE, A_OPEN_GRP, A_OPEN_CAN, A_EDIT_RC, A_IMU_RESET };  // ページの下の帯の操作
+enum PageAct : uint8_t { A_NONE, A_OPEN_GRP, A_OPEN_CAN, A_EDIT_RC, A_IMU_RESET, A_OPEN_CANPP };  // ページの下の帯の操作
 struct InfoItem {
   const char *label;
   char value[48];
@@ -1636,7 +1646,7 @@ static void initItems(InfoItem *it, int n, const char *const *labels) {
 static const char *const RC_OFF_TEXT = "切(RaceChrono 送信)";  // RaceChrono の送信が切(GPS・IMU も動かしていない)
 // CAN: 車の CAN を CANリーダー(XIAO ESP32C6)が読み、UART で表示器へ送る。燃料のほかは、まとめで緑でなければ「正常」にしない
 static void canItems(const LinkStats &ls, uint32_t now, InfoItem *it) {
-  static const char *const L[] = { "通信速度", "受信", "誤り・欠落", "CANリーダー", "C-CAN・B-CAN", "燃料", "CAN確認" };
+  static const char *const L[] = { "通信速度", "受信", "誤り・欠落", "CANリーダー", "C-CAN・B-CAN", "燃料", "CAN確認", "前後で比べる" };
   initItems(it, GROUP_N[G_CAN], L);
   for (int i = P_CAN_BAUD; i <= P_CAN_BUS; i++) it[i].core = true;
   // 受けていない: バイトは届くのに読めなければ赤。何も届かないときも、起動から INFO_LINK_GRACE_MS たったら赤(2.2.0。前は灰で、
@@ -1666,14 +1676,15 @@ static void canItems(const LinkStats &ls, uint32_t now, InfoItem *it) {
     snprintf(c.value, sizeof(c.value), "C %u B %u", (unsigned)ls.info.can_fps[0], (unsigned)ls.info.can_fps[1]);
     c.v = ls.info.can_fps[0] ? V_OK : V_NG;
   }
-  // 燃料(2.2.0。燃料が 100 % から動かない件を実車で見るため): 0C014003 の最後の b5(0 も出す)と、なましの値(表示の % の元)
+  // 燃料(2.2.0。2.7.0: C-CAN 0A18A000 b5 = %。純正の燃料計(8 目盛、1 目盛 12.5 %)と比べるため): 表示に使っている値。
+  // 受けていない・エンジンをかけてからまだ値がない(b5 = 0 だけ)ときは「– –」
   InfoItem &f = it[P_CAN_FUEL];
   veh::FuelInfo fi;
   veh::fuelInfo(&fi, now);
-  if (!fi.seen) snprintf(f.value, sizeof(f.value), "– –");
-  else if (!fi.have) snprintf(f.value, sizeof(f.value), "生 %u", (unsigned)fi.lastB5);
-  else snprintf(f.value, sizeof(f.value), "生 %u なまし %.1f", (unsigned)fi.lastB5, (double)fi.lp), f.v = V_OK;
-  // CAN確認(2.4.3: CAN の最後のページ。2.4.4: 下「長押しで開く」。2.4.0〜2.4.2 は C-CAN・B-CAN のページの下「CAN確認」)。判定なし
+  if (fi.seen && fi.have) snprintf(f.value, sizeof(f.value), "%u %%", (unsigned)fi.pct), f.v = V_OK;
+  else snprintf(f.value, sizeof(f.value), "– –");
+  // CAN確認(2.4.3: CAN の最後のページ。2.6.0 からは最後の 1 つ前。2.4.4: 下「長押しで開く」。2.4.0〜2.4.2 は C-CAN・B-CAN のページの
+  // 下「CAN確認」)。判定なし
   InfoItem &k = it[P_CAN_CHECK];
   const int rec = cantab::recordCount();
   int hist[CAN_REC_HIST];
@@ -1681,6 +1692,12 @@ static void canItems(const LinkStats &ls, uint32_t now, InfoItem *it) {
   if (nh) snprintf(k.value, sizeof(k.value), "候補 %d 件 記録 %d 回", hist[nh - 1], rec);
   else snprintf(k.value, sizeof(k.value), "記録 %d 回", rec);
   k.act = A_OPEN_CAN;
+  // 前後で比べる(2.6.0。CAN の最後のページ)。判定なし
+  InfoItem &q = it[P_CAN_PP];
+  int up = 0, down = 0;
+  if (cantab::ppHasResult()) cantab::ppResults(nullptr, 0, &up, &down), snprintf(q.value, sizeof(q.value), "候補 %d 件", up + down);
+  else snprintf(q.value, sizeof(q.value), "%s", cantab::ppHasPre() ? "前を記録した" : "記録なし");
+  q.act = A_OPEN_CANPP;
 }
 // GPS(M100。RaceChrono の送信が入のときだけ動かす): 測位(届かなければ赤)・位置・速度
 static void gpsItems(const SysInfo &si, InfoItem *it) {
@@ -2105,12 +2122,33 @@ static void updSetGrp(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
 }
 
 // ================================================================ CAN確認(10/23。設定 → 受信の状態 → CAN の「CAN確認」のページの下「長押しで開く」。2.4.4)
+// 2.6.0: CAN の最後のページ「前後で比べる」(updCanPp)。一覧・詳細・やり直すは両方で使う(g_canPp)
 // CAN の画面: 件数(今の候補の ID の数)・記録の回数・件数の移り変わり。下「変化を記録」、右半分「一覧」、左半分「やり直す」(確認へ)。
 // 一覧: 1 件ずつ(左右のタップかスワイプで ID)。候補のバイトは水色。下「長押しで開く」で詳細(2.4.4)。詳細: 左右でバイトを選び、値とグラフ
 static const int CAN_LIST_MAX = CAN_MAX_IDS;
 static uint16_t g_candE[CAN_LIST_MAX];
 static uint8_t g_candM[CAN_LIST_MAX];
 static int g_candN = 0, g_canIdx = 0;
+// 2.6.0: 一覧・詳細・やり直すは、「変化を記録」(CAN確認)と「前後で比べる」の両方から使う。g_canPp = 前後で比べるから来た
+static bool g_canPp = false;
+static cantab::PpResult g_ppList[CAN_PP_MAX];
+static int g_listN = 0;  // 一覧の件数(描いたときの値。長押しで開けるか・送りに使う)
+static int listCount() {  // 一覧の件数を数え直す(前後で比べる: 候補のバイト。変化を記録: 候補の ID)
+  if (g_canPp) {
+    g_listN = cantab::ppResults(g_ppList, CAN_PP_MAX);
+    if (g_listN > CAN_PP_MAX) g_listN = CAN_PP_MAX;
+  } else {
+    g_candN = cantab::candidates(g_candE, g_candM, CAN_LIST_MAX);
+    g_listN = g_candN < CAN_LIST_MAX ? g_candN : CAN_LIST_MAX;
+  }
+  return g_listN;
+}
+static int listEntry(int i) {  // 一覧の i 番目の表の番号
+  return g_canPp ? g_ppList[i].entry : g_candE[i];
+}
+static uint8_t listMask(int i) {  // 一覧の i 番目の候補のバイトの印
+  return g_canPp ? (uint8_t)(1u << g_ppList[i].byte) : g_candM[i];
+}
 static int g_detEntry = -1, g_detByte = 0;
 static char g_canKey[64];
 static uint32_t g_canCellKey[8];
@@ -2182,15 +2220,14 @@ static void drawCanGrid(const cantab::View &v, uint8_t mask, int sel, int y0, bo
   }
 }
 static void updCanId() {
-  g_candN = cantab::candidates(g_candE, g_candM, CAN_LIST_MAX);
-  int shown = g_candN < CAN_LIST_MAX ? g_candN : CAN_LIST_MAX;
+  const int shown = listCount();
   if (shown == 0) {  // 候補がなくなった(やり直した): CAN の画面へ
-    go(SC_CAN);
+    go(g_canPp ? SC_CAN_PP : SC_CAN);
     return;
   }
   if (g_canIdx >= shown) g_canIdx = 0;
   cantab::View v;
-  if (!cantab::getView(g_candE[g_canIdx], &v)) return;
+  if (!cantab::getView(listEntry(g_canIdx), &v)) return;
   bool full = g_full;
   if (full) {
     g_full = false;
@@ -2201,12 +2238,19 @@ static void updCanId() {
     fmtId(id, sizeof(id), v.id, v.ext);
     snprintf(t, sizeof(t), "%s %s", v.bus ? "B-CAN" : "C-CAN", id);
     fitTextC(FP_NAME, 3, 330, 233, 184, t, C_LABEL2);
-    snprintf(t, sizeof(t), "%d / %d", g_canIdx + 1, shown);
-    textC(FONT_NUM600_28, 233, 336, t, C_LABEL);
+    if (g_canPp) {  // 2.6.0: 何番目か、候補のバイト、前と後の真ん中の値と差
+      const cantab::PpResult &r = g_ppList[g_canIdx];
+      char u[64];
+      snprintf(u, sizeof(u), "%d/%d  b%d  %d → %d  %+d", g_canIdx + 1, shown, r.byte, r.pre, r.post, (int)r.post - (int)r.pre);
+      mixDraw(FONT_NUM600_28, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_28, FONT_JP600_30, u) * 0.5f, 336, u, C_LABEL);
+    } else {
+      snprintf(t, sizeof(t), "%d / %d", g_canIdx + 1, shown);
+      textC(FONT_NUM600_28, 233, 336, t, C_LABEL);
+    }
     drawSideArrows();
     drawOpenBand();  // 2.4.4: 長押しで詳細
   }
-  drawCanGrid(v, g_candM[g_canIdx], -1, 250, full);
+  drawCanGrid(v, listMask(g_canIdx), -1, 250, full);
 }
 
 // 詳細のグラフ(新しい値が右端)
@@ -2241,9 +2285,9 @@ static void updCanDetail(uint32_t now) {
     go(SC_CAN_ID);
     return;
   }
-  uint8_t mask = 0;
-  for (int i = 0; i < g_candN; i++)
-    if (g_candE[i] == g_detEntry) mask = g_candM[i];
+  uint8_t mask = 0;  // 候補のバイト(前後で比べる: その ID の候補のバイト全部)
+  for (int i = 0; i < g_listN; i++)
+    if (listEntry(i) == g_detEntry) mask |= listMask(i);
   if (g_detByte >= v.dlc) g_detByte = v.dlc ? v.dlc - 1 : 0;
   bool full = g_full;
   if (full) {
@@ -2289,10 +2333,72 @@ static void updCanRedo() {
   drawTopBack();
   drawName("やり直す");
   char t[48];
-  snprintf(t, sizeof(t), "記録 %d 回を消して", cantab::recordCount());
-  mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, t) * 0.5f, 256, t, C_LABEL2);
-  mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "全部の ID を候補に戻す") * 0.5f, 298, "全部の ID を候補に戻す", C_LABEL2);
+  if (g_canPp) {  // 2.6.0
+    snprintf(t, sizeof(t), "前の記録と候補を消す");
+    mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, t) * 0.5f, 277, t, C_LABEL2);
+  } else {
+    snprintf(t, sizeof(t), "記録 %d 回を消して", cantab::recordCount());
+    mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, t) * 0.5f, 256, t, C_LABEL2);
+    mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "全部の ID を候補に戻す") * 0.5f, 298, "全部の ID を候補に戻す", C_LABEL2);
+  }
   drawBottom("やり直す", C_BAND_RED, C_WHITE);
+}
+
+// ---- 前後で比べる(2.6.0。設定 → 受信の状態 → CAN の最後のページの下「長押しで開く」。config.h の CAN_PP_*)
+// 下「前を記録」(前の記録が無いとき)・「後を記録」(あるとき)。前も後もエンジンがかかっている間に記録する(2.7.0。案内の字)。
+// 受信が始まって CAN_PP_SETTLE_MS たつまでは、帯に残りの秒を灰で出す
+// (押しても何もしない)。候補ができたら、件数と「増えた・減った」の数。左半分「やり直す」(確認へ)、右半分「一覧」(1 バイトずつ、前 → 後)
+static char g_canPpKey[64];
+static const uint16_t C_PP_WAIT = rgb(0x5A606A);  // 記録できるまでの下の帯の字(灰。長押しを取り消したときの帯の字と同じ色)
+static void updCanPp(uint32_t now) {
+  const int wait = cantab::ppWaitMs(now);
+  const bool pre = cantab::ppHasPre(), done = cantab::ppHasResult();
+  int up = 0, down = 0;
+  const int stored = done ? cantab::ppResults(nullptr, 0, &up, &down) : 0;
+  const int waitS = wait < 0 ? -1 : (wait + 999) / 1000;
+  char key[64];
+  snprintf(key, sizeof(key), "%d|%d|%d|%d|%d|%d", pre, done, up, down, stored, waitS);
+  if (!g_full && strcmp(key, g_canPpKey) == 0) return;
+  g_full = false;
+  strncpy(g_canPpKey, key, sizeof(g_canPpKey) - 1);
+  g_canPpKey[sizeof(g_canPpKey) - 1] = 0;
+  gfx::fillAll(C_BG);
+  g_tagsDirty = true;
+  drawTopBack();
+  drawName("前後で比べる");
+  char t[64];
+  if (done) {
+    snprintf(t, sizeof(t), "%d", up + down);
+    drawBigValue(t, "件", 258, C_WHITE, 200);
+    snprintf(t, sizeof(t), "増えた %d 減った %d", up, down);
+    mixDraw(FONT_NUM600_28, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_28, FONT_JP600_30, t) * 0.5f, 298, t, C_WHITE);
+    textC(FONT_JP500_24, 233, 330, "前と後で違うバイト", C_LABEL);
+  } else if (pre) {  // 左の「やり直す」に寄らないよう 34 px。2.7.0: 後もエンジンがかかっている間に記録する
+    mixDraw(FONT_NUM600_34, FONT_JP600_34, 233 - mixWidth(FONT_NUM600_34, FONT_JP600_34, "前を記録した") * 0.5f, 256, "前を記録した", C_WHITE);
+    textC(FONT_JP600_30, 233, 300, "給油してエンジンを", C_LABEL);
+    textC(FONT_JP600_30, 233, 334, "かけたら「後を記録」", C_LABEL);
+  } else {  // 2.7.0: 前はエンジンを切る前に記録する(燃料などはエンジンが止まると 0 になり、前の 10 秒に入ると候補から外れる)
+    mixDraw(FONT_NUM600_44, FONT_JP600_44, 233 - mixWidth(FONT_NUM600_44, FONT_JP600_44, "記録なし") * 0.5f, 256, "記録なし", C_WHITE);
+    snprintf(t, sizeof(t), "止まって %d 秒たったら", CAN_PP_WIN_MS / 1000);
+    mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, t) * 0.5f, 300, t, C_LABEL);
+    textC(FONT_JP600_30, 233, 334, "エンジンを切る前に記録", C_LABEL);
+  }
+  if (pre) {
+    textC(FONT_JP600_30, 62, 244, "やり", C_ACCENT);
+    textC(FONT_JP600_30, 62, 276, "直す", C_ACCENT);
+  }
+  if (done && stored > 0) {
+    textC(FONT_JP600_30, 404, 244, "一覧", C_ACCENT);
+    bigChevron(404, 268, 26, 1, C_ACCENT, 8.0f, 2.5f);
+  }
+  if (wait < 0) {
+    drawBottom("受信なし", C_BAND_BOT, C_PP_WAIT);
+  } else if (wait > 0) {
+    snprintf(t, sizeof(t), "待ち %d 秒", waitS);
+    drawBottom(t, C_BAND_BOT, C_PP_WAIT);
+  } else {
+    drawBottom(pre ? "後を記録" : "前を記録");
+  }
 }
 
 // ================================================================ オープニング(config.h の OPENING_ON と OPC_*・OPT_*・OPD_*)
@@ -2727,8 +2833,8 @@ static void updTags(const Signals &s, bool redrawn) {
 //   案内・長押しの表示の間は、画面の描き直しを止める。
 // 設定の中のメニュー(2.4.4): 画面のどこかを押し続けると(2.4.5: 2.4.4 は下の帯だけ)、HOLD_SHOW_MS で下の帯「長押しで開く」を水色にして
 //   (案内の代わり)外周が回り、HOLD_MS で開く(menuOpen)。2.5.0: 2.4.5 までは TOUCH_CONFIRM_MS で帯を水色にしていて、矢印のタップでも
-//   帯が反転した。指が HOLD_CANCEL_PX 以上動いたら取り消し、外周を消して帯の字を灰にする(離すまで)。
-//   短いタップは、その所のタップ(上の帯 = 戻る、左右の半分 = 前・次。下の帯は何もしない)
+//   帯が反転した。指が HOLD_CANCEL_PX 以上動いたら取り消し、外周を消して帯の字を灰にする(離すまで)。外周が出てから HOLD_MS の前に
+//   離したら何もしない(2.7.0)。短いタップは、その所のタップ(上の帯 = 戻る、左右の半分 = 前・次。下の帯は何もしない)
 static const uint16_t C_HOLD_TRACK = rgb(0x1A2433);    // 外周の地
 static const uint16_t C_HOLD_PILL = rgb(0x0B1220);     // 札の中
 static const uint16_t C_PILL_DIM = rgb(0x343B47);      // 灰にした札の枠
@@ -2741,7 +2847,7 @@ static struct {
   bool confirmed;   // TOUCH_CONFIRM_MS 押し続けた(タッチが決まった)
   bool moved;       // HOLD_CANCEL_PX 以上動いた(長押しを取り消した。離してもタップにしない)
   bool guided;      // このタッチで案内を出した(取り消したあとも、離すまで案内を出す)
-  bool switched;    // 長押しで設定に入った(離してもタップ・スワイプにしない)
+  bool switched;    // 長押しで設定に入った・下の帯の操作を待っている間に触れた(2.7.0)。離してもタップ・スワイプにしない
 } g_touch;
 enum GuideMode : uint8_t { GM_GUIDE, GM_HOLD, GM_CANCEL };  // 案内・長押しの途中(スワイプを灰)・長押しを取り消した(長押しを灰)
 static GuideMode g_guideMode = GM_GUIDE;  // 描いてある案内の状態
@@ -2836,7 +2942,7 @@ static bool menuOpenable() {
     case SC_SET_GRP:
       return g_grpAct != A_NONE;
     case SC_CAN_ID:
-      return g_canIdx < (g_candN < CAN_LIST_MAX ? g_candN : CAN_LIST_MAX);
+      return g_canIdx < g_listN;
     default:
       return false;
   }
@@ -2866,6 +2972,8 @@ static void menuOpen() {
     case SC_SET_GRP:
       if (g_grpAct == A_OPEN_CAN) {
         go(SC_CAN);
+      } else if (g_grpAct == A_OPEN_CANPP) {  // 2.6.0
+        go(SC_CAN_PP);
       } else if (g_grpAct == A_EDIT_RC) {
         startEdit(&RC_SEND_ITEM, SC_SET_GRP);
       } else if (g_grpAct == A_IMU_RESET) {
@@ -2875,10 +2983,10 @@ static void menuOpen() {
       }
       break;
     case SC_CAN_ID:
-      g_detEntry = g_candE[g_canIdx];
+      g_detEntry = listEntry(g_canIdx);
       g_detByte = 0;
       for (int b = 0; b < 8; b++) {
-        if (g_candM[g_canIdx] >> b & 1) {
+        if (listMask(g_canIdx) >> b & 1) {
           g_detByte = b;
           break;
         }
@@ -2925,6 +3033,51 @@ static void holdProgress(uint32_t now) {
   const uint32_t el = now - g_touch.t0;
   const float span = (float)(HOLD_MS - HOLD_SHOW_MS);
   drawHoldProgress(el > HOLD_SHOW_MS ? (float)(el - HOLD_SHOW_MS) / span : 0.0f);
+}
+// ---- 押した帯の反転(2.7.0。本人「can確認画面などでボタンを押した時に押したことがわかりにくいので、反転表示を入れてください」)。
+// タップで動く帯(tapBand)は、タッチが決まってから(TOUCH_CONFIRM_MS)離すまで反転して描く。長押しの表示が出たら(HOLD_SHOW_MS。
+// 設定の中)・指が HOLD_CANCEL_PX 以上動いたら元に戻す。下の帯の操作は、離してから PRESS_FLASH_MS 反転のまま見せて(指で隠れていた所が
+// 見えるように)、それから行う(「決定」の点滅と同じく、押した所で分かるように)。上の帯(1 つ上へ)は離したらすぐ移る
+static struct {
+  bool on;
+  int x, y;      // タップの位置
+  uint32_t due;  // 行う時刻
+  Screen sc;     // 押した画面(ほかの画面に移っていたら行わない)
+} g_pressTap;
+// 帯 z が今の画面でタップで動くか。上の帯 = 設定・CAN確認のどの画面も 1 つ上へ(変更の画面の「決定」の点滅の間は受けない)。
+// 下の帯 = その場の操作(CAN確認の「変化を記録」、前後で比べるの「前を記録」「後を記録」(記録できるとき)、赤い帯のリセット・取り直す・
+// やり直す)。「長押しで開く」はタップでは動かない。「決定」は押したあとの点滅がある(leaveEdit)ので入れない
+static bool tapBand(int z, uint32_t now) {
+  if (isMain(g_sc) || g_sc == SC_OPENING) return false;
+  if (z == Z_TOP) return !(g_sc == SC_SET_EDIT && g_saveFlash);
+  if (z != Z_BOT) return false;
+  switch (g_sc) {
+    case SC_CAN:
+    case SC_SET_RESET:
+    case SC_CAN_REDO:
+      return true;
+    case SC_CAN_PP:
+      return cantab::ppWaitMs(now) == 0;
+    default:
+      return false;
+  }
+}
+static int pressWant(uint32_t now) {  // 今、反転して描く帯
+  if (g_pressTap.on) return Z_BOT;
+  if (!g_touch.down || !g_touch.confirmed || g_touch.moved || g_touch.switched || holdDue(now)) return -1;
+  const int z = zoneAt(g_touch.x, g_touch.y);
+  return tapBand(z, now) ? z : -1;
+}
+// update の初めで呼ぶ。下の帯の操作を行う時刻になったら行い、反転する帯が変わったら画面を描き直す
+static void pressStep(uint32_t now) {
+  if (g_pressTap.on && (g_sc != g_pressTap.sc || (int32_t)(now - g_pressTap.due) >= 0)) {
+    g_pressTap.on = false;
+    if (g_sc == g_pressTap.sc) tap(g_pressTap.x, g_pressTap.y, now);
+  }
+  const int want = pressWant(now);
+  if (want == g_pressBand) return;
+  g_pressBand = want;
+  g_full = true;
 }
 // 画面を描いたあとで呼ぶ。タッチが決まっていれば案内を出す(長押しの時刻を過ぎていれば長押しの途中の形で)。
 // 決まる前から指が動いていた(スワイプの途中)ときは出さない。案内を出したあとに取り消したときは、長押しの札を灰にして出し直す。
@@ -3087,15 +3240,33 @@ void tap(int x, int y, uint32_t nowMs) {
         cantab::record();
         g_full = true;
       } else if (z == Z_LEFT && cantab::recordCount() > 0) {
+        g_canPp = false;
         go(SC_CAN_REDO);
       } else if (z == Z_RIGHT && cantab::recordCount() > 0 && g_candN > 0) {
+        g_canPp = false;
+        g_canIdx = 0;
+        go(SC_CAN_ID);
+      }
+      break;
+    case SC_CAN_PP:  // 2.6.0: 前後で比べる
+      if (z == Z_TOP) {
+        go(SC_SET_GRP);  // 受信の状態 → CAN の「前後で比べる」のページへ
+      } else if (z == Z_BOT) {
+        if (cantab::ppHasPre()) cantab::ppRecordPost(nowMs);  // 記録できるまでは何もしない(帯に残りの秒)
+        else cantab::ppRecordPre(nowMs);
+        g_full = true;
+      } else if (z == Z_LEFT && cantab::ppHasPre()) {
+        g_canPp = true;
+        go(SC_CAN_REDO);
+      } else if (z == Z_RIGHT && cantab::ppHasResult() && cantab::ppResults(nullptr, 0) > 0) {
+        g_canPp = true;
         g_canIdx = 0;
         go(SC_CAN_ID);
       }
       break;
     case SC_CAN_ID:  // 下の帯「長押しで開く」で詳細(2.4.4。menuOpen)
       if (z == Z_TOP) {
-        go(SC_CAN);
+        go(g_canPp ? SC_CAN_PP : SC_CAN);
       } else if (z == Z_LEFT || z == Z_RIGHT) {
         swipe(z == Z_RIGHT ? 1 : -1, nowMs);
       }
@@ -3109,10 +3280,11 @@ void tap(int x, int y, uint32_t nowMs) {
       break;
     case SC_CAN_REDO:
       if (z == Z_TOP) {
-        go(SC_CAN);
+        go(g_canPp ? SC_CAN_PP : SC_CAN);
       } else if (z == Z_BOT) {
-        cantab::clearRecord();
-        go(SC_CAN);
+        if (g_canPp) cantab::ppClear();
+        else cantab::clearRecord();
+        go(g_canPp ? SC_CAN_PP : SC_CAN);
       }
       break;
     default:
@@ -3149,7 +3321,7 @@ void swipe(int dir, uint32_t nowMs) {
       break;
     }
     case SC_CAN_ID: {
-      const int shown = g_candN < CAN_LIST_MAX ? g_candN : CAN_LIST_MAX;
+      const int shown = g_listN;
       if (shown > 0) {
         g_canIdx = (g_canIdx + shown + d) % shown;
         g_full = true;
@@ -3176,7 +3348,7 @@ void touchDown(int x, int y, uint32_t nowMs) {
   g_touch.confirmed = false;
   g_touch.moved = false;
   g_touch.guided = false;
-  g_touch.switched = false;
+  g_touch.switched = g_pressTap.on;  // 2.7.0: 下の帯の操作を待っている間(PRESS_FLASH_MS)のタッチは何もしない(「決定」の点滅の間と同じ)
 }
 void touchMove(int x, int y, uint32_t nowMs) {
   if (!g_touch.down) return;
@@ -3192,12 +3364,16 @@ void touchUp(uint32_t nowMs) {
   if (!g_touch.down) return;
   g_touch.down = false;
   g_lastActMs = nowMs;
+  const bool held = g_holdShown && !g_touch.moved;  // 長押しの表示(外周)を出していて、動かしていない
   if (g_holdShown || g_guideShown) {  // 案内・長押しの表示を消す(今の画面を描き直す)
     g_holdShown = false;
     g_guideShown = false;
     g_full = true;
   }
   if (g_touch.switched) return;  // 長押しで設定に入った。離しても何もしない
+  // 2.7.0: 長押しの表示(外周)が出てから HOLD_MS の前に離したのは、長押しをやめたもの。何もしない(本人「長押しを認識して、
+  // アニメーションが出た後に指を離した場合は何も動作しないほうがいい」。2.6.0 までは、その所のタップになって設定の中で画面が移っていた)
+  if (held) return;
   // 決まる前に離した: 短いタッチは何もしない(押していた時間は足りているのに update で確かめていなかったときは、ここで決める)
   if (!g_touch.confirmed && (uint32_t)(nowMs - g_touch.t0) < TOUCH_CONFIRM_MS) return;
   g_touch.confirmed = true;
@@ -3205,7 +3381,15 @@ void touchUp(uint32_t nowMs) {
   if (dir) {
     swipe(dir, nowMs);
   } else if (!g_touch.moved) {
-    tap(g_touch.x, g_touch.y, nowMs);
+    if (zoneAt(g_touch.x, g_touch.y) == Z_BOT && tapBand(Z_BOT, nowMs)) {  // 2.7.0: 下の帯は反転を PRESS_FLASH_MS 見せてから(pressStep)
+      g_pressTap.on = true;
+      g_pressTap.x = g_touch.x;
+      g_pressTap.y = g_touch.y;
+      g_pressTap.due = nowMs + PRESS_FLASH_MS;
+      g_pressTap.sc = g_sc;
+    } else {
+      tap(g_touch.x, g_touch.y, nowMs);
+    }
   }
 }
 
@@ -3228,6 +3412,7 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
   }
   touchStep(now);
   holdStep(now);
+  pressStep(now);  // 2.7.0: 押した帯の反転(と、反転を見せたあとの下の帯の操作)
   // 覚える画面: サーキット・タコ・データのどれかを HOME_CONFIRM_MS 続けて見ていたら、それを覚える
   if (isMain(g_sc)) {
     if (g_sc != g_homeCur || g_homeRestart) {
@@ -3268,6 +3453,7 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
       case SC_CAN_ID: updCanId(); break;
       case SC_CAN_DETAIL: updCanDetail(now); break;
       case SC_CAN_REDO: updCanRedo(); break;
+      case SC_CAN_PP: updCanPp(now); break;
       case SC_SET_LIST: updSetList(ls, ps, si, now); break;
       case SC_SET_EDIT: updSetEdit(now); break;
       case SC_SET_RESET: updSetReset(); break;
@@ -3329,6 +3515,10 @@ void testShow(Screen sc, int a, int b) {
     g_grpFrom = g_grp == G_SYS ? SC_SET_LIST : SC_SET_INFO;
   } else if (sc == SC_CAN_ID) {
     g_canIdx = a;
+    g_canPp = b == 1;
+    listCount();
+  } else if (sc == SC_CAN_REDO) {
+    g_canPp = a == 1;
   } else if (sc == SC_OPENING) {  // オープニングの種類(0 サーキット、1 タコ、2 データ)。覚えた画面もそれにする(終わったらそこへ)
     g_homeSaved = a == 1 ? SC_BOOST : (a == 2 ? SC_DATA : SC_DRIVE);
     g_homeCur = g_homeSaved;
@@ -3338,6 +3528,7 @@ void testShow(Screen sc, int a, int b) {
     g_homeRestart = true;
   }
   g_touch.down = false;
+  g_pressTap.on = false;
   go(sc);
 }
 

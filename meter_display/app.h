@@ -135,6 +135,10 @@ void platCanFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint
 void platResetImuCal();
 // 3000rpm 超・以下の累計時間を今すぐ NVS に書く(「時間の記録」のリセットのあと)。ふだんは TIME_SAVE_MS ごとに書く
 void platSaveTimes();
+// CAN確認の「前後で比べる」の前の記録(2.6.0)を保存する(n = 0 なら消す)。書けたら true
+bool platSaveCanPre(const void *data, size_t n);
+// 保存した前の記録を読む。戻り値は読んだバイト数(無い・入らないときは 0)
+size_t platLoadCanPre(void *data, size_t maxN);
 
 // ---------------------------------------------------------------- mlink
 namespace mlink {
@@ -160,25 +164,18 @@ bool usingRaw(uint32_t nowMs);  // いま getSignals が生データから作っ
 
 // ---------------------------------------------------------------- veh(車の CAN の生データから表示に使う値を作る。config.h の VEH_*)
 namespace veh {
-void begin();  // 状態を全部消す(燃料の前回の値も)。setup() で NVS から戻す前に呼ぶ
+void begin();  // 状態を全部消す
 // CAN の生データを 1 フレーム受けるたびに呼ぶ(受信タスク。mlink が呼ぶ)
 void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *data, uint32_t nowMs);
 // 表示に使う値(linkUp・sim・scene 以外)を out に入れる。out は呼ぶ側で 0 にしておく
 void getSignals(Signals *out, uint32_t nowMs);
-// 燃料のなましの値(lp)の保存と復元(NVS)。値は生の値の 10 倍(0.1 L 単位)の整数
-void fuelRestore(int tenths);       // 起動時に、前回保存した値を入れる(0 以下は「無い」)
-bool fuelSaveValue(int *tenths);    // 保存する値。なましの値がまだ無ければ false
+// 燃料(2.7.0: C-CAN 0A18A000 b5 = %。config.h の 燃料)の中身。受信の状態 → CAN の「燃料」とシリアルに出す
 struct FuelInfo {
-  bool have;            // なましの値がある(前回の値か、正しい生の値を受けた)
-  bool restored;        // この起動で前回の値から始めた
-  int restoredTenths;   // そのときの値(生の値の 10 倍)
-  bool seen;            // 0C014003 を VEH_FUEL_TIMEOUT_MS 以内に受けている(b5 = 0 も含む)
-  uint8_t raw;          // 最後に使った生の値(b5)
-  uint8_t lastB5;       // 最後に受けた b5(使わない 0 も含む。受信の状態 → CAN の「燃料」に出す)
-  float hp, lp;
-  bool stable, armed;
-  uint32_t zeroFrames;  // 捨てた b5 = 0 のフレームの数
-  uint32_t refuels;     // 給油とみなした回数
+  bool seen;         // 0A18A000 を VEH_FUEL_TIMEOUT_MS 以内に受けている(b5 = 0 も含む)
+  bool have;         // 使える値(1〜100)を受けたことがある
+  uint8_t pct;       // 最後に使った値 [%](表示に使っている値)
+  uint8_t lastB5;    // 最後に受けた b5(使わない 0 も含む)
+  uint32_t ignored;  // 捨てた b5(0 と 100 超)のフレームの数
 };
 void fuelInfo(FuelInfo *out, uint32_t nowMs);
 float lastRatio();  // ギアの推定に使った最後の比 [rpm per km/h](シリアル用)
@@ -210,6 +207,20 @@ int candidates(uint16_t *entries, uint8_t *masks, int maxOut);
 bool getView(int entry, View *out);
 // 古い順に並べた値を out(CAN_HIST_SAMPLES 個)へ入れる。戻り値は入れた個数
 int getHistory(int entry, int byteIndex, uint8_t *out);
+// ---- 前後で比べる(2.6.0。config.h の CAN_PP_*)。前の記録は platSaveCanPre で保存し、begin で読み戻す
+struct PpResult {
+  uint16_t entry;  // 表の番号
+  uint8_t byte;    // バイトの位置
+  uint8_t pre, post;  // 前と後の真ん中の値
+};
+int ppWaitMs(uint32_t nowMs);      // 記録できるまでの残り [ms](0 = 今できる。-1 = まだ何も受けていない)
+bool ppRecordPre(uint32_t nowMs);  // 直前 CAN_PP_WIN_MS を「前」にして保存する(候補は消す)。記録できないときは false
+bool ppHasPre();
+int ppRecordPost(uint32_t nowMs);  // 直前 CAN_PP_WIN_MS を「後」にして、前と比べた候補を作る。戻り値 = 候補の数(-1 = 記録できない)
+bool ppHasResult();
+// 候補(増えたもの → 減ったもの、それぞれ差の大きい順)。戻り値は全部の数。up・down に増えた・減ったの数
+int ppResults(PpResult *out, int maxOut, int *up = nullptr, int *down = nullptr);
+void ppClear();  // 前の記録(保存も)と候補を消す
 }
 
 // ---------------------------------------------------------------- trip

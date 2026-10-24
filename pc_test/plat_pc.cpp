@@ -1,6 +1,7 @@
 // plat_pc.cpp - PC 上の試験用: 基板に依存する部分(meter_display.ino にある plat)の代わり
 #include "../meter_display/app.h"
 #include <stdlib.h>
+#include <string.h>
 int g_hostBrightness = -1;
 int g_hostSaves = 0;
 bool g_hostSaveOk = true;
@@ -22,3 +23,19 @@ void platResetImuCal() {
 }
 int g_hostTimeSaves = 0;
 void platSaveTimes() { g_hostTimeSaves++; }
+// CAN確認の「前後で比べる」の前の記録(2.6.0)。電源を切っても残る NVS の代わり(cantab::begin のあとも残る)
+unsigned char g_hostCanPre[8192];
+size_t g_hostCanPreN = 0;
+int g_hostCanPreSaves = 0;
+bool platSaveCanPre(const void *data, size_t n) {
+  g_hostCanPreSaves++;
+  if (n > sizeof(g_hostCanPre)) return false;
+  if (n) memcpy(g_hostCanPre, data, n);
+  g_hostCanPreN = n;
+  return true;
+}
+size_t platLoadCanPre(void *data, size_t maxN) {
+  if (g_hostCanPreN == 0 || g_hostCanPreN > maxN) return 0;
+  memcpy(data, g_hostCanPre, g_hostCanPreN);
+  return g_hostCanPreN;
+}

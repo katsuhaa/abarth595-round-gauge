@@ -5,7 +5,6 @@
  *   アバルト 595 の純正ブースト計の位置に付ける丸型表示器。XIAO ESP32C6(c6_can_link)から UART で届く CAN の生データから
  *   表示に使う値(回転数・車速・水温・ブースト・燃料・ギアなど)を作り(app.cpp の veh。2.0.0 で c6_can_link から移した)、
  *   ui_spec.md(キャンバス版 23)の画面で表示する。CAN には直接つながない(受信するのは UART だけ)。
- *   燃料のなましの値は、累計時間と同じく TIME_SAVE_MS ごとに保存し、次の起動ではその値から始める。
  *   あわせて RaceChrono DIY の BLE 機器になり、GPS(M100)・CAN の生データ(XIAO から)・IMU(基板の QMI8658)を
  *   1 台でスマホの RaceChrono へ送る(2026-10-14 に追加。仕様は github.com/aollin/racechrono-ble-diy-device)。
  *
@@ -23,7 +22,8 @@
  *   設定の中は項目・ページ。長押しで設定(0.4 秒でスワイプの札が灰になって外周が回り始め、0.8 秒で一周して 1.2 秒で設定)。
  *   設定の中のボタンはタップ(上の帯 = 1 つ上へ、左右の半分 = 前・次。変更の画面では − +。2.4.1)。メニューに入るのは画面のどこかの
  *   長押し(設定に入るのと同じ 1.2 秒。下の帯は「長押しで開く」。0.4 秒で帯が水色になり外周が回る。2.4.4、2.4.5、2.5.0)。
- *   値を確定する「決定」と、赤い帯(リセットなど)はタップ。
+ *   外周が出たあとに 1.2 秒より前に離したら何もしない(2.7.0)。値を確定する「決定」と、赤い帯(リセットなど)はタップ。
+ *   上の帯とタップで動く下の帯(「変化を記録」「前を記録」など)は、押している間は反転する。下の帯は離して 0.25 秒反転を見せてから動く(2.7.0)。
  *   どの画面も、触れてから 0.1 秒(config.h の TOUCH_CONFIRM_MS)押し続けたらタッチと決め、離したときに操作する。短いタッチは何もしない。
  *   サーキット・タコ・データでは、決まったら案内(上に「‹ スワイプ ›」、下に「長押し ▶ 設定」)が出る。指が 80 px 以上動くと
  *   長押しは取り消し(長押しの札が灰)。しきい値は config.h の TOUCH_CONFIRM_MS・HOLD_*・SWIPE_*。
@@ -32,6 +32,12 @@
  *   (変えていれば保存して)、押した「決定」の帯が数回点滅し、その間は値が太くなる(2.4.3。2.4.5: 変えていなくても点滅)。
  *   電源を入れた直後はオープニング(覚えた画面ごとに 3 種類。サーキット = 輪が点いて消える、タコ = 針が振り切りまで上がって戻る、
  *   データ = 自己診断。config.h の OPENING_ON・OPC_*・OPT_*・OPD_*。タッチで飛ばせる)。2026-10-21、2.5.0 で 3 種類に
+ *
+ * CAN の ID 探し: 設定 → 受信の状態 → CAN の「CAN確認」(操作の前後で「変化を記録」を押して絞る。スイッチのような値)と、最後のページ
+ *   「前後で比べる」(2.6.0。燃料のようにゆっくり変わる値)。前後で比べるは、止まって 10 秒たったら、エンジンを切る前に「前を記録」→
+ *   電源を切って給油など → 入れ直してエンジンをかけ、15 秒たったら「後を記録」(2.7.0: 前も後もエンジンがかかっている間。燃料の
+ *   0A18A000 b5 はエンジンが止まると 0 になる)。前も後も変化が少なく、差が 5 以上のバイトを、増えたもの・減ったものの順に一覧で出す。
+ *   前の記録は保存されるので、電源を切っても残る(config.h の CAN_PP_*)
  *
  * デモ表示: 設定の最後の項目「デモ」を「入」にすると、XIAO をつながずに模擬の値(c6_display_debug と同じ場面 1〜9)を出す。
  *   入の間は UART を読まない。画面の下に「SIM」、上に場面番号が出る。設定は保存され、電源を入れ直しても続く。
@@ -59,8 +65,8 @@
  *   起動時に確かめた結果(画面・メモリー・電源 IC・タッチ・設定・UART・BLE・GPS・IMU、最後に「自己診断: OK / NG」)。
  *   同じ内容を 60 秒ごとに出し直すので、シリアルモニターはいつ開いてもよい。
  *   5 秒ごとに描画・受信・RaceChrono の状態を 1 行。タッチを離すたびに動きと画面の移り変わりを 1 行。
- *   CAN の生データから値を作っているとき(c6_can_link 2.0.0)は、5 秒ごとに「車の値(CAN から)」の行(作った値、燃料の生の値・
- *   なましの値、ギアの推定に使った比)。起動時の結果には、燃料を前回の値から始めたかを 1 行。
+ *   CAN の生データから値を作っているとき(c6_can_link 2.0.0)は、5 秒ごとに「車の値(CAN から)」の行(作った値、燃料の b5、
+ *   ギアの推定に使った比)。
  *   回転数の点滅(輪が黄になる所(シフト点 − 400)から、近づくほど速く。消灯は 80 ms で一定、点灯を 150 → 50 ms に縮める。
  *   シフト点 + 200 以上は点滅せず明るさ最大。2026-10-21)があった 5 秒は、点灯・消灯の時間と切り替えの遅れを 1 行
  *   (「点滅: 点灯 50 ms / 消灯 80 ms 切り替え 98 回 遅れ 最大 3 ms OK」。遅れが消灯の時間の 2 割を超えた切り替えがあれば NG)。
@@ -81,7 +87,7 @@
  *     PSRAM            → OPI PSRAM
  *   どちらも、違っているとコンパイルがエラーで止まる(下の #error)。「USB Mode」が既定値(Hardware CDC and JTAG)で
  *   ないときも同じ。
- *   スケッチは約 1.2MB で、既定の Partition Scheme(1.2MB APP)の 96 %(2.5.0、2026-10-24)。Flash Size も既定値のままで動く。
+ *   スケッチは約 1.2MB で、既定の Partition Scheme(1.2MB APP)の 97 %(2.7.0、2026-10-24)。Flash Size も既定値のままで動く。
  *   コンパイルの最後に「Sketch too big」と出るようになったら、Partition Scheme を「Huge APP (3MB No OTA/1MB SPIFFS)」にする
  *   (設定の保存領域はどちらでも同じ場所にあり、保存した値は消えない)。
  *   「コンパイラの警告」を「すべて」にすると NimBLE-Arduino の nimconfig.h から「redefined」の警告がたくさん出るが、
@@ -318,7 +324,7 @@ static bool lcdBegin() {
 
 static const char *screenName(int sc) {
   static const char *const NAMES[] = { "サーキット", "タコ", "データ", "CAN確認", "CAN確認の詳細", "設定", "設定の変更", "受信の状態", "グループの中", "オープニング",
-                                       "CAN確認の一覧", "CAN確認のやり直す", "時間の記録のリセット" };
+                                       "CAN確認の一覧", "CAN確認のやり直す", "時間の記録のリセット", "CAN確認の前後で比べる" };
   return (sc >= 0 && sc < (int)(sizeof(NAMES) / sizeof(NAMES[0]))) ? NAMES[sc] : "?";
 }
 
@@ -489,7 +495,6 @@ static int clampInt(int v, int lo, int hi) {
 }
 static uint8_t g_homeLoaded = ui::SC_DRIVE;  // NVS の覚えた画面
 static uint32_t g_timesSavedA = 0, g_timesSavedB = 0, g_timesSaveMs = 0;
-static int g_fuelSaved = 0;  // NVS の燃料のなましの値(生の値の 10 倍。0 = 無い)
 static void loadSettings() {
   g_sys.nvsOk = g_prefs.begin("meter", false);
   if (!g_sys.nvsOk) return;
@@ -498,9 +503,6 @@ static void loadSettings() {
   g_timesSavedA = g_prefs.getULong("tabove", 0);
   g_timesSavedB = g_prefs.getULong("tbelow", 0);
   trip::setTimes(g_timesSavedA, g_timesSavedB);
-  g_fuelSaved = g_prefs.getInt("fuel", 0);  // 燃料は前回の値から始める(veh::begin のあとに呼ぶこと)
-  if (g_fuelSaved <= 0) g_fuelSaved = 0;
-  veh::fuelRestore(g_fuelSaved);
   g_set.shiftRpm = clampInt(g_prefs.getInt("shift", SET_SHIFT_DEFAULT), SET_SHIFT_MIN, SET_SHIFT_MAX);
   g_set.autoReturnMin = clampInt(g_prefs.getInt("autoret", SET_AUTORET_DEFAULT), SET_AUTORET_MIN, SET_AUTORET_MAX);
   g_set.brightnessPct = clampInt(g_prefs.getInt("bright", SET_BRIGHT_DEFAULT), SET_BRIGHT_MIN, SET_BRIGHT_MAX);
@@ -527,17 +529,15 @@ bool platSaveSettings(const Settings &s) {
   return ok;
 }
 
-// 3000rpm 超・以下の累計時間、覚えた画面、燃料のなましの値を NVS に書く(変わったものだけ)。force = 時間を待たずに今すぐ
+// 3000rpm 超・以下の累計時間と覚えた画面を NVS に書く(変わったものだけ)。force = 時間を待たずに今すぐ
 static void saveTimes(uint32_t now, bool force) {
   if (!g_sys.nvsOk) return;
   if (!force && (uint32_t)(now - g_timesSaveMs) < TIME_SAVE_MS) return;
   g_timesSaveMs = now;
   uint32_t a = trip::aboveMs(), b = trip::belowMs();
   uint8_t home = ui::homeScreen();
-  int fuel = 0;
   bool wt = a != g_timesSavedA || b != g_timesSavedB, wh = home != g_homeLoaded;
-  bool wf = veh::fuelSaveValue(&fuel) && fuel != g_fuelSaved;  // 0.1 L 単位で変わったとき
-  if (!wt && !wh && !wf) return;
+  if (!wt && !wh) return;
   mlink::graceUntil(millis() + 5000);  // フラッシュへ書く間の UART の取りこぼしを線の品質に入れない
   if (wt) {
     g_prefs.putULong("tabove", a);
@@ -550,14 +550,30 @@ static void saveTimes(uint32_t now, bool force) {
     g_homeLoaded = home;
     Serial.printf("覚えた画面を保存: %s\n", screenName(home));
   }
-  if (wf) {
-    g_prefs.putInt("fuel", fuel);
-    g_fuelSaved = fuel;
-  }
   mlink::graceUntil(millis() + 200);
 }
 void platSaveTimes() {
   saveTimes(millis(), true);
+}
+// CAN確認の「前後で比べる」の前の記録(2.6.0。給油などで電源を切っても残す)。n = 0 なら消す
+bool platSaveCanPre(const void *data, size_t n) {
+  if (!g_sys.nvsOk) return false;
+  mlink::graceUntil(millis() + 5000);  // フラッシュへ書く間の UART の取りこぼしを線の品質に入れない
+  bool ok = true;
+  if (n == 0) {
+    if (g_prefs.isKey("canpre")) ok = g_prefs.remove("canpre");
+  } else {
+    ok = g_prefs.putBytes("canpre", data, n) == n;
+  }
+  mlink::graceUntil(millis() + 200);
+  Serial.printf("CAN確認(前後で比べる): 前の記録を%s %s(%u バイト)\n", n ? "保存" : "消去", ok ? "OK" : "失敗", (unsigned)n);
+  return ok;
+}
+size_t platLoadCanPre(void *data, size_t maxN) {
+  if (!g_sys.nvsOk || !g_prefs.isKey("canpre")) return 0;
+  const size_t n = g_prefs.getBytesLength("canpre");
+  if (n == 0 || n > maxN) return 0;
+  return g_prefs.getBytes("canpre", data, n);
 }
 
 // ================================================================ 受信(UART、別タスク)
@@ -1460,13 +1476,6 @@ static void printSelfCheck() {
   Serial.printf("設定(%s): シフト点 %d rpm、自動で戻る %d 分、明るさ %d %%、警告温度 %d ℃、デモ %s、RaceChrono 送信 %s\n", g_sys.nvsOk ? "保存領域 OK" : "保存領域を開けない。初期値を使う",
                 g_set.shiftRpm, g_set.autoReturnMin, g_set.brightnessPct, g_set.warnTempC, g_set.demoOn ? "入" : "切", g_set.rcOn ? "入" : "切");
   Serial.printf("UART 受信(「IO16」): %s\n", g_linkOk ? "開始。速度は自動で合わせる" : "開始していない");
-  {
-    veh::FuelInfo fi;
-    veh::fuelInfo(&fi, millis());
-    if (fi.restored) Serial.printf("燃料: 前回の値 %.1f(生の値。%.0f %%)から始めた。0C014003 の b5 = 0 は使わない\n", fi.restoredTenths / 10.0,
-                                   (fi.restoredTenths / 10.0 - VEH_FUEL_EMPTY_RAW) * 100.0 / (VEH_FUEL_FULL_RAW - VEH_FUEL_EMPTY_RAW));
-    else Serial.println("燃料: 前回の値なし(最初に受けた正しい値から始める)。0C014003 の b5 = 0 は使わない");
-  }
   Serial.printf("前回のリセットの理由: %s(%d)。落ちた回数 %lu\n", resetReasonName(g_resetReason), (int)g_resetReason, (unsigned long)g_crashCount);
   if (g_rcAutoOff) Serial.printf("RaceChrono の送信: 切にした(落ちる起動が %d 回続いたため。設定 → 受信の状態 → RaceChrono の「送信」で入に戻せる)\n", RC_CRASH_LIMIT);
   else if (!g_sys.rc.enabled) Serial.println("RaceChrono の送信: 切(設定)");
@@ -1491,7 +1500,7 @@ void setup() {
   // 電源 IC(AXP2101、0x34)のレジスタ 0x20 = 起動のきっかけ。読むだけで、設定は変えない
   g_sys.axpOk = i2cRead(0x34, 0x20, &g_sys.powerOnSrc);
   g_sys.touchOk = touchBegin();
-  veh::begin();  // loadSettings が燃料の前回の値を入れるので、その前に
+  veh::begin();
   loadSettings();
 
   g_fb = (uint16_t *)platAlloc(sizeof(uint16_t) * gfx::W * gfx::H);
@@ -1642,7 +1651,7 @@ void loop() {
       if (bs.lateOver) Serial.printf("(消灯の時間の 2 割を超えた遅れ %lu 回)", (unsigned long)bs.lateOver);
       Serial.println();
     }
-    // CAN の生データから値を作っているとき(c6_can_link 2.0.0): 作った値と、燃料のなまし・ギアの推定の中身
+    // CAN の生データから値を作っているとき(c6_can_link 2.0.0): 作った値と、燃料の b5・ギアの推定の中身
     if (mlink::usingRaw(now)) {
       veh::FuelInfo fi;
       veh::fuelInfo(&fi, now);
@@ -1651,12 +1660,11 @@ void loop() {
         gearText[0] = s.gear;
         gearText[1] = 0;
       }
-      Serial.printf("  車の値(CAN から): rpm %s%d 車速 %s%.1f アクセル %s%.0f%% 水温 %s%.0f ブースト %s%.2f 燃料 %s%.1f%% ギア %s(比 %.1f) | 燃料 生 %u hp %.1f lp %.1f %s%s%s"
-                    " b5=0 を捨てた %lu 回 給油 %lu 回\n",
+      Serial.printf("  車の値(CAN から): rpm %s%d 車速 %s%.1f アクセル %s%.0f%% 水温 %s%.0f ブースト %s%.2f 燃料 %s%.0f%% ギア %s(比 %.1f) | 燃料 0A18A000 b5 %u"
+                    "(0 と 100 超を捨てた %lu 回)\n",
                     s.rpmOk ? "" : "×", s.rpm, s.speedOk ? "" : "×", (double)s.speedKmh, s.throttleOk ? "" : "×", (double)s.throttlePct, s.waterOk ? "" : "×",
-                    (double)s.waterC, s.boostOk ? "" : "×", (double)s.boostBar, s.fuelOk ? "" : "×", (double)s.fuelPct, gearText, (double)veh::lastRatio(), fi.raw,
-                    (double)fi.hp, (double)fi.lp, fi.stable ? "安定" : "揺れ", fi.armed ? " 停止後" : "", fi.restored ? " 前回の値から" : "", (unsigned long)fi.zeroFrames,
-                    (unsigned long)fi.refuels);
+                    (double)s.waterC, s.boostOk ? "" : "×", (double)s.boostBar, s.fuelOk ? "" : "×", (double)s.fuelPct, gearText, (double)veh::lastRatio(),
+                    (unsigned)fi.lastB5, (unsigned long)fi.ignored);
     }
     if (g_sys.rc.enabled) rcPrintStatusLine();
   }

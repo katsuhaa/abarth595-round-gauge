@@ -289,22 +289,13 @@ struct State {
   int water;              // ℃
   uint8_t boostRaw;       // 0A18A001 b4(そのまま)
   bool reverse;           // R に入っている
-  uint32_t rpmZeroSince;  // 回転数 0 が続き始めた時刻(0 = 回っている)
   uint32_t rpmMs, speedMs, clutchMs, engMs;  // 最後に受けた時刻(0 = まだ)
-  // 燃料
-  uint32_t fuelSeenMs;    // 0C014003 を最後に受けた時刻(b5 = 0 も含む)
-  uint32_t fuelMs;        // 最後に使った(正しい)値の時刻(0 = この起動でまだ。途切れたあとの判定にも使う)
-  uint8_t fuelRaw;        // 最後に使った生の値
+  // 燃料(2.7.0: 0A18A000 b5 = %)
+  uint32_t fuelSeenMs;    // 0A18A000 を最後に受けた時刻(b5 = 0 も含む)
+  uint8_t fuelPct;        // 最後に使った値 [%]
   uint8_t fuelLastB5;     // 最後に受けた b5(0 も含む)
-  float fuelHp;           // 短い指数平均(VEH_FUEL_HP_S)
-  float fuelLp;           // 長い指数平均(VEH_FUEL_LP_S)= 表示に使う値
-  bool fuelHave;          // fuelLp に値がある(前回の値、または正しい生の値)
-  bool fuelStable;        // 直近の値が安定だったか
-  bool fuelArmed;         // エンジン停止を見たので、再始動後の燃料の値で給油を判定する
-  bool fuelRestored;      // この起動で前回の値から始めた
-  int fuelRestoredTenths;
-  uint32_t fuelZero;      // 捨てた b5 = 0 のフレームの数
-  uint32_t fuelRefuels;   // 給油とみなした回数
+  bool fuelHave;          // fuelPct に値がある
+  uint32_t fuelIgnored;   // 捨てた b5(0 と 100 超)のフレームの数
 };
 static State g;              // 受信タスクが書き、loop() が読む(platLock で守る)
 static char g_gear = 0;      // 推定したギア('1'〜'5'、'N'、0 = 分からない)。getSignals だけが使う
@@ -326,62 +317,6 @@ void begin() {
   g_lastRatio = 0;
 }
 
-void fuelRestore(int tenths) {
-  if (tenths <= 0) return;
-  platLock();
-  g.fuelHp = g.fuelLp = tenths / 10.0f;
-  g.fuelHave = true;
-  g.fuelRestored = true;
-  g.fuelRestoredTenths = tenths;
-  platUnlock();
-}
-
-bool fuelSaveValue(int *tenths) {
-  platLock();
-  bool have = g.fuelHave;
-  float lp = g.fuelLp;
-  platUnlock();
-  if (!have) return false;
-  long v = lroundf(lp * 10.0f);
-  if (v <= 0) return false;  // 0 以下は「無い」と区別できないので書かない
-  *tenths = (int)v;
-  return true;
-}
-
-// 正しい生の値(b5)を 1 つ入れる。platLock の中で呼ぶ
-static void fuelSample(float v, uint32_t now) {
-  // エンジン停止(回転数 0 が続く、または回転数のフレームが来ない)を見たら、再始動後の給油の判定を待ち受ける
-  bool engineOff = (g.rpmMs == 0) || (uint32_t)(now - g.rpmMs) > VEH_FUEL_ENGINE_OFF_MS
-                   || (g.rpmZeroSince && (uint32_t)(now - g.rpmZeroSince) >= VEH_FUEL_ENGINE_OFF_MS);
-  if (engineOff) g.fuelArmed = true;
-  if (g.fuelMs == 0 || (uint32_t)(now - g.fuelMs) > VEH_FUEL_TIMEOUT_MS) {
-    // 起動後の最初、または途切れたあと。前の値(前回保存した値、または途切れる前の値)があれば、それより
-    // VEH_FUEL_REFUEL_L 以上多いときだけ給油とみなしてこの値から始め直す。そうでなければ前の値を続ける(hp だけ今の値から)
-    if (g.fuelHave && v < g.fuelLp + VEH_FUEL_REFUEL_L) {
-      g.fuelHp = v;
-    } else {
-      if (g.fuelHave) g.fuelRefuels++;
-      g.fuelHp = g.fuelLp = v;
-      g.fuelHave = true;
-    }
-    g.fuelStable = true;
-    g.fuelArmed = false;  // 再始動後の判定はここで済んだ
-  } else if (g.fuelArmed && !engineOff && v >= g.fuelLp + VEH_FUEL_REFUEL_L) {
-    g.fuelHp = g.fuelLp = v;  // 給油(電源を切らずにエンジンを止め、再び回ってからの最初の値で判定)
-    g.fuelStable = true;
-    g.fuelArmed = false;
-    g.fuelRefuels++;
-  } else {
-    float dt = (uint32_t)(now - g.fuelMs) / 1000.0f;
-    g.fuelHp += dt / (VEH_FUEL_HP_S + dt) * (v - g.fuelHp);
-    float dev = v - g.fuelHp;
-    g.fuelStable = (dev < VEH_FUEL_STABLE_L && dev > -VEH_FUEL_STABLE_L);
-    if (g.fuelStable || v < g.fuelLp) g.fuelLp += dt / (VEH_FUEL_LP_S + dt) * (v - g.fuelLp);
-    if (!engineOff) g.fuelArmed = false;  // 回っているのに給油の判定が成立しなかった: 待ち受けを解く
-  }
-  g.fuelMs = stamp(now);
-}
-
 void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *d, uint32_t now) {
   if (!ext) return;  // 使う値はどれも 29 ビット ID
   if (bus == 0) {
@@ -390,11 +325,6 @@ void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *
       g.rpm = (uint16_t)(((uint16_t)d[2] << 8) | d[3]);
       g.accel = d[7];
       g.rpmMs = stamp(now);
-      if (g.rpm == 0) {
-        if (g.rpmZeroSince == 0) g.rpmZeroSince = stamp(now);
-      } else {
-        g.rpmZeroSince = 0;
-      }
       platUnlock();
     } else if (id == VEH_ID_SPEED && dlc >= 6) {
       platLock();
@@ -413,18 +343,18 @@ void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *
       g.reverse = (d[7] & VEH_REVERSE_MASK) != 0;
       g.engMs = stamp(now);
       platUnlock();
+    } else if (id == VEH_ID_FUEL && dlc >= 6) {
+      platLock();
+      g.fuelSeenMs = stamp(now);
+      g.fuelLastB5 = d[5];
+      if (d[5] == 0 || d[5] > 100) {
+        g.fuelIgnored++;  // 0 = 測れていない(エンジンが止まっている間など)。前の値のまま
+      } else {
+        g.fuelPct = d[5];
+        g.fuelHave = true;
+      }
+      platUnlock();
     }
-  } else if (id == VEH_ID_FUEL && dlc >= 6) {
-    platLock();
-    g.fuelSeenMs = stamp(now);
-    g.fuelLastB5 = d[5];
-    if (d[5] == 0) {
-      g.fuelZero++;  // IG ON 直後の「まだ測れていない」値(b4 = 0x88、b5 = 0)。使わない
-    } else {
-      g.fuelRaw = d[5];
-      fuelSample(d[5], now);
-    }
-    platUnlock();
   }
 }
 
@@ -486,11 +416,7 @@ void getSignals(Signals *out, uint32_t now) {
   out->throttlePct = (uint8_t)(((uint32_t)r.accel * 200 + 127) / 255) / 2.0f;
   int w = r.water < -3276 ? -3276 : (r.water > 3276 ? 3276 : r.water);
   out->waterC = (int16_t)(w * 10) / 10.0f;
-  // 0 L = VEH_FUEL_EMPTY_RAW、35 L = VEH_FUEL_FULL_RAW の直線で % に(0 L 側は仮)
-  float pct = (r.fuelLp - VEH_FUEL_EMPTY_RAW) * 100.0f / (VEH_FUEL_FULL_RAW - VEH_FUEL_EMPTY_RAW);
-  if (pct < 0) pct = 0;
-  if (pct > 100) pct = 100;
-  out->fuelPct = (uint8_t)(pct * 2.0f + 0.5f) / 2.0f;
+  out->fuelPct = r.fuelPct;
   int bc = (int)(r.boostRaw * VEH_BOOST_BAR_PER_LSB * 100.0f + 0.5f);
   out->boostBar = (int16_t)(bc > 32767 ? 32767 : bc) / 100.0f;
   out->gear = gear;
@@ -498,18 +424,11 @@ void getSignals(Signals *out, uint32_t now) {
 
 void fuelInfo(FuelInfo *out, uint32_t now) {
   platLock();
-  out->have = g.fuelHave;
-  out->restored = g.fuelRestored;
-  out->restoredTenths = g.fuelRestoredTenths;
   out->seen = within(g.fuelSeenMs, now, VEH_FUEL_TIMEOUT_MS);
-  out->raw = g.fuelRaw;
+  out->have = g.fuelHave;
+  out->pct = g.fuelPct;
   out->lastB5 = g.fuelLastB5;
-  out->hp = g.fuelHp;
-  out->lp = g.fuelLp;
-  out->stable = g.fuelStable;
-  out->armed = g.fuelArmed;
-  out->zeroFrames = g.fuelZero;
-  out->refuels = g.fuelRefuels;
+  out->ignored = g.fuelIgnored;
   platUnlock();
 }
 
@@ -539,6 +458,39 @@ static uint32_t g_sampleMs = 0;
 static int g_rec = 0;                    // 記録した回数
 static int g_recHist[CAN_REC_HIST];      // 件数の移り変わり(新しいものが最後)
 static int g_recHistN = 0;
+static bool g_firstSeen = false;         // begin のあとにフレームを受けた(2.6.0)
+static uint32_t g_firstMs = 0;           // 最初のフレームを受けた時刻(2.6.0。前後で比べるのは CAN_PP_SETTLE_MS たってから)
+
+// ---- 前後で比べる(2.6.0)。前の記録は、この形のまま NVS に書く(PpHead のあとに PpRec が n 個)
+struct PpHead {
+  uint16_t magic;  // PP_MAGIC
+  uint8_t ver;     // PP_VER
+  uint8_t pad;
+  uint16_t n;      // PpRec の数
+  uint16_t pad2;
+};
+struct PpRec {
+  uint32_t id;
+  uint8_t bus, ext, dlc;
+  uint8_t quiet;  // bit b = バイト b の幅が CAN_PP_QUIET 以下
+  uint8_t md[8];  // 真ん中の値(幅が CAN_PP_QUIET 以下のバイトだけ)
+};
+static const uint16_t PP_MAGIC = 0x5050;
+static const uint8_t PP_VER = 1;
+static const size_t PP_BYTES = sizeof(PpHead) + sizeof(PpRec) * CAN_MAX_IDS;
+static uint8_t *g_ppBuf = nullptr;  // 前の記録(PP_BYTES)
+static bool g_ppHave = false;       // 前の記録がある
+static PpResult g_ppRes[CAN_PP_MAX];
+static int g_ppResN = 0, g_ppUp = 0, g_ppDown = 0;
+static bool g_ppDone = false;       // 後を記録して、候補を作った
+
+static bool ppLoad() {  // 保存した前の記録を読み戻す(begin から)
+  if (!g_ppBuf) g_ppBuf = (uint8_t *)platAlloc(PP_BYTES);
+  if (!g_ppBuf) return false;
+  const size_t n = platLoadCanPre(g_ppBuf, PP_BYTES);
+  const PpHead *h = (const PpHead *)g_ppBuf;
+  return n >= sizeof(PpHead) && h->magic == PP_MAGIC && h->ver == PP_VER && h->n <= CAN_MAX_IDS && n == sizeof(PpHead) + sizeof(PpRec) * h->n;
+}
 
 void begin() {
   if (!g_e) g_e = (Entry *)platAlloc(sizeof(Entry) * CAN_MAX_IDS);
@@ -547,12 +499,20 @@ void begin() {
   g_histCount = 0;
   g_rec = 0;
   g_recHistN = 0;
+  g_firstSeen = false;
+  g_ppHave = ppLoad();
+  g_ppDone = false;
+  g_ppResN = g_ppUp = g_ppDown = 0;
 }
 
 void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *data, uint32_t nowMs) {
   if (!g_e) return;
   if (dlc > 8) dlc = 8;
   platLock();
+  if (!g_firstSeen) {
+    g_firstSeen = true;
+    g_firstMs = nowMs;
+  }
   int i = 0;
   while (i < g_n && !(g_e[i].id == id && g_e[i].bus == bus && g_e[i].ext == ext)) i++;
   if (i == g_n) {
@@ -580,7 +540,6 @@ void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *
     }
     e.dlc = dlc;
   }
-  (void)nowMs;
   platUnlock();
 }
 
@@ -700,6 +659,142 @@ int getHistory(int entry, int byteIndex, uint8_t *out) {
   }
   platUnlock();
   return n;
+}
+
+// ---- 前後で比べる(2.6.0)
+static const int PP_WIN = CAN_PP_WIN_MS / CAN_HIST_INTERVAL_MS;  // 見る点の数
+// 履歴の新しい方から PP_WIN 点で、バイトごとの幅が CAN_PP_QUIET 以下か(quiet の bit)と、そのバイトの真ん中の値(md)。platLock の中で呼ぶ
+static void ppStats(const Entry &e, uint8_t *quiet, uint8_t *md) {
+  *quiet = 0;
+  for (int b = 0; b < 8; b++) {
+    md[b] = 0;
+    if (b >= e.dlc) continue;
+    uint8_t lo = 255, hi = 0;
+    for (int k = 0; k < PP_WIN; k++) {
+      const uint8_t v = e.hist[b][(g_histPos - 1 - k + 2 * CAN_HIST_SAMPLES) % CAN_HIST_SAMPLES];
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (hi - lo > CAN_PP_QUIET) continue;
+    int cnt[CAN_PP_QUIET + 1] = {};
+    for (int k = 0; k < PP_WIN; k++) cnt[e.hist[b][(g_histPos - 1 - k + 2 * CAN_HIST_SAMPLES) % CAN_HIST_SAMPLES] - lo]++;
+    int acc = 0, v = 0;
+    while (v < CAN_PP_QUIET && acc + cnt[v] <= PP_WIN / 2) acc += cnt[v++];  // 小さい方から PP_WIN / 2 番目(0 から数える)
+    md[b] = (uint8_t)(lo + v);
+    *quiet |= (uint8_t)(1u << b);
+  }
+}
+
+int ppWaitMs(uint32_t nowMs) {
+  if (!g_e || !g_firstSeen) return -1;
+  const uint32_t el = nowMs - g_firstMs;
+  int w = el >= (uint32_t)CAN_PP_SETTLE_MS ? 0 : (int)(CAN_PP_SETTLE_MS - el);
+  const int hw = g_histCount >= PP_WIN ? 0 : (PP_WIN - g_histCount) * CAN_HIST_INTERVAL_MS;
+  return w > hw ? w : hw;
+}
+
+bool ppRecordPre(uint32_t nowMs) {
+  if (ppWaitMs(nowMs) != 0) return false;
+  if (!g_ppBuf) g_ppBuf = (uint8_t *)platAlloc(PP_BYTES);
+  if (!g_ppBuf) return false;
+  PpHead *h = (PpHead *)g_ppBuf;
+  PpRec *r = (PpRec *)(g_ppBuf + sizeof(PpHead));
+  int n = 0;
+  platLock();
+  for (int i = 0; i < g_n && n < CAN_MAX_IDS; i++) {
+    const Entry &e = g_e[i];
+    PpRec &p = r[n++];
+    memset(&p, 0, sizeof(p));
+    p.id = e.id;
+    p.bus = e.bus;
+    p.ext = e.ext;
+    p.dlc = e.dlc;
+    ppStats(e, &p.quiet, p.md);
+  }
+  platUnlock();
+  memset(h, 0, sizeof(*h));
+  h->magic = PP_MAGIC;
+  h->ver = PP_VER;
+  h->n = (uint16_t)n;
+  g_ppHave = true;
+  g_ppDone = false;
+  g_ppResN = g_ppUp = g_ppDown = 0;
+  platSaveCanPre(g_ppBuf, sizeof(PpHead) + sizeof(PpRec) * (size_t)n);  // 書けなくても、電源を切るまでは使える
+  return true;
+}
+
+bool ppHasPre() {
+  return g_ppHave;
+}
+
+int ppRecordPost(uint32_t nowMs) {
+  if (!g_ppHave || ppWaitMs(nowMs) != 0) return -1;
+  const PpHead *h = (const PpHead *)g_ppBuf;
+  const PpRec *r = (const PpRec *)(g_ppBuf + sizeof(PpHead));
+  // 差の大きい方から CAN_PP_MAX 個を残す(best は |差| の大きい順)
+  PpResult best[CAN_PP_MAX];
+  int bestD[CAN_PP_MAX];
+  int nb = 0, up = 0, down = 0;
+  platLock();
+  for (int i = 0; i < g_n; i++) {
+    const Entry &e = g_e[i];
+    const PpRec *p = nullptr;
+    for (int k = 0; k < h->n && !p; k++)
+      if (r[k].id == e.id && r[k].bus == e.bus && r[k].ext == e.ext) p = &r[k];
+    if (!p) continue;
+    uint8_t q, md[8];
+    ppStats(e, &q, md);
+    const int nbyte = e.dlc < p->dlc ? e.dlc : p->dlc;
+    for (int b = 0; b < nbyte; b++) {
+      if (!((p->quiet & q) >> b & 1)) continue;
+      const int d = (int)md[b] - (int)p->md[b];
+      const int ad = d < 0 ? -d : d;
+      if (ad < CAN_PP_MIN_DIFF) continue;
+      if (d > 0) up++;
+      else down++;
+      int at = nb;
+      while (at > 0 && (bestD[at - 1] < 0 ? -bestD[at - 1] : bestD[at - 1]) < ad) at--;
+      if (at >= CAN_PP_MAX) continue;
+      const int last = nb < CAN_PP_MAX ? nb : CAN_PP_MAX - 1;
+      for (int k = last; k > at; k--) {
+        best[k] = best[k - 1];
+        bestD[k] = bestD[k - 1];
+      }
+      best[at] = PpResult{ (uint16_t)i, (uint8_t)b, p->md[b], md[b] };
+      bestD[at] = d;
+      if (nb < CAN_PP_MAX) nb++;
+    }
+  }
+  platUnlock();
+  // 並べ方: 増えたもの(差の大きい順)のあとに減ったもの(差の大きい順)
+  int k = 0;
+  for (int pass = 0; pass < 2; pass++)
+    for (int i = 0; i < nb; i++)
+      if ((bestD[i] > 0) == (pass == 0)) g_ppRes[k++] = best[i];
+  g_ppResN = nb;
+  g_ppUp = up;
+  g_ppDown = down;
+  g_ppDone = true;
+  return up + down;
+}
+
+bool ppHasResult() {
+  return g_ppDone;
+}
+
+int ppResults(PpResult *out, int maxOut, int *up, int *down) {
+  if (up) *up = g_ppUp;
+  if (down) *down = g_ppDown;
+  const int n = g_ppResN < maxOut ? g_ppResN : maxOut;
+  for (int i = 0; i < n; i++) out[i] = g_ppRes[i];
+  return g_ppResN;
+}
+
+void ppClear() {
+  g_ppHave = false;
+  g_ppDone = false;
+  g_ppResN = g_ppUp = g_ppDown = 0;
+  platSaveCanPre(nullptr, 0);
 }
 
 }  // namespace cantab
