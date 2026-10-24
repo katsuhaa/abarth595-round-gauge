@@ -332,6 +332,83 @@ void fillArcHard(float cx, float cy, float rIn, float rOut, float a0, float a1, 
   arcFill(cx, cy, rIn, rOut, a0, a1, c, true);
 }
 
+// 範囲の四角と行ごとの区間の求め方は arcFill と同じ。色は画素ごとに「半径の方向の濃さ」と「lit の扇の濃さ」から決めて、そのまま書く
+void ringPaint(float cx, float cy, float rIn, float rOut, float a0, float a1, float litA0, float litA1, uint16_t lit, uint16_t track, uint16_t base) {
+  float sweep = a1 - a0;
+  if (sweep <= 0 || rOut <= 0 || rOut <= rIn) return;
+  if (rIn < 0) rIn = 0;
+  const float DEG = 3.14159265f / 180.0f;
+  const bool full = sweep >= 360.0f;
+  float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
+  auto take = [&](float x, float y) {
+    if (x < bx0) bx0 = x;
+    if (y < by0) by0 = y;
+    if (x > bx1) bx1 = x;
+    if (y > by1) by1 = y;
+  };
+  if (full) {
+    take(cx - rOut, cy - rOut);
+    take(cx + rOut, cy + rOut);
+  } else {
+    int steps = (int)(sweep / 2.0f) + 2;
+    for (int i = 0; i <= steps; i++) {
+      float a = (a0 + sweep * i / steps) * DEG;
+      take(cx + rOut * cosf(a), cy + rOut * sinf(a));
+    }
+    take(cx + rIn * cosf(a0 * DEG), cy + rIn * sinf(a0 * DEG));
+    take(cx + rIn * cosf(a1 * DEG), cy + rIn * sinf(a1 * DEG));
+  }
+  int ix0 = (int)floorf(bx0) - 2, iy0 = (int)floorf(by0) - 2, ix1 = (int)ceilf(bx1) + 2, iy1 = (int)ceilf(by1) + 2;
+  if (ix0 < 0) ix0 = 0;
+  if (iy0 < 0) iy0 = 0;
+  if (ix1 > W) ix1 = W;
+  if (iy1 > H) iy1 = H;
+  const float ls = litA1 - litA0;
+  const bool litAll = ls >= 360.0f, litNone = ls <= 0.0f;
+  const float e0x = cosf(litA0 * DEG), e0y = sinf(litA0 * DEG), e1x = cosf(litA1 * DEG), e1y = sinf(litA1 * DEG);
+  const float ro = rOut + 1.0f, ri = rIn - 1.0f;
+  const float inSq = (rIn + 1.0f) * (rIn + 1.0f), outSq = (rOut - 1.0f) * (rOut - 1.0f);
+  for (int iy = iy0; iy < iy1; iy++) {
+    float dy = iy + 0.5f - cy;
+    float oo = ro * ro - dy * dy;
+    if (oo <= 0) continue;
+    float xo = sqrtf(oo);
+    float ii = (ri > 0) ? ri * ri - dy * dy : -1;
+    float xi = ii > 0 ? sqrtf(ii) : 0;
+    for (int side = 0; side < (xi > 0 ? 2 : 1); side++) {
+      float xa = (xi > 0) ? (side ? cx + xi : cx - xo) : cx - xo;
+      float xb = (xi > 0) ? (side ? cx + xo : cx - xi) : cx + xo;
+      int sx0 = (int)floorf(xa) - 1, sx1 = (int)ceilf(xb) + 1;
+      if (sx0 < ix0) sx0 = ix0;
+      if (sx1 > ix1) sx1 = ix1;
+      for (int ix = sx0; ix < sx1; ix++) {
+        float px = ix + 0.5f - cx, py = dy;
+        float rr = px * px + py * py;
+        float sd;
+        if (rr > inSq && rr < outSq) {
+          sd = -1.0f;
+        } else {
+          float r = sqrtf(rr);
+          sd = rIn - r;
+          if (r - rOut > sd) sd = r - rOut;
+        }
+        const float cr = covFromDist(sd);
+        if (cr <= 0) continue;  // 輪の外(中の絵・背景)は触らない
+        float cl = litAll ? 1.0f : 0.0f;
+        if (!litAll && !litNone) {
+          float s0 = e0y * px - e0x * py;  // litA0 の線: 中が負
+          float s1 = e1x * py - e1y * px;  // litA1 の線: 中が負
+          cl = covFromDist(ls <= 180.0f ? (s0 > s1 ? s0 : s1) : (s0 < s1 ? s0 : s1));
+        }
+        const int al = (int)(cl * 255.0f + 0.5f), ar = (int)(cr * 255.0f + 0.5f);
+        const uint16_t ring = al >= 255 ? lit : (al <= 0 ? track : blend(track, lit, (uint32_t)al));
+        g_fb[iy * W + ix] = ar >= 255 ? ring : blend(base, ring, (uint32_t)ar);
+      }
+    }
+  }
+  addDirty(ix0, iy0, ix1, iy1);
+}
+
 // ------------------------------------------------------------ 多角形
 // 各画素に「辺が通ったぶんの面積の変化」を足し込み、行ごとに左から足し合わせると塗る割合になる方式。
 static Rect g_pb = { 0, 0, 0, 0 };

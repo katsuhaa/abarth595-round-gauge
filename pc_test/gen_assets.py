@@ -55,12 +55,21 @@ def _jp(*texts):  # 文字列の ASCII 以外の文字(重なりを除く)
     return "".join(dict.fromkeys(ch for t in texts for ch in t if ord(ch) >= 0x80))
 # 1 画面 1 項目の画面(10/23)の大きい字。項目の名前(48 / 44 / 34 px)、値(100 / 64 / 44 / 34 px)、下の帯(44 px)に出る日本語
 UI_NAME_JP = _jp("シフトポイント", "自動で戻る", "明るさ", "水温の警告", "デモ", "RaceChrono 送信", "時間の記録", "受信の状態", "CAN確認", "やり直す",
-                 "通信速度", "受信", "誤り・欠落", "送り元", "描画", "起動", "送信", "位置", "GPS 速度", "向きの補正", "設定", "戻る", "サーキット",
-                 "燃料")  # 2.2.0: 受信の状態の「燃料」
+                 "通信速度", "受信", "誤り・欠落", "起動", "送信", "位置", "向きの補正", "設定", "戻る", "サーキット",
+                 "燃料",  # 2.2.0: 受信の状態の「燃料」。2.3.0: 「描画」は「FPS」にした
+                 "本体の状態", "CANリーダー", "C-CAN・B-CAN", "測位", "速度", "加速度", "接続", "送った数",  # 2.4.0: 受信の状態を分け直した
+                 "クロック", "温度", "フラッシュ")  # 2.4.3: 本体の状態の CPU など
 UI_VALUE_JP = _jp("–正常異常待ち入切", "受信なし", "バイト/秒", "版が違います", "模擬", "不明", "5V 投入", "PWR ボタン", "電池", "切(設定)", "開始できない",
                   "接続中", "未接続(待機中)", "3D 衛星 2D 測位なし", "応答なし", "前後 横", "上 済 前 未", "済み", "件分",
-                  "生 なまし")  # 2.2.0: 受信の状態の「燃料」の値
-UI_BOTTOM_JP = _jp("変更", "決定", "リセット", "開く", "向きを取り直す", "変化を記録", "詳細", "やり直す", "記録 0 回", "切", "入")
+                  "生 なまし",  # 2.2.0: 受信の状態の「燃料」の値
+                  "平均 最低", "(次の起動から)",  # 2.3.0: 「FPS」の値、RaceChrono の「送信」の値
+                  "切(RaceChrono 送信)",  # 2.4.0: GPS・IMU・RaceChrono の、送信が切のとき
+                  "候補 件 記録 回", "空き コア なし")  # 2.4.3: CAN確認のページ、本体の状態の CPU・RAM・PSRAM(温度の「°」は英数字の書体)
+UI_BOTTOM_JP = _jp("決定", "リセット", "変化を記録", "やり直す", "記録 0 回", "切", "入", "取り直す")  # 2.4.4: 「変更」「開く」「詳細」「向きを取り直す」は使わない
+UI_OPEN_JP = _jp("長押しで開く")  # 2.4.4: メニューに入る下の帯(40 px)
+UI_SELFCHECK_JP = _jp("タッチ", "待ち", "衛星待ち", "測位", "切")  # 2.5.0: データのオープニングの自己診断(44 px)
+# 2.3.0: 触れたときの案内(2.3.1: 長押しの表示と同じ 48 px の札)
+UI_GUIDE_JP = _jp("スワイプ", "長押し")
 
 SSC = "SairaSemiCondensed-%s.ttf"
 VF = "Saira-VF.ttf"
@@ -99,9 +108,10 @@ SPECS = [
     fspec("JP600_100", 100, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars="入切正常異待ち")]),  # 設定の値(入・切、受信の状態の判定)
     fspec("JP600_64", 64, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars=UI_VALUE_JP)]),  # 受信の状態の値
     fspec("JP600_56", 56, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars=_jp("タコ", "データ"))]),  # 長押しの次の画面名
-    fspec("JP600_48", 48, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars=UI_NAME_JP)]),  # 項目の名前、「設定」「‹ 戻る」、長押しの「サーキット」
-    fspec("JP600_44", 44, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars="".join(dict.fromkeys(UI_NAME_JP + UI_VALUE_JP + UI_BOTTOM_JP)))]),  # 下の帯、単位、大きい字が入らないときの代わり
-    fspec("JP600_34", 34, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars="".join(dict.fromkeys("タッチ待ち衛星測位接続切受信" + UI_JP)))]),  # オープニング、小さい名前
+    fspec("JP600_48", 48, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars="".join(dict.fromkeys(UI_NAME_JP + UI_GUIDE_JP)))]),  # 項目の名前、「設定」「‹ 戻る」、長押しの「サーキット」、案内
+    fspec("JP600_44", 44, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars="".join(dict.fromkeys(UI_NAME_JP + UI_VALUE_JP + UI_BOTTOM_JP + UI_SELFCHECK_JP)))]),  # 下の帯、単位、大きい字が入らないときの代わり、データのオープニング
+    fspec("JP600_40", 40, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars=UI_OPEN_JP)]),  # 下の帯「長押しで開く」(2.4.4)
+    fspec("JP600_34", 34, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars="".join(dict.fromkeys("タッチ待ち衛星測位接続切受信" + UI_JP)))]),  # 小さい名前
     fspec("JP600_30", 30, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars=UI_JP)]),  # ボタン、データ画面の名前、「タップで変更」
     fspec("JP500_24", 24, [dict(file="IBMPlexSansJP-Medium.ttf", chars=UI_JP_BROAD)]),  # 説明、件数、受信の状態の行
     fspec("MONO600_34", 34, [dict(file="IBMPlexMono-SemiBold.ttf", chars="0123456789ABCDEF -")]),

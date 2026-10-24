@@ -55,11 +55,35 @@ struct PerfStats {
   uint32_t flushMaxMs;  // 直近 1 秒で、画面へ送るのにかかった最長の時間
   uint32_t loopMaxMs;   // 直近 1 秒で、1 周にかかった最長の時間
   // 前にサーキット・タコを出していた間(今出していればその間)に、1 回描いて送るのにかかった最長の時間 [µs]。0 = まだ測っていない。
-  // 画面を切り替えた回の全体の描き直しと、長押しの表示は数えない(ui::pageFrame)。受信の状態の「描画」に出す
+  // 画面を切り替えた回の全体の描き直しと、案内・長押しの表示は数えない(ui::pageFrame)。シリアルに出す(2.2.0 までは受信の状態の「描画」)
   uint32_t pageMaxUs;
+  // 本体の状態の「FPS」(2.3.0。2.4.0 で受信の状態から移した。perf::pageStats が入れる)。2.4.3: サーキット・タコで 1 回描いて送るのに
+  // かかった時間を 1 秒ごとにまとめ、サーキット・タコを出していた秒だけを新しい方から PERF_FPS_SECS 秒ぶん見る
+  uint32_t pageFrames;   // その間に数えた回数
+  uint32_t pageAvgUs;    // 1 回の平均の時間 [µs](全部の回の平均)
+  uint32_t pageSlowUs;   // 1 秒ごとの平均の時間のうち、一番長い秒の値 [µs](回/秒の「最低」)
+  uint16_t histN;        // fpsHist に入っている秒の数
+  uint8_t fpsHist[PERF_FPS_SECS];  // 1 秒ごとの回/秒(その秒の平均の時間から。255 で頭打ち)。古い方から histN 個
 };
 
-// RaceChrono へ送る側(BLE・GPS・IMU)の状態。「RaceChrono」の画面に出す
+// 表示器の CPU とメモリ(本体の状態に出す。2.4.3)。基板が起動時に入れ、空きと温度は 1 秒ごとに入れ直す
+struct CpuInfo {
+  bool ok;               // 入れてある
+  char model[20];        // 型式(例「ESP32-S3」)
+  uint16_t rev;          // チップの版(100 × 大 + 小。例 2 = v0.2)
+  uint8_t cores;         // コアの数
+  uint16_t cpuMHz;       // CPU のクロック [MHz]
+  uint32_t flashBytes;   // フラッシュの大きさ
+  uint32_t flashHz;      // フラッシュの速さ [Hz]
+  uint32_t heapBytes;    // 内部 RAM のヒープの大きさ
+  uint32_t heapFree;     // その空き
+  uint32_t psramBytes;   // PSRAM の大きさ(0 = 無い)
+  uint32_t psramFree;    // その空き
+  bool tempOk;           // 温度を読めた
+  float tempC;           // チップの温度 [℃](チップの中のセンサー)
+};
+
+// RaceChrono へ送る側(BLE・GPS・IMU)の状態。受信の状態の GPS・IMU・RaceChrono に出す
 struct RcStats {
   bool enabled;         // 設定が「入」で、この起動で動かしている
   bool bleOk;           // BLE を始められた
@@ -85,6 +109,7 @@ struct SysInfo {
   bool touchOk;         // タッチ IC と通信できた
   bool nvsOk;           // 設定の保存領域を開けた
   RcStats rc;
+  CpuInfo cpu;          // 2.4.3
 };
 
 // ---------------------------------------------------------------- plat(基板に依存する部分)
@@ -106,7 +131,7 @@ void platBlinkTick();
 bool platSaveSettings(const Settings &s);  // 保存して読み返し、合っていれば true
 // CAN の生データを 1 フレーム受けるたびに呼ばれる(受信タスク)。RaceChrono へ送るのに使う(PC 上の試験では何もしない)
 void platCanFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *data, uint32_t nowMs);
-// IMU の覚えた向き(取り付け角の補正)を捨てる(「RaceChrono の状態」の「向きの補正」の行をタップ)。保存した値も消す
+// IMU の覚えた向き(取り付け角の補正)を捨てる(受信の状態 → IMU の「向きの補正」の下「向きを取り直す」)。保存した値も消す
 void platResetImuCal();
 // 3000rpm 超・以下の累計時間を今すぐ NVS に書く(「時間の記録」のリセットのあと)。ふだんは TIME_SAVE_MS ごとに書く
 void platSaveTimes();
@@ -149,7 +174,7 @@ struct FuelInfo {
   int restoredTenths;   // そのときの値(生の値の 10 倍)
   bool seen;            // 0C014003 を VEH_FUEL_TIMEOUT_MS 以内に受けている(b5 = 0 も含む)
   uint8_t raw;          // 最後に使った生の値(b5)
-  uint8_t lastB5;       // 最後に受けた b5(使わない 0 も含む。受信の状態の「燃料」に出す)
+  uint8_t lastB5;       // 最後に受けた b5(使わない 0 も含む。受信の状態 → CAN の「燃料」に出す)
   float hp, lp;
   bool stable, armed;
   uint32_t zeroFrames;  // 捨てた b5 = 0 のフレームの数
@@ -196,6 +221,15 @@ uint32_t aboveMs();   // 回転数が TIME_RPM を超えている時間の累計
 uint32_t belowMs();   // TIME_RPM 以下の時間の累計
 void setTimes(uint32_t above, uint32_t below);  // 起動時に NVS から戻す
 void resetTimes();    // 0 に戻す(「時間の記録」のリセット)
+}
+
+// ---------------------------------------------------------------- perf(本体の状態の「FPS」。2.3.0。2.4.3: 1 秒ごとにまとめる)
+// サーキット・タコで 1 回描いて送るのにかかった時間を 1 秒ごとにまとめ、回を数えた秒だけを新しい方から PERF_FPS_SECS 秒ぶん覚える
+// (loop() だけから呼ぶ)
+namespace perf {
+void pageAdd(uint32_t us, uint32_t nowMs);  // 1 回ぶん(ui::pageFrame が true の回)
+void pageStats(PerfStats *ps);  // 覚えている秒(今の秒も)から pageFrames・pageAvgUs・pageSlowUs・histN・fpsHist を入れる(0 回ならどれも 0)
+void pageClear();               // 覚えた秒を捨てる(試験用)
 }
 
 // ---------------------------------------------------------------- gnss(GPS モジュール M100 の UBX を解析する)

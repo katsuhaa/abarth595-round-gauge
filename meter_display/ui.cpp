@@ -3,8 +3,9 @@
 // 座標・大きさ・色は ui_spec.md(キャンバス版 23)の値。文字の位置(ベースライン)は、キャンバスの絵を
 // ブラウザーで描いて測った値。章番号は ui_spec.md のもの。
 // 仕様書のあとで変えた所: 枠をなくした(2026-10-13)、水温と燃料を輪の内側の円弧にした、ブースト計のページを足した(2026-10-14)。
-// 10/23: 画面の名前をサーキット(走行)・タコ(ブースト計)・データにした。3 つは長押しで切り替え、タップで設定。
-// 設定は 1 画面 1 項目(10 項目)で、上の帯・下の帯・真ん中の左右の 4 つの範囲で操作する(config.h の ZONE_*)。
+// 10/23: 画面の名前をサーキット(走行)・タコ(ブースト計)・データにした。3 つはスワイプで切り替え、長押しで設定(2.1.0)。
+// 設定は 1 画面 1 項目(2.3.0: 7 項目。RaceChrono と CAN確認は受信の状態の中)で、上の帯・下の帯・真ん中の左右の 4 つの範囲で
+// 操作する(config.h の ZONE_*)。
 #include "ui.h"
 #include "gfx.h"
 #include <math.h>
@@ -122,9 +123,9 @@ static void textR(const FontData &f, float xr, float base, const char *s, uint16
   gfx::drawText(f, xr - gfx::textWidth(f, s), base, s, c);
 }
 
-// ASCII は fa、それ以外(日本語)は fj で描く
+// ASCII は fa、それ以外(日本語)は fj で描く。「°」(U+00B0)は英数字の書体で描く(2.4.3: 温度の「°C」。日本語の書体だと間が空く)
 static bool isAsciiLike(const char *s) {
-  return ((uint8_t)*s) < 0x80;
+  return ((uint8_t)s[0]) < 0x80 || ((uint8_t)s[0] == 0xC2 && (uint8_t)s[1] == 0xB0);
 }
 static int runLen(const char *s) {
   bool a = isAsciiLike(s);
@@ -162,17 +163,23 @@ static float mixDraw(const FontData &fa, const FontData &fj, float x, float base
 }
 
 
-static bool g_holdShown = false;  // 長押しの表示(画面を暗くして次の画面名)を出している
+static bool g_holdShown = false;  // 長押しの途中の表示(案内のまま、スワイプの札を灰にして外周。2.4.0)を出している
+static bool g_guideShown = false;  // 触れたときの案内(上の「‹ スワイプ ›」、下の「長押し ▶ 設定」)を出している(2.3.0)
 static bool g_pageFrame = false;  // 直前の update が、サーキット・タコをふだんどおり描いた回(pageFrame)
 static Screen g_homeSaved = SC_DRIVE;  // 覚えた画面(次の起動・時間で戻るとき)
 static Screen g_homeCur = SC_DRIVE;    // 今の(最後に見た)サーキット・タコ・データ(設定の「設定」で戻る先)
 static uint32_t g_homeSinceMs = 0;  // 今のサーキット・タコ・データを出し始めた時刻(覚える画面の判定)
 static bool g_homeRestart = false;  // 次の update で g_homeSinceMs を数え直す(試験の testShow)
+static float g_hideA = -1.0f;    // タコのオープニング: 文字盤のうち、この角度 [度] から OPT_HIDE_A1 までを隠している(-1 = 隠していない。2.5.0)
+static bool g_barForce = false;  // 次の updBoost で、ブーストの帯を変わっていなくても消して描き直す(タコのオープニングで文字盤を写したとき)
 static void go(Screen sc) {
   g_sc = sc;
   g_full = true;
   g_nextMs = 0;
   g_holdShown = false;
+  g_guideShown = false;
+  g_hideA = -1.0f;  // 2.5.0: 画面が替わったら文字盤は隠さない(タコのオープニングを飛ばしたとき)
+  g_barForce = false;
 }
 Screen screen() {
   return g_sc;
@@ -205,12 +212,12 @@ static void setLevel(uint8_t level) {
   g_blank = level == BL_OFF;
   platBlink(level);
 }
-void blinkPoll(const Signals &s, uint32_t now) {
-  if (g_sc == SC_OPENING) return;  // オープニングの間は、オープニングが明るさの段階を決める
+// 回転数 rpm(ok = 信号あり)から、点滅・最大輝度の段階を決める。onPage = サーキット・タコ(ほかの画面では点灯側に戻る)。
+// 2.5.0: オープニングは仮の回転数でこれを呼ぶ(本物と同じ決まりで点滅・最大輝度にする)
+static void blinkRun(bool ok, int rpm, bool onPage, uint32_t now) {
   const int sp = g_set->shiftRpm;
-  const bool onPage = g_sc == SC_DRIVE || g_sc == SC_BOOST;
-  const bool solid = s.rpmOk && onPage && s.rpm >= sp + RING_SOLID_OFFSET;  // 点滅せず最大輝度
-  const bool active = s.rpmOk && onPage && !solid && s.rpm >= sp + RING_BLINK_OFFSET;
+  const bool solid = ok && onPage && rpm >= sp + RING_SOLID_OFFSET;  // 点滅せず最大輝度
+  const bool active = ok && onPage && !solid && rpm >= sp + RING_BLINK_OFFSET;
   if (!active) {
     g_blinkActive = false;
     g_blinkOff = false;
@@ -218,7 +225,7 @@ void blinkPoll(const Signals &s, uint32_t now) {
     setLevel(solid ? BL_MAX : BL_NORMAL);
     return;
   }
-  const uint32_t on = blinkOnFor(s.rpm, sp);
+  const uint32_t on = blinkOnFor(rpm, sp);
   g_blinkOn = on;
   if (!g_blinkActive) {
     g_blinkActive = true;
@@ -235,6 +242,16 @@ void blinkPoll(const Signals &s, uint32_t now) {
   }
   if (BLINK_WHOLE_SCREEN) setLevel(g_blinkOff ? BL_OFF : BL_NORMAL);
   else setLevel(BL_NORMAL);
+}
+void blinkPoll(const Signals &s, uint32_t now) {
+  if (g_sc == SC_OPENING) return;  // オープニングの間は、オープニングが仮の回転数で blinkRun を呼ぶ
+  blinkRun(s.rpmOk, s.rpm, g_sc == SC_DRIVE || g_sc == SC_BOOST, now);
+}
+static void blinkReset() {  // 点滅をやめて設定の明るさに戻す(オープニングの終わり。次の画面の段階は次の blinkPoll で決まる)
+  g_blinkActive = false;
+  g_blinkOff = false;
+  g_blinkOn = 0;
+  setLevel(BL_NORMAL);
 }
 uint8_t blinkLevel() {
   return g_level;
@@ -675,6 +692,13 @@ static const uint16_t C_RIM_RED = rgb(0x2E1A1C);   // ブーストの輪の地(�
 static const uint16_t C_RING_FILL = rgb(0xA9AFBA); // ブーストの輪の伸びた所(トーンを落とした白。10/23)
 static const uint16_t C_RING_RED = rgb(0x9E3A33);  // ブーストの輪の伸びた所(赤の範囲)
 static const uint16_t C_BOOST = rgb(0xFFFFFF);     // ブーストの数字(10/23: 水色 → 白)
+// 2.4.0(本人の指示 10/24「シフトポイントを超えたときはメモリと針を全て赤に」): 回転数がシフト点以上の間は、回転計の目盛線・数字・針を
+// 全部この赤にする(シフト点 − TACH_ALL_RED_HYST_RPM 未満で元に戻す)
+static const uint16_t C_TICK_AR = rgb(0xE5281E);   // 1000 ごとの目盛線
+static const uint16_t C_TICK_ARM = rgb(0xB01F17);  // 500 ごと
+static const uint16_t C_TICK_ARS = rgb(0x7E1712);  // 250 ごと
+static const uint16_t C_DIAL_AR = rgb(0xFF3B30);   // 数字
+static const uint16_t C_NEEDLE_AR = rgb(0xFF2A2A); // 針
 
 static uint16_t *g_face = nullptr;  // 文字盤(針・帯・ピークの印なし)
 static bool g_faceOk = false;       // g_face に今の文字盤が入っている
@@ -687,6 +711,19 @@ static uint32_t g_badgeKey = 0;     // 描いてある札の内容
 static float g_peakRpm = -1.0f;     // 最高の回転数(下がっていく値)。-1 = なし
 static uint32_t g_peakSetMs = 0;    // 最高を記録した時刻
 static uint32_t g_peakLastMs = 0;   // 前に計算した時刻
+static bool g_peakShowOk = false;   // 印を出す時間を数え始めたことがある(g_peakShowMs が使える。2.4.4)
+static uint32_t g_peakShowMs = 0;   // 印を出す時間を最後に数え始めた時刻(ここから TACH_PEAK_SHOW_MS 印を出す。2.4.4)
+static bool g_peakShow = false;     // 印を出す(peakTrack が決める。2.4.4)
+static float g_peakLow = -1.0f;     // 前に数え始めてからの最低の回転数(2.4.5。-1 = まだ)
+static bool g_tachRed = false;      // 回転数がシフト点以上(回転計の目盛と針を赤にする。2.4.0)
+static bool g_faceRed = false;      // g_face(と画面)の回転計を赤で描いた
+// 回転計を赤にするか(update のたびに呼ぶ。どの画面でも)。シフト点以上で赤、シフト点 − TACH_ALL_RED_HYST_RPM 未満で戻す
+static void tachRedTrack(const Signals &s) {
+  const int sp = g_set->shiftRpm;
+  if (!s.rpmOk) g_tachRed = false;
+  else if (s.rpm >= sp) g_tachRed = true;
+  else if (s.rpm < sp - TACH_ALL_RED_HYST_RPM) g_tachRed = false;
+}
 
 static float tachAngle(float rpm) {
   float v = clampf(rpm, 0.0f, (float)TACH_MAX_RPM);
@@ -702,12 +739,21 @@ static int needleKey(const Signals &s) {
 static int tachKey(const Signals &s) {
   return s.rpmOk ? (int)(tachAngle((float)s.rpm) * 4.0f + 0.5f) : -1;
 }
-// ピークホールドの記録(update のたびに呼ぶ)。回転数が最高を超えれば最高を更新(印は消える。peakVisible)。TACH_PEAK_HOLD_MS 止まってから
-// TACH_PEAK_FALL_RPM_PER_S で今の回転数まで下がる(下がり切ったら印は消える)。同じ時刻で 2 回呼んでも結果は変わらない(最初から描いたものと比べるため)
+// ピークホールドの記録(update のたびに呼ぶ)。回転数が最高以上なら最高を更新(印は針・輪の先といっしょに動く)。最後に更新してから
+// TACH_PEAK_HOLD_MS 止まり、そのあと TACH_PEAK_FALL_RPM_PER_S で今の回転数まで下がる。同じ時刻で 2 回呼んでも結果は変わらない
+// (最初から描いたものと比べるため)。
+// 2.4.4: 印を出すのは、回転が上がるのが終わってから(回転が落ち始めてから)TACH_PEAK_SHOW_MS の間。2.4.5: 印が PEAK_MIN_RPM を切ったら消す
+// (peakVisible)。
+// 2.4.5(本人「今度ピークホールドが消えていません」): 出す時間を数え始めるのは、回転数がはっきり上がったとき(PEAK_MIN_RPM 以上で、
+// 前に数え始めてからの最低より PEAK_RISE_RPM 以上高い)だけにした。2.4.4 はピークを付け直すたび(回転数が少しでも上がるたび)に
+// 数え始めていて、3000 rpm 以上で走っている間は、ゆらぎで印が消えなかった
 static void peakTrack(const Signals &s, uint32_t now) {
   if (!s.rpmOk) {
     g_peakRpm = -1.0f;
     g_peakLastMs = now;
+    g_peakShowOk = false;
+    g_peakShow = false;
+    g_peakLow = -1.0f;
     return;
   }
   float rpm = (float)s.rpm;
@@ -720,11 +766,19 @@ static void peakTrack(const Signals &s, uint32_t now) {
     if (g_peakRpm < rpm) g_peakRpm = rpm;
   }
   g_peakLastMs = now;
+  if (g_peakLow < 0 || rpm < g_peakLow) g_peakLow = rpm;
+  if (rpm >= (float)PEAK_MIN_RPM && rpm >= g_peakLow + (float)PEAK_RISE_RPM) {
+    g_peakShowOk = true;
+    g_peakShowMs = now;
+    g_peakLow = rpm;
+  }
+  g_peakShow = g_peakShowOk && (uint32_t)(now - g_peakShowMs) < TACH_PEAK_SHOW_MS;
 }
-// ピークホールドの印を出すか(2.2.0): ピークが PEAK_MIN_RPM 以上で、今の回転数がピークより下がっているときだけ。
-// 回転数が上がっている間(ピーク = 今の回転数)は出さない(グラフの裏にあって隠れている扱い)
+// ピークホールドの印を出すか。2.4.0(本人の指示 10/24「回転数が高い状態では上がっても下がっても表示し続けて」): 回転数が上がっていても
+// 出す(2.2.0〜2.3.x は、下がっている間だけ出していた)。2.4.4: 回転が上がるのが終わってから TACH_PEAK_SHOW_MS の間(peakTrack)。
+// 2.4.5(本人「ピークホールドが 3000 以下に下がった場合は消してしまっていいです」): 印が PEAK_MIN_RPM を切ったら消す
 static bool peakVisible(const Signals &s) {
-  return g_peakRpm >= (float)PEAK_MIN_RPM && s.rpmOk && (float)s.rpm < g_peakRpm;
+  return s.rpmOk && g_peakRpm >= (float)PEAK_MIN_RPM && g_peakShow;
 }
 static int peakKey(const Signals &s) {  // 回転計の印の角度 [1/4 度]。-1 = 出さない(印は針の下に描く)
   return peakVisible(s) ? (int)(tachAngle(g_peakRpm) * 4.0f + 0.5f) : -1;
@@ -734,9 +788,11 @@ static int peakTriKey(const Signals &s) {  // サーキットの三角形の左�
   const int sp = g_set->shiftRpm;
   const float first = (float)(sp - 11 * RING_STEP_RPM);
   const float pos = clampf((g_peakRpm - first) / RING_STEP_RPM + 1.0f, 1.0f, 12.0f);
-  // 三角形の所のマス(pos の整数部。マスの間ならその下のマス)が点いている間は出さない(点いたマスの裏に隠れている扱い)
-  if (litPerSide(s.rpm, sp) >= (int)pos) return -1;
-  return (int)lroundf((90.0f + RING_PITCH_DEG * pos) * 4.0f);
+  // 2.4.0: 点いたマスの上にも出す(2.2.0〜2.3.x は、三角形の所のマスが点いている間は出さなかった)。
+  // 2.4.3: 11 マス目から先は 2 マスぶん進め、シフト点(12 マス目)で真上に着く(真上のマスは 12 マス目と一緒に点くので、前は 12 マス目で
+  // 止まって輪の天井まで行かないように見えた。本人「ピークホールドが天井までいかないように見える」)。左右の三角形は真上で重なる
+  const float at = pos <= 11.0f ? pos : 11.0f + 2.0f * (pos - 11.0f);
+  return (int)lroundf((90.0f + RING_PITCH_DEG * at) * 4.0f);
 }
 // 先細りの針: 角度 key [1/4 度]、根元 rIn(幅 wIn)から先 rOut(幅 wOut)まで。4 点の多角形
 static void needlePoints(int key, float rIn, float rOut, float wIn, float wOut, gfx::Pt p[4]) {
@@ -843,7 +899,7 @@ static void drawTachNeedle(int key) {  // 回転計の針(白。まわりに黒�
   needlePoints(key, TACH_NEEDLE_R_IN, TACH_NEEDLE_R_OUT, TACH_NEEDLE_W_IN, TACH_NEEDLE_W_OUT, p);
   gfx::polyBegin(ptsRect(p, 4));
   gfx::polyAdd(p, 4);
-  gfx::polyFill(C_NEEDLE);
+  gfx::polyFill(g_faceRed ? C_NEEDLE_AR : C_NEEDLE);
 }
 static void drawPeak(int key) {  // ピークホールドの印(黄)
   float a = key * 0.25f;
@@ -914,36 +970,120 @@ static void drawBadges(const Signals &s, bool clean) {
   if (fa) drawBadge(y, ICON_FUEL, (int)lroundf(clampf(s.fuelPct, 0, 999)));
 }
 
+// ---- タコのオープニングで文字盤を隠す(2.5.0)。中心から見た向きで、隠す範囲・出す範囲を決める
+// (3 時が 0°、時計回り。g_face はいつも文字盤の全部で、隠すのは画面メモリーだけ)
+static const float OPT_HIDE_A0 = 100.0f, OPT_HIDE_A1 = 340.0f;  // 隠す範囲(0 の数字の左から 8 の数字の右まで。目盛とブーストの輪が入る)
+struct Wedge {  // 向き a0〜a1(時計回り)。180° 以下に分けて持つ
+  int n;
+  float ux0[3], uy0[3], ux1[3], uy1[3];
+};
+static Wedge wedgeMake(float a0, float a1) {
+  Wedge w;
+  w.n = 0;
+  while (a1 > a0 && w.n < 3) {
+    const float b = a1 - a0 > 170.0f ? a0 + 170.0f : a1;
+    const float r0 = a0 * PI_F / 180.0f, r1 = b * PI_F / 180.0f;
+    w.ux0[w.n] = cosf(r0);
+    w.uy0[w.n] = sinf(r0);
+    w.ux1[w.n] = cosf(r1);
+    w.uy1[w.n] = sinf(r1);
+    w.n++;
+    a0 = b;
+  }
+  return w;
+}
+// 中心から (dx, dy) の向きが範囲に入るか(始まりの向きは入る、終わりの向きは入らない)
+static bool wedgeHas(const Wedge &w, float dx, float dy) {
+  for (int i = 0; i < w.n; i++) {
+    if (w.ux0[i] * dy - w.uy0[i] * dx >= 0.0f && dx * w.uy1[i] - dy * w.ux1[i] > 0.0f) return true;
+  }
+  return false;
+}
+// 中心から画面の端まで、向き a0〜a1 の範囲を包む四角
+static gfx::Rect wedgeRect(float a0, float a1) {
+  gfx::Pt p[8];
+  int n = 0;
+  p[n++] = { 233.0f, 233.0f };
+  auto add = [&](float a) {
+    const float r = a * PI_F / 180.0f;
+    p[n++] = { 233.0f + 236.0f * cosf(r), 233.0f + 236.0f * sinf(r) };
+  };
+  add(a0);
+  add(a1);
+  for (float q = ceilf(a0 / 90.0f) * 90.0f; q < a1 && n < 8; q += 90.0f) add(q);
+  return ptsRect(p, n);
+}
+// 画面メモリーの r の中で、隠している範囲(g_hideA〜OPT_HIDE_A1)を黒にする
+static void hideApply(const gfx::Rect &r) {
+  if (g_hideA < 0) return;
+  const Wedge w = wedgeMake(g_hideA, OPT_HIDE_A1);
+  uint16_t *f = gfx::frame();
+  for (int y = r.y0; y < r.y1; y++) {
+    const float dy = (float)y + 0.5f - 233.0f;
+    for (int x = r.x0; x < r.x1; x++) {
+      if (wedgeHas(w, (float)x + 0.5f - 233.0f, dy)) f[y * gfx::W + x] = C_BG;
+    }
+  }
+}
+// 向き a0〜a1 の文字盤を g_face から画面メモリーへ写す(隠していた所を出す)
+static void wedgeReveal(float a0, float a1) {
+  if (a1 <= a0 || !g_face) return;
+  const Wedge w = wedgeMake(a0, a1);
+  const gfx::Rect r = wedgeRect(a0, a1);
+  uint16_t *f = gfx::frame();
+  for (int y = r.y0; y < r.y1; y++) {
+    const float dy = (float)y + 0.5f - 233.0f;
+    for (int x = r.x0; x < r.x1; x++) {
+      if (wedgeHas(w, (float)x + 0.5f - 233.0f, dy)) f[y * gfx::W + x] = g_face[y * gfx::W + x];
+    }
+  }
+  gfx::addDirty(r.x0, r.y0, r.x1, r.y1);
+}
+
 static void faceTake(const gfx::Rect &r) {  // 画面メモリーの四角を文字盤に写す
   if (!g_face) return;
   const uint16_t *f = gfx::frame();
+  if (g_hideA >= 0) {  // 文字盤を隠している間: 隠している画素は写さない(g_face は文字盤のまま)
+    const Wedge w = wedgeMake(g_hideA, OPT_HIDE_A1);
+    for (int y = r.y0; y < r.y1; y++) {
+      const float dy = (float)y + 0.5f - 233.0f;
+      for (int x = r.x0; x < r.x1; x++) {
+        if (!wedgeHas(w, (float)x + 0.5f - 233.0f, dy)) g_face[y * gfx::W + x] = f[y * gfx::W + x];
+      }
+    }
+    return;
+  }
   for (int y = r.y0; y < r.y1; y++) memcpy(g_face + (size_t)y * gfx::W + r.x0, f + (size_t)y * gfx::W + r.x0, (size_t)(r.x1 - r.x0) * sizeof(uint16_t));
 }
 
 // 文字盤(針・帯・ピークの印を除く)
 static void drawBoostFace(const Signals &s) {
   gfx::fillAll(C_BG);
-  // 回転計(0〜TACH_MAX_RPM)。数字は ×1000。シフト点 + TACH_RED_OFFSET から赤(目盛線は暗い赤、数字は赤)
+  // 回転計(0〜TACH_MAX_RPM)。数字は ×1000。シフト点 + TACH_RED_OFFSET から赤(目盛線は暗い赤、数字は赤)。
+  // 2.4.0: 回転数がシフト点以上の間(g_tachRed)は、目盛線と数字を全部赤(C_TICK_AR など)
+  g_faceRed = g_tachRed;
   {
     const int redFrom = g_set->shiftRpm + TACH_RED_OFFSET;
     const int nTick = TACH_MAX_RPM / TACH_TICK_STEP_RPM;
+    const bool all = g_faceRed;
     for (int i = 0; i <= nTick; i++) {
       int rpm = i * TACH_TICK_STEP_RPM;
       float a = tachAngle((float)rpm);
       bool red = rpm >= redFrom;
       if (rpm % TACH_LABEL_STEP_RPM == 0) {
-        gfx::fillArc(233, 233, TACH_TICK_R_IN, TACH_TICK_R_OUT, a - TACH_TICK_HALF_DEG, a + TACH_TICK_HALF_DEG, red ? C_TICK_R : C_TICK);
+        gfx::fillArc(233, 233, TACH_TICK_R_IN, TACH_TICK_R_OUT, a - TACH_TICK_HALF_DEG, a + TACH_TICK_HALF_DEG, all ? C_TICK_AR : red ? C_TICK_R : C_TICK);
         char t[16];
         snprintf(t, sizeof(t), "%d", rpm / 1000);
         float ar = a * PI_F / 180.0f;
-        textC(FONT_DIAL600_60, 233 + TACH_LABEL_R * cosf(ar), 233 + TACH_LABEL_R * sinf(ar) + FONT_DIAL600_60.px * 0.36f, t, red ? C_DIAL_RED : C_DIAL);
+        textC(FONT_DIAL600_60, 233 + TACH_LABEL_R * cosf(ar), 233 + TACH_LABEL_R * sinf(ar) + FONT_DIAL600_60.px * 0.36f, t, all ? C_DIAL_AR : red ? C_DIAL_RED : C_DIAL);
       } else if (rpm % 500 == 0) {
-        gfx::fillArc(233, 233, TACH_TICK_R_IN_M, TACH_TICK_R_OUT, a - TACH_TICK_HALF_DEG_M, a + TACH_TICK_HALF_DEG_M, red ? C_TICK_RM : C_TICK_M);
+        gfx::fillArc(233, 233, TACH_TICK_R_IN_M, TACH_TICK_R_OUT, a - TACH_TICK_HALF_DEG_M, a + TACH_TICK_HALF_DEG_M, all ? C_TICK_ARM : red ? C_TICK_RM : C_TICK_M);
       } else {
-        gfx::fillArc(233, 233, TACH_TICK_R_IN_S, TACH_TICK_R_OUT, a - TACH_TICK_HALF_DEG_S, a + TACH_TICK_HALF_DEG_S, red ? C_TICK_RS : C_TICK_S);
+        gfx::fillArc(233, 233, TACH_TICK_R_IN_S, TACH_TICK_R_OUT, a - TACH_TICK_HALF_DEG_S, a + TACH_TICK_HALF_DEG_S, all ? C_TICK_ARS : red ? C_TICK_RS : C_TICK_S);
       }
     }
   }
+  platBlinkTick();  // 2.4.0: 赤にする・戻すときはシフト点の近く(点滅の途中)で全部を描き直すので、合間に点滅の切り替えの時刻を見る
   // ブーストの輪の地(赤の範囲は暗い赤)、0.5 bar ごとの目盛線(輪の外)、数字 0・1・2(輪の内側。赤の範囲は赤)
   {
     const float aRed = boostAngle(BOOST_RED_FROM_BAR), aMax = boostAngle(BOOST_SCALE_MAX_BAR);
@@ -968,6 +1108,7 @@ static void drawBoostFace(const Signals &s) {
 
 static void updBoost(const Signals &s, uint32_t now) {
   (void)now;
+  if (g_tachRed != g_faceRed) g_full = true;  // 回転計を赤に・赤から戻す: 文字盤から描き直す(2.4.0)
   if (g_full) {
     g_full = false;
     drawBoostFace(s);
@@ -976,6 +1117,7 @@ static void updBoost(const Signals &s, uint32_t now) {
     if (g_face) {
       memcpy(g_face, gfx::frame(), (size_t)gfx::W * gfx::H * sizeof(uint16_t));
       g_faceOk = true;
+      platBlinkTick();
     }
     g_needleKey = -1;
     g_tachKey = -1;
@@ -985,7 +1127,7 @@ static void updBoost(const Signals &s, uint32_t now) {
   int nk = needleKey(s), tk = tachKey(s), pk = peakKey(s), bk = boostNumKey(s);
   uint32_t gk = badgeKey(s);
   bool faceItems = bk != g_boostNumKey || gk != g_badgeKey;
-  if (nk == g_needleKey && tk == g_tachKey && pk == g_peakKey && !faceItems) return;
+  if (nk == g_needleKey && tk == g_tachKey && pk == g_peakKey && !faceItems && !g_barForce) return;
   if (!g_faceOk) {  // 文字盤を取っておけなかったとき: 文字盤を描き直す(遅いが正しい)
     drawBoostFace(s);
     g_tagsDirty = true;
@@ -998,11 +1140,13 @@ static void updBoost(const Signals &s, uint32_t now) {
   int ne = 0;
   auto erase = [&](const gfx::Rect &r) {
     gfx::copyRectFrom(g_face, r.x0, r.y0, r.x1, r.y1);
+    hideApply(r);  // タコのオープニングで文字盤を隠している所は黒のまま(2.5.0)
     erased[ne++] = r;
     if (g_sc == SC_BOOST) g_tagsLost = true;  // 「SIM」の印に掛かることがある(updTags が消して描き直す)
   };
   if (g_tachKey >= 0) erase(tachRect(g_tachKey));
-  bool barRedo = nk != g_needleKey, peakRedo = pk != g_peakKey;
+  bool barRedo = nk != g_needleKey || g_barForce, peakRedo = pk != g_peakKey;
+  g_barForce = false;
   bool barGone = false, peakGone = false;  // 前の形を消した
   for (int pass = 0; pass < 3; pass++) {
     for (int i = 0; i < ne; i++) {
@@ -1052,10 +1196,63 @@ static void updBoost(const Signals &s, uint32_t now) {
 
 // ================================================================ データ画面(6 章。10/23 に作り直し)
 // 上: GPS・IMU・CAN の値(1 行ずつ。左の点が判定: 緑 = 正常、赤 = 異常、灰 = 待ち・切)。
-// 中: 水温・燃料。下: ▲ = 回転数が TIME_RPM を超えていた時間、▼ = 以下の時間(累計。電源を切っても続く。設定の「時間の記録」でリセット)
+// 中: 水温・燃料。下: ▲ = 回転数が TIME_RPM を超えていた時間、▼ = 以下の時間(累計。電源を切っても続く。設定の「時間の記録」でリセット)。
+// 外周: 回転数の輪(2.5.0。config.h の DATA_RING_*)。中の絵は輪の内側に収め、消すときも輪に掛からないようにする(fillRectData)
 static int g_dWaterKey, g_dFuelKey;
 static uint32_t g_dAboveKey, g_dBelowKey;
 static char g_dStatKey[3][64];
+
+// ---- 回転数の輪(2.5.0。本人「実際の画面にも回転数のグラフを追加したい」「アニメーションと同じ幅で」)。真上から時計回りに
+// 0〜DATA_RING_MAX_RPM で一周。点いている所の色はサーキットの輪と同じ決まり(colorAt)、残りは輪の地。画素の色は今の状態だけで決まる
+// (gfx::ringPaint)ので、変わった角度の所だけを塗り直せばよい。色が変わったら点いている所を全部塗り直す。書き換えた範囲を小さく
+// するため(画面へ送る量を減らす)、DR_STEP_DEG ずつに分けて塗る
+static const uint16_t C_DR_TRACK = rgb(0x1A2433);  // 輪の地(データのオープニングの輪・長押しの外周の地と同じ)
+static const float DR_STEP_DEG = 10.0f;
+static const int DR_Q_PER_DEG = 4;  // 点いている角度は 1/4 度きざみ(1 きざみ = 約 22 rpm)
+static int g_drQ = -1;              // 描いてある点いている角度(1/DR_Q_PER_DEG 度の数。-1 = まだ描いていない)
+static uint16_t g_drCol = 0;        // 描いてある点いている色
+static int drQ(const Signals &s) {  // 今の点いている角度(信号なしは 0 = 全部が地)
+  if (!s.rpmOk || s.rpm <= 0) return 0;
+  const long q = lroundf((float)s.rpm * (360.0f * DR_Q_PER_DEG) / (float)DATA_RING_MAX_RPM);
+  return q > 360L * DR_Q_PER_DEG ? 360 * DR_Q_PER_DEG : (int)q;
+}
+// 真上から時計回りの d0〜d1 [度](負・360 超えも可)を、点いている角度 q と色 col で塗る
+static void drPaint(float d0, float d1, int q, uint16_t col) {
+  if (d1 - d0 > 360.0f) d1 = d0 + 360.0f;
+  const float lit = (float)q / DR_Q_PER_DEG;
+  for (float a = d0; a < d1; a += DR_STEP_DEG) {
+    const float b = a + DR_STEP_DEG < d1 ? a + DR_STEP_DEG : d1;
+    gfx::ringPaint(233, 233, DATA_RING_R_IN, DATA_RING_R_OUT, 270.0f + a, 270.0f + b, 270.0f, 270.0f + lit, col, C_DR_TRACK, C_BG);
+  }
+}
+static void updDataRing(const Signals &s, bool full) {
+  const int q = drQ(s);
+  const uint16_t col = to565(colorAt(RING_C, s.rpm, g_set->shiftRpm));
+  if (full || g_drQ < 0) {
+    drPaint(0.0f, 360.0f, q, col);
+  } else if (col != g_drCol && (q > 0 || g_drQ > 0)) {  // 色が変わった: 点いている所(前と今の広い方)を全部
+    drPaint(-1.0f, (float)(q > g_drQ ? q : g_drQ) / DR_Q_PER_DEG + 1.0f, q, col);
+  } else if (q != g_drQ) {  // 先が動いた: 前の先と今の先の間(なめらかにした縁のぶん 1 度広げる)
+    const int lo = q < g_drQ ? q : g_drQ, hi = q < g_drQ ? g_drQ : q;
+    drPaint((float)lo / DR_Q_PER_DEG - 1.0f, (float)hi / DR_Q_PER_DEG + 1.0f, q, col);
+  }
+  g_drQ = q;
+  g_drCol = col;
+}
+// データ画面で消す四角: 半径 DATA_RING_R_IN − 1.5 の円の中だけを塗る(外周の輪とその縁に掛けない。2.5.0)
+static void fillRectData(int x, int y, int w, int h, uint16_t c) {
+  const float R = DATA_RING_R_IN - 1.5f;
+  for (int yy = y; yy < y + h; yy++) {
+    const float dy = (float)yy + 0.5f - 233.0f;
+    const float q = R * R - dy * dy;
+    if (q <= 0) continue;
+    const float half = sqrtf(q);
+    int xa = (int)ceilf(233.0f - half - 0.5f), xb = (int)floorf(233.0f + half - 0.5f) + 1;  // 画素の中心が円の中
+    if (xa < x) xa = x;
+    if (xb > x + w) xb = x + w;
+    if (xb > xa) gfx::fillRect(xa, yy, xb - xa, 1, c);
+  }
+}
 
 static void fmtTime(char *out, size_t n, uint32_t ms) {
   uint32_t t = ms / 1000;
@@ -1076,7 +1273,7 @@ struct StatPart {
 static const uint16_t C_DOT_OFF = rgb(0x5A606A);
 static const uint16_t C_DOT_OK = rgb(0x22E36A);
 static void drawStatLine(int y, const char *name, uint16_t dot, const StatPart *p, int n) {
-  gfx::fillRect(36, y - 28, 394, 36, C_BG);
+  fillRectData(36, y - 28, 394, 36, C_BG);
   float w = 16 + gfx::textWidth(FONT_NUM600_28, name) + 16;
   for (int i = 0; i < n; i++) {
     if (p[i].label[0]) w += mixWidth(FONT_NUM600_24, FONT_JP500_24, p[i].label) + 6;
@@ -1139,7 +1336,7 @@ static int statLines(int row, const LinkStats &ls, const SysInfo &si, const char
 static const int DATA_COL_W = 204;
 static void drawDataCell(int colX, const IconData &icon, bool ok, int value, const char *unit, bool alarm) {
   const uint16_t ac = (alarm && g_alarmOff) ? alarmDimOn(C_BG) : C_ALARM;  // 異常: 赤で点滅(消灯側は暗い赤)
-  gfx::fillRect(colX - 2, 182, DATA_COL_W + 4, 76, C_BG);
+  fillRectData(colX - 2, 182, DATA_COL_W + 4, 76, C_BG);
   char t[20];
   if (!ok) snprintf(t, sizeof(t), "– –");
   else if (value < 0) snprintf(t, sizeof(t), "−%d", -value);  // 氷点下。マイナスは U+2212
@@ -1156,7 +1353,7 @@ static void drawDataCell(int colX, const IconData &icon, bool ok, int value, con
 // ▲ / ▼ の行。y = 時間の数字のベースライン
 static const uint16_t C_TIME_UP = rgb(0xFFD000);
 static void drawTimeRow(bool up, int y, uint32_t ms) {
-  gfx::fillRect(40, y - 48, 386, 56, C_BG);
+  fillRectData(40, y - 48, 386, 56, C_BG);
   if (up) triUp(92, (float)(y - 16), 26, C_TIME_UP);
   else triDown(92, (float)(y - 16), 26, C_LABEL);
   char t[16];
@@ -1213,6 +1410,7 @@ static void updData(const Signals &s, const LinkStats &ls, const SysInfo &si, ui
     drawTimeRow(false, 378, trip::belowMs());
     g_dBelowKey = bk;
   }
+  updDataRing(s, full);
 }
 
 // 折れ線(太さ 4、角を立てる)を多角形として足し込む
@@ -1272,9 +1470,11 @@ static void bigChevron(float cx, float cy, float h, int dir, uint16_t c, float w
   gfx::polyFill(c);
 }
 // ================================================================ 設定と CAN確認の共通の形(10/23)
-// どの画面も同じ形: 上の帯(y < ZONE_TOP_Y)= 「設定」(設定の項目。タップで元の画面へ)か「‹ 戻る」(1 つ上へ)、
-// その下に項目の名前(50 px)と値、左右の「‹」「›」(真ん中の左半分・右半分のタップ = 前・次)、点 = 項目の数と今の項目、
-// 下の帯(y ≥ ZONE_BOT_Y)= その画面の操作。操作の無い画面には下の帯を出さない
+// どの画面も同じ形: 上の帯(y < ZONE_TOP_Y)= 「‹ 今いる所の名前」(タップで 1 つ上へ。設定の項目は「‹ 設定」で元の画面へ。
+// 2.3.0 で「‹」を付けた。2.4.0: 受信の状態・グループの中も今いる所の名前。変更・確認の画面は「‹ 戻る」)、
+// その下に項目の名前(50 px)と値、左右の「‹」「›」(真ん中の左半分・右半分のタップ = 前・次。2.4.0 からスワイプでも送れる:
+// 左へ = 次、右へ = 前。2.4.1: 2.4.0 でタップをやめたのを戻した)、点 = 項目の数と今の項目、下の帯(y ≥ ZONE_BOT_Y)= その画面の操作。
+// 操作の無い画面には下の帯を出さない
 static const uint16_t C_BAND_TOP = rgb(0x0F1724);  // 上の帯の地
 static const uint16_t C_BAND_BOT = rgb(0x0E2236);  // 下の帯の地
 static const uint16_t C_BAND_RED = rgb(0xB3201A);  // 消す操作(リセット・やり直す)の下の帯
@@ -1293,22 +1493,29 @@ static void fillChordRows(int y0, int y1, uint16_t c) {
     gfx::fillRectF(233.0f - hw, (float)y, 233.0f + hw, (float)(y + 1), c);
   }
 }
-static void drawTopSet() {  // 設定の項目の上の帯「設定」
+static void drawTopBack(const char *label = "戻る") {  // 上の帯「‹ 名前」(2.4.0: 英字も書ける。「‹ CAN」など)
   fillChordRows(0, ZONE_TOP_Y, C_BAND_TOP);
-  textC(FONT_JP600_48, 233, 92, "設定", C_ACCENT);
-  textC(FONT_NUM600_20, 233, 34, "v" METER_FW_VERSION, C_LABEL);  // 表示器の版(config.h)
-}
-static void drawTopBack() {  // その下の画面の上の帯「‹ 戻る」
-  fillChordRows(0, ZONE_TOP_Y, C_BAND_TOP);
-  float w = gfx::textWidth(FONT_JP600_48, "戻る");
+  float w = mixWidth(FONT_NUM600_48, FONT_JP600_48, label);
   float x = 233 - (w + 30) * 0.5f;
   bigChevron(x + 8, 77, 32, -1, C_ACCENT);
-  gfx::drawText(FONT_JP600_48, x + 30, 94, "戻る", C_ACCENT);
+  mixDraw(FONT_NUM600_48, FONT_JP600_48, x + 30, 94, label, C_ACCENT);
 }
-static void drawBottom(const char *label, uint16_t fill = C_BAND_BOT, uint16_t col = C_ACCENT) {
+// 設定の項目の上の帯「‹ 設定」(2.3.0。「設定」だけでは、押すと元の画面に戻るのが分からなかった)
+static void drawTopSet() {
+  drawTopBack("設定");
+  textC(FONT_NUM600_20, 233, 34, "v" METER_FW_VERSION, C_LABEL);  // 表示器の版(config.h)
+}
+static void drawBottom(const char *label, uint16_t fill = C_BAND_BOT, uint16_t col = C_ACCENT, const FontData &fj = FONT_JP600_44) {
   fillChordRows(ZONE_BOT_Y, gfx::H, fill);
-  textC(FONT_JP600_44, 233, 420, label, col);
+  mixDraw(FONT_NUM600_44, fj, 233 - mixWidth(FONT_NUM600_44, fj, label) * 0.5f, 420, label, col);
 }
+// 2.4.4: メニューに入る下の帯「長押しで開く」(本人 10/24「メニューに入るときは長押しで開くにします。下の帯にも長押しで開くと書いてください」)。
+// 長いので 40 px(44 px では文字の下の角が丸い画面の縁に近すぎる)。押している間は水色の帯、取り消したら灰の字(drawGuide)
+static const char *const OPEN_LABEL = "長押しで開く";
+static void drawOpenBand(uint16_t fill = C_BAND_BOT, uint16_t col = C_ACCENT) {
+  drawBottom(OPEN_LABEL, fill, col, FONT_JP600_40);
+}
+// 左右の「‹」「›」(押せる所。真ん中の左半分・右半分のタップで前・次。2.4.1: 2.4.0 は押せない印にしていた)
 static void drawSideArrows() {
   bigChevron(34, 233, 80, -1, C_ACCENT, 14.0f, 3.5f);
   bigChevron(432, 233, 80, 1, C_ACCENT, 14.0f, 3.5f);
@@ -1330,13 +1537,18 @@ static void drawDots(int n, int cur, const uint16_t *cols, int y) {
 static void drawName(const char *name) {  // 項目の名前(帯の下)
   fitTextC(FP_NAME, 3, 330, 233, 184, name, C_LABEL2);
 }
-// 大きい値(数字 96 px と単位 44 px。入らなければ小さく)。unit = "" なら単位なし
-static void drawBigValue(const char *v, const char *unit, float base, uint16_t c, float maxW = 280) {
+// 大きい値(数字 96 px と単位 44 px。入らなければ小さく)。unit = "" なら単位なし。
+// bold = true なら値を太く(2.4.3: 横に 1 px ずつずらして重ねる。96 px 以上は 3 回、64 px は 2 回ずらす。単位は太くしない)
+static void drawBigValue(const char *v, const char *unit, float base, uint16_t c, float maxW = 280, bool bold = false) {
   const bool ascii = isAsciiLike(v) && runLen(v) == (int)strlen(v);
   if (!unit[0]) {
-    if (ascii && gfx::textWidth(FONT_NUM600_96, v) <= maxW) textC(FONT_NUM600_96, 233, base, v, c);
-    else if (!ascii && mixWidth(FONT_NUM600_96, FONT_JP600_100, v) <= maxW) mixDraw(FONT_NUM600_96, FONT_JP600_100, 233 - mixWidth(FONT_NUM600_96, FONT_JP600_100, v) * 0.5f, base, v, c);
-    else fitTextC(FP_VALUE, 3, maxW + 50, 233, base - 10, v, c);
+    const int b = bold ? 3 : 0;
+    for (int i = 0; i <= b; i++) {
+      const float dx = (float)i - b * 0.5f;
+      if (ascii && gfx::textWidth(FONT_NUM600_96, v) <= maxW) textC(FONT_NUM600_96, 233 + dx, base, v, c);
+      else if (!ascii && mixWidth(FONT_NUM600_96, FONT_JP600_100, v) <= maxW) mixDraw(FONT_NUM600_96, FONT_JP600_100, 233 - mixWidth(FONT_NUM600_96, FONT_JP600_100, v) * 0.5f + dx, base, v, c);
+      else fitTextC(FP_VALUE, 3, maxW + 50, 233 + dx, base - 10, v, c);
+    }
     return;
   }
   const FontData &uf = (uint8_t)unit[0] >= 0xE0 ? FONT_JP600_44 : FONT_NUM600_44;  // 「分」「件」は日本語、「°C」は英数字の書体
@@ -1344,7 +1556,8 @@ static void drawBigValue(const char *v, const char *unit, float base, uint16_t c
   const FontData &vf = gfx::textWidth(FONT_NUM600_96, v) + 8 + wu <= maxW ? FONT_NUM600_96 : FONT_NUM600_64;
   const float wv = gfx::textWidth(vf, v);
   const float x = 233 - (wv + 8 + wu) * 0.5f;
-  gfx::drawText(vf, x, base, v, c);
+  const int b = bold ? (vf.px >= 90 ? 3 : 2) : 0;
+  for (int i = 0; i <= b; i++) gfx::drawText(vf, x + (float)i - b * 0.5f, base, v, c);
   gfx::drawText(uf, x + wv + 8, base, unit, C_LABEL2);
 }
 // ▲ 3000 / ▼ 3000 と累計時間の 2 行(設定の「時間の記録」とリセットの確認)
@@ -1360,7 +1573,7 @@ static void drawTwoTimes(int y1, int y2, uint16_t labc) {
   fmtTime(t, sizeof(t), trip::belowMs());
   textR(FONT_NUM600_44, 384, (float)(y2 + 4), t, C_WHITE);
 }
-// タップの範囲: 0 = 上の帯、1 = 下の帯、2 = 真ん中の左半分、3 = 真ん中の右半分
+// タップの範囲: 0 = 上の帯、1 = 下の帯、2 = 真ん中の左半分、3 = 真ん中の右半分(前・次。変更の画面では − +、CAN確認では「やり直す」「一覧」)
 enum Zone { Z_TOP, Z_BOT, Z_LEFT, Z_RIGHT };
 static Zone zoneAt(int x, int y) {
   if (y < ZONE_TOP_Y) return Z_TOP;
@@ -1368,17 +1581,29 @@ static Zone zoneAt(int x, int y) {
   return x < 233 ? Z_LEFT : Z_RIGHT;
 }
 
-// ---- 受信の状態・RaceChrono の状態の項目と判定
-// ---- 受信の状態・RaceChrono の状態: 1 項目の画面と、全項目の判定(下の点)
-static const int INFO_MAX = 8;     // 項目の数の最大
-static const int INFO_N_LINK = 8;  // 受信の状態の項目の数(2.2.0: 「燃料」を足した)
-static const int INFO_N_RC = 7;    // RaceChrono の状態の項目の数
+// ---- 受信の状態・本体の状態(2.4.0: 分け直した。本人の指示 10/24「表示内容などのカテゴライズ」)
+// 受信の状態 = データの出どころと行き先ごとのグループ: CAN(車 → CANリーダー → 表示器)・GPS・IMU・RaceChrono(表示器 → スマホ)。
+//   受信の状態の画面は 1 ページ 1 グループ(まとめ。下「開く」で中へ)。グループの中は 1 ページ 1 項目。
+// 本体の状態 = 表示器そのもの(FPS・起動)。設定の項目から直接グループの中へ。
+// 同じ値は 1 か所にだけ出す(2.3.0〜2.3.1 は GPS・IMU が 2 か所にあった)。上の帯は今いる所の名前(「‹ 受信の状態」「‹ CAN」など)
+enum Group : uint8_t { G_CAN, G_GPS, G_IMU, G_RC, G_SYS, G_COUNT };
+static const int N_LINK_GROUPS = 4;  // 受信の状態のグループ(CAN・GPS・IMU・RaceChrono)
+static const char *const GROUP_NAME[G_COUNT] = { "CAN", "GPS", "IMU", "RaceChrono", "本体の状態" };
+static const int GROUP_N[G_COUNT] = { 7, 3, 2, 3, 8 };  // グループの中のページの数
+static const int GRP_MAX = 8;
+enum { P_CAN_BAUD, P_CAN_RX, P_CAN_ERR, P_CAN_READER, P_CAN_BUS, P_CAN_FUEL, P_CAN_CHECK };  // CAN の中のページ
+enum { P_GPS_FIX, P_GPS_POS, P_GPS_SPEED };                                                   // GPS
+enum { P_IMU_ACC, P_IMU_CAL };                                                                // IMU
+enum { P_RC_SEND, P_RC_LINK, P_RC_RATE };                                                     // RaceChrono
+enum { P_SYS_FPS, P_SYS_CPU, P_SYS_CLOCK, P_SYS_TEMP, P_SYS_RAM, P_SYS_PSRAM, P_SYS_FLASH, P_SYS_BOOT };  // 本体の状態
 enum Verdict : uint8_t { V_WAIT, V_OK, V_NG };
+enum PageAct : uint8_t { A_NONE, A_OPEN_GRP, A_OPEN_CAN, A_EDIT_RC, A_IMU_RESET };  // ページの下の帯の操作
 struct InfoItem {
   const char *label;
   char value[48];
   Verdict v;
-  bool core;  // 通信の項目(まとめで、緑でなければ「正常」にしない。2.2.0)
+  bool core;    // まとめで、緑でなければ「正常」にしない項目(2.2.0)
+  PageAct act;  // 下の帯の操作(2.3.0)
 };
 static uint32_t g_errTotal = 0, g_errIncMs = 0;    // 誤り・欠落の合計と、最後に増えた時刻
 static uint32_t g_dropTotal = 0, g_dropIncMs = 0;  // RaceChrono で捨てた数と、最後に増えた時刻
@@ -1399,88 +1624,171 @@ static void infoTrack(const LinkStats &ls, const SysInfo &si, uint32_t now) {  /
 static bool recent(uint32_t incMs, uint32_t now) {
   return incMs && (uint32_t)(now - incMs) < INFO_RECENT_MS;
 }
-static void infoItems(const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now, InfoItem it[INFO_MAX]) {
-  const char *L[INFO_N_LINK] = { "通信速度", "受信", "誤り・欠落", "送り元", "CAN", "描画", "起動", "燃料" };
-  for (int i = 0; i < INFO_N_LINK; i++) {
-    it[i].label = L[i];
+static void initItems(InfoItem *it, int n, const char *const *labels) {
+  for (int i = 0; i < n; i++) {
+    it[i].label = labels[i];
+    it[i].value[0] = 0;
     it[i].v = V_WAIT;
-    it[i].core = i <= 4;  // 通信速度・受信・誤り・欠落・送り元・CAN
+    it[i].core = false;
+    it[i].act = A_NONE;
   }
+}
+static const char *const RC_OFF_TEXT = "切(RaceChrono 送信)";  // RaceChrono の送信が切(GPS・IMU も動かしていない)
+// CAN: 車の CAN を CANリーダー(XIAO ESP32C6)が読み、UART で表示器へ送る。燃料のほかは、まとめで緑でなければ「正常」にしない
+static void canItems(const LinkStats &ls, uint32_t now, InfoItem *it) {
+  static const char *const L[] = { "通信速度", "受信", "誤り・欠落", "CANリーダー", "C-CAN・B-CAN", "燃料", "CAN確認" };
+  initItems(it, GROUP_N[G_CAN], L);
+  for (int i = P_CAN_BAUD; i <= P_CAN_BUS; i++) it[i].core = true;
   // 受けていない: バイトは届くのに読めなければ赤。何も届かないときも、起動から INFO_LINK_GRACE_MS たったら赤(2.2.0。前は灰で、
   // まとめが「正常」になっていた)。デモ表示の間は UART を読まないので灰
   const bool linkWait = g_set->demoOn || now < INFO_LINK_GRACE_MS;
-  if (ls.locked) snprintf(it[0].value, 48, "%u bps", (unsigned)ls.baud), it[0].v = V_OK;
-  else snprintf(it[0].value, 48, "受信なし"), it[0].v = (ls.bytesPerSec || !linkWait) ? V_NG : V_WAIT;
+  InfoItem &b = it[P_CAN_BAUD];
+  if (ls.locked) snprintf(b.value, sizeof(b.value), "%u bps", (unsigned)ls.baud), b.v = V_OK;
+  else snprintf(b.value, sizeof(b.value), "受信なし"), b.v = (ls.bytesPerSec || !linkWait) ? V_NG : V_WAIT;
   // 受けているとき: フレーム数。受けていないとき: 届いているバイト数(0 = 線に何も来ていない。0 でない = 来ているが読めない)
-  if (ls.locked) snprintf(it[1].value, 48, "%u /s", (unsigned)ls.framesPerSec), it[1].v = ls.framesPerSec ? V_OK : V_NG;
-  else snprintf(it[1].value, 48, "%u バイト/秒", (unsigned)ls.bytesPerSec);
-  snprintf(it[2].value, 48, "%u / %u", (unsigned)ls.crcErrors, (unsigned)ls.lostFrames);
-  it[2].v = recent(g_errIncMs, now) ? V_NG : (ls.locked ? V_OK : V_WAIT);
+  InfoItem &r = it[P_CAN_RX];
+  if (ls.locked) snprintf(r.value, sizeof(r.value), "%u /s", (unsigned)ls.framesPerSec), r.v = ls.framesPerSec ? V_OK : V_NG;
+  else snprintf(r.value, sizeof(r.value), "%u バイト/秒", (unsigned)ls.bytesPerSec);
+  InfoItem &e = it[P_CAN_ERR];
+  snprintf(e.value, sizeof(e.value), "%u / %u", (unsigned)ls.crcErrors, (unsigned)ls.lostFrames);
+  e.v = recent(g_errIncMs, now) ? V_NG : (ls.locked ? V_OK : V_WAIT);
+  // CANリーダー(2.4.0: 「送り元」から改名): ファームの名前と版(版が合わなければ赤)。
+  // C-CAN・B-CAN: CANリーダーが 1 秒に受けた数(C-CAN が 0 なら赤。B-CAN は 0 でもよい)
+  InfoItem &d = it[P_CAN_READER], &c = it[P_CAN_BUS];
   if (!ls.infoValid) {
-    snprintf(it[3].value, 48, "– –");
-    snprintf(it[4].value, 48, "– –");
+    snprintf(d.value, sizeof(d.value), "– –");
+    snprintf(c.value, sizeof(c.value), "– –");
   } else if (ls.info.proto_ver != METER_LINK_PROTO_VER) {
-    snprintf(it[3].value, 48, "版が違います"), it[3].v = V_NG;
-    snprintf(it[4].value, 48, "– –");
+    snprintf(d.value, sizeof(d.value), "版が違います"), d.v = V_NG;
+    snprintf(c.value, sizeof(c.value), "– –");
   } else {
-    snprintf(it[3].value, 48, "%s%s", ls.info.name, (ls.info.flags & ML_F_SIM) ? " 模擬" : ""), it[3].v = V_OK;
-    snprintf(it[4].value, 48, "C %u B %u", (unsigned)ls.info.can_fps[0], (unsigned)ls.info.can_fps[1]);
-    it[4].v = ls.info.can_fps[0] ? V_OK : V_NG;  // C-CAN が来ていなければ異常(B-CAN は 0 でもよい)
+    snprintf(d.value, sizeof(d.value), "%s%s", ls.info.name, (ls.info.flags & ML_F_SIM) ? " 模擬" : ""), d.v = V_OK;
+    snprintf(c.value, sizeof(c.value), "C %u B %u", (unsigned)ls.info.can_fps[0], (unsigned)ls.info.can_fps[1]);
+    c.v = ls.info.can_fps[0] ? V_OK : V_NG;
   }
-  // 描画(2.0.1): サーキット・タコで 1 回描いて送るのにかかった最長(切り上げの ms)と、それを 1 回の時間とした回数/秒。
-  // 値の書体(64 / 44 / 34 px)に「最長」の字が無いので「max」と書く
-  if (ps.pageMaxUs) {
-    const unsigned ms = (unsigned)((ps.pageMaxUs + 999) / 1000);
-    snprintf(it[5].value, 48, "max %u ms (%u fps)", ms, 1000u / ms);
-    it[5].v = ms > INFO_PAGE_MAX_MS ? V_NG : V_OK;
-  } else {
-    snprintf(it[5].value, 48, "– –");
-  }
-  // AXP2101 のレジスタ 0x20: bit0 = PWR ボタン、bit2 = VBUS(5V)が入った、bit4 = 電池をつないだ
-  if (!si.axpOk) snprintf(it[6].value, 48, "不明");
-  else if (si.powerOnSrc & 0x04) snprintf(it[6].value, 48, "5V 投入"), it[6].v = V_OK;
-  else if (si.powerOnSrc & 0x01) snprintf(it[6].value, 48, "PWR ボタン"), it[6].v = V_OK;
-  else if (si.powerOnSrc & 0x10) snprintf(it[6].value, 48, "電池"), it[6].v = V_OK;
-  else snprintf(it[6].value, 48, "0x%02X", si.powerOnSrc), it[6].v = V_OK;
   // 燃料(2.2.0。燃料が 100 % から動かない件を実車で見るため): 0C014003 の最後の b5(0 も出す)と、なましの値(表示の % の元)
+  InfoItem &f = it[P_CAN_FUEL];
   veh::FuelInfo fi;
   veh::fuelInfo(&fi, now);
-  if (!fi.seen) snprintf(it[7].value, 48, "– –");
-  else if (!fi.have) snprintf(it[7].value, 48, "生 %u", (unsigned)fi.lastB5);
-  else snprintf(it[7].value, 48, "生 %u なまし %.1f", (unsigned)fi.lastB5, (double)fi.lp), it[7].v = V_OK;
+  if (!fi.seen) snprintf(f.value, sizeof(f.value), "– –");
+  else if (!fi.have) snprintf(f.value, sizeof(f.value), "生 %u", (unsigned)fi.lastB5);
+  else snprintf(f.value, sizeof(f.value), "生 %u なまし %.1f", (unsigned)fi.lastB5, (double)fi.lp), f.v = V_OK;
+  // CAN確認(2.4.3: CAN の最後のページ。2.4.4: 下「長押しで開く」。2.4.0〜2.4.2 は C-CAN・B-CAN のページの下「CAN確認」)。判定なし
+  InfoItem &k = it[P_CAN_CHECK];
+  const int rec = cantab::recordCount();
+  int hist[CAN_REC_HIST];
+  const int nh = rec ? cantab::recordHistory(hist) : 0;
+  if (nh) snprintf(k.value, sizeof(k.value), "候補 %d 件 記録 %d 回", hist[nh - 1], rec);
+  else snprintf(k.value, sizeof(k.value), "記録 %d 回", rec);
+  k.act = A_OPEN_CAN;
 }
-static void rcItems(const SysInfo &si, uint32_t now, InfoItem it[INFO_MAX]) {
-  const char *L[INFO_N_RC] = { "BLE", "送信", "GPS", "位置", "GPS 速度", "IMU", "向きの補正" };
-  for (int i = 0; i < INFO_N_RC; i++) {
-    it[i].label = L[i];
-    it[i].v = V_WAIT;
-    it[i].core = i == 0 || i == 1 || i == 2 || i == 5;  // BLE・送信・GPS・IMU
-  }
+// GPS(M100。RaceChrono の送信が入のときだけ動かす): 測位(届かなければ赤)・位置・速度
+static void gpsItems(const SysInfo &si, InfoItem *it) {
+  static const char *const L[] = { "測位", "位置", "速度" };
+  initItems(it, GROUP_N[G_GPS], L);
+  it[P_GPS_FIX].core = true;
   const RcStats &r = si.rc;
   const bool fix = r.gpsOk && r.fixType >= 2;
-  if (!r.enabled) snprintf(it[0].value, 48, "切(設定)");
-  else if (!r.bleOk) snprintf(it[0].value, 48, "開始できない"), it[0].v = V_NG;
-  else if (r.connected) snprintf(it[0].value, 48, "接続中"), it[0].v = V_OK;
-  else snprintf(it[0].value, 48, "未接続(待機中)");
-  snprintf(it[1].value, 48, "CAN %u/s GPS %u/s", (unsigned)r.canPerSec, (unsigned)r.gpsPerSec);
-  it[1].v = recent(g_dropIncMs, now) ? V_NG : (r.connected ? V_OK : V_WAIT);
-  if (!r.gpsOk) snprintf(it[2].value, 48, "受信なし"), it[2].v = r.enabled ? V_NG : V_WAIT;
-  else snprintf(it[2].value, 48, "%s 衛星 %u %u Hz", r.fixType == 3 || r.fixType == 4 ? "3D" : r.fixType == 2 ? "2D" : "測位なし", (unsigned)r.numSV, (unsigned)r.pvtPerSec), it[2].v = fix ? V_OK : V_WAIT;
-  if (fix) snprintf(it[3].value, 48, "%.4f %.4f", (double)r.lat / 1e7, (double)r.lon / 1e7), it[3].v = V_OK;
-  else snprintf(it[3].value, 48, "– –");
-  if (fix) snprintf(it[4].value, 48, "%.1f km/h", (double)r.gpsKmh), it[4].v = V_OK;
-  else snprintf(it[4].value, 48, "– –");
-  if (!r.enabled) snprintf(it[5].value, 48, "切(設定)");
-  else if (!r.imuOk) snprintf(it[5].value, 48, "応答なし"), it[5].v = V_NG;
-  else snprintf(it[5].value, 48, "前後 %+.2f 横 %+.2f g", (double)r.gLon, (double)r.gLat), it[5].v = V_OK;
-  if (!r.imuOk) snprintf(it[6].value, 48, "– –");
-  else snprintf(it[6].value, 48, "上 %s 前 %s", r.imuLevel ? "済" : "未", r.imuForward ? "済" : "未"), it[6].v = (r.imuLevel && r.imuForward) ? V_OK : V_WAIT;
+  InfoItem &x = it[P_GPS_FIX], &p = it[P_GPS_POS], &s = it[P_GPS_SPEED];
+  if (!r.enabled) snprintf(x.value, sizeof(x.value), "%s", RC_OFF_TEXT);
+  else if (!r.gpsOk) snprintf(x.value, sizeof(x.value), "受信なし"), x.v = V_NG;
+  else snprintf(x.value, sizeof(x.value), "%s 衛星 %u %u Hz", r.fixType == 3 || r.fixType == 4 ? "3D" : r.fixType == 2 ? "2D" : "測位なし", (unsigned)r.numSV, (unsigned)r.pvtPerSec), x.v = fix ? V_OK : V_WAIT;
+  if (fix) snprintf(p.value, sizeof(p.value), "%.4f %.4f", (double)r.lat / 1e7, (double)r.lon / 1e7), p.v = V_OK;
+  else snprintf(p.value, sizeof(p.value), "– –");
+  if (fix) snprintf(s.value, sizeof(s.value), "%.1f km/h", (double)r.gpsKmh), s.v = V_OK;
+  else snprintf(s.value, sizeof(s.value), "– –");
+}
+// IMU(基板の QMI8658。RaceChrono の送信が入のときだけ読む): 加速度(応答が無ければ赤)・向きの補正(下「向きを取り直す」)
+static void imuItems(const SysInfo &si, InfoItem *it) {
+  static const char *const L[] = { "加速度", "向きの補正" };
+  initItems(it, GROUP_N[G_IMU], L);
+  it[P_IMU_ACC].core = true;
+  const RcStats &r = si.rc;
+  InfoItem &a = it[P_IMU_ACC], &c = it[P_IMU_CAL];
+  if (!r.enabled) snprintf(a.value, sizeof(a.value), "%s", RC_OFF_TEXT);
+  else if (!r.imuOk) snprintf(a.value, sizeof(a.value), "応答なし"), a.v = V_NG;
+  else snprintf(a.value, sizeof(a.value), "前後 %+.2f 横 %+.2f g", (double)r.gLon, (double)r.gLat), a.v = V_OK;
+  if (!r.imuOk) snprintf(c.value, sizeof(c.value), "– –");
+  else snprintf(c.value, sizeof(c.value), "上 %s 前 %s", r.imuLevel ? "済" : "未", r.imuForward ? "済" : "未"), c.v = (r.imuLevel && r.imuForward) ? V_OK : V_WAIT;
+  if (r.imuOk) c.act = A_IMU_RESET;  // 下「向きを取り直す」(覚えた向きを捨てる)
+}
+// RaceChrono(表示器 → スマホ。BLE): 送信の入・切(下「変更」。変えると次の起動から効く)・接続(開始できなければ赤)・
+// 送った数(直近 INFO_RECENT_MS に捨てたら赤)
+static void rcItems(const SysInfo &si, uint32_t now, InfoItem *it) {
+  static const char *const L[] = { "送信", "接続", "送った数" };
+  initItems(it, GROUP_N[G_RC], L);
+  it[P_RC_LINK].core = it[P_RC_RATE].core = true;
+  const RcStats &r = si.rc;
+  InfoItem &s = it[P_RC_SEND], &l = it[P_RC_LINK], &n = it[P_RC_RATE];
+  const bool on = g_set->rcOn != 0;
+  snprintf(s.value, sizeof(s.value), "%s%s", on ? "入" : "切", on != r.enabled ? "(次の起動から)" : "");
+  s.act = A_EDIT_RC;
+  if (!r.enabled) snprintf(l.value, sizeof(l.value), "%s", RC_OFF_TEXT);
+  else if (!r.bleOk) snprintf(l.value, sizeof(l.value), "開始できない"), l.v = V_NG;
+  else if (r.connected) snprintf(l.value, sizeof(l.value), "接続中"), l.v = V_OK;
+  else snprintf(l.value, sizeof(l.value), "未接続(待機中)");
+  snprintf(n.value, sizeof(n.value), "CAN %u/s GPS %u/s", (unsigned)r.canPerSec, (unsigned)r.gpsPerSec);
+  n.v = recent(g_dropIncMs, now) ? V_NG : (r.connected ? V_OK : V_WAIT);
+}
+// 本体の状態(2.4.0: 受信の状態から移した): FPS・起動。2.4.3: CPU・クロック・温度・RAM・PSRAM・フラッシュ(本人「クロック数など CPU に
+// 関わるデータ、型式など」)。値は基板が SysInfo の cpu に入れる(起動時と 1 秒ごと)
+static void sysItems(const PerfStats &ps, const SysInfo &si, InfoItem *it) {
+  static const char *const L[] = { "FPS", "CPU", "クロック", "温度", "RAM", "PSRAM", "フラッシュ", "起動" };
+  initItems(it, GROUP_N[G_SYS], L);
+  // FPS(2.3.0。前は「描画」。2.4.3: 直近 PERF_FPS_SECS 秒の 1 秒ごとの値): サーキット・タコで 1 回描いて送る時間から出した回/秒。
+  // 平均 = 全部の回の平均、最低 = 1 秒ごとの値で一番低い秒。平均が INFO_FPS_MIN 未満なら赤(2.3.0〜2.4.2 は最低で決めていて、
+  // 背景の色を塗り直す回(全体の描き直し)があると毎回赤になっていた)。数えた回が FPS_MIN_FRAMES 未満なら「– –」の灰。下にグラフ
+  InfoItem &f = it[P_SYS_FPS], &b = it[P_SYS_BOOT];
+  if (ps.pageFrames >= FPS_MIN_FRAMES && ps.pageAvgUs && ps.pageSlowUs) {
+    const unsigned avg = (unsigned)((1000000u + ps.pageAvgUs / 2) / ps.pageAvgUs);
+    const unsigned low = (unsigned)(1000000u / ps.pageSlowUs);
+    snprintf(f.value, sizeof(f.value), "平均 %u 最低 %u", avg, low);
+    f.v = avg < INFO_FPS_MIN ? V_NG : V_OK;
+  } else {
+    snprintf(f.value, sizeof(f.value), "– –");
+  }
+  // CPU(型式・版・コアの数)・クロック・温度(チップの中のセンサー)・RAM(内部の空き / 全体)・PSRAM・フラッシュ(大きさと速さ)
+  const CpuInfo &c = si.cpu;
+  InfoItem &cpu = it[P_SYS_CPU], &clk = it[P_SYS_CLOCK], &tmp = it[P_SYS_TEMP], &ram = it[P_SYS_RAM], &ps2 = it[P_SYS_PSRAM], &fl = it[P_SYS_FLASH];
+  if (!c.ok) {
+    snprintf(cpu.value, sizeof(cpu.value), "– –");
+    snprintf(clk.value, sizeof(clk.value), "– –");
+    snprintf(tmp.value, sizeof(tmp.value), "– –");
+    snprintf(ram.value, sizeof(ram.value), "– –");
+    snprintf(ps2.value, sizeof(ps2.value), "– –");
+    snprintf(fl.value, sizeof(fl.value), "– –");
+  } else {
+    snprintf(cpu.value, sizeof(cpu.value), "%s v%u.%u %u コア", c.model, (unsigned)(c.rev / 100), (unsigned)(c.rev % 100), (unsigned)c.cores), cpu.v = V_OK;
+    snprintf(clk.value, sizeof(clk.value), "%u MHz", (unsigned)c.cpuMHz), clk.v = V_OK;
+    if (c.tempOk) snprintf(tmp.value, sizeof(tmp.value), "%.1f °C", (double)c.tempC), tmp.v = V_OK;
+    else snprintf(tmp.value, sizeof(tmp.value), "– –");
+    snprintf(ram.value, sizeof(ram.value), "空き %u / %u KB", (unsigned)(c.heapFree / 1024), (unsigned)(c.heapBytes / 1024)), ram.v = V_OK;
+    if (c.psramBytes) snprintf(ps2.value, sizeof(ps2.value), "空き %.1f / %.1f MB", (double)c.psramFree / 1048576.0, (double)c.psramBytes / 1048576.0), ps2.v = V_OK;
+    else snprintf(ps2.value, sizeof(ps2.value), "なし");
+    snprintf(fl.value, sizeof(fl.value), "%u MB %u MHz", (unsigned)(c.flashBytes >> 20), (unsigned)(c.flashHz / 1000000u)), fl.v = V_OK;
+  }
+  // AXP2101 のレジスタ 0x20: bit0 = PWR ボタン、bit2 = VBUS(5V)が入った、bit4 = 電池をつないだ
+  if (!si.axpOk) snprintf(b.value, sizeof(b.value), "不明");
+  else if (si.powerOnSrc & 0x04) snprintf(b.value, sizeof(b.value), "5V 投入"), b.v = V_OK;
+  else if (si.powerOnSrc & 0x01) snprintf(b.value, sizeof(b.value), "PWR ボタン"), b.v = V_OK;
+  else if (si.powerOnSrc & 0x10) snprintf(b.value, sizeof(b.value), "電池"), b.v = V_OK;
+  else snprintf(b.value, sizeof(b.value), "0x%02X", si.powerOnSrc), b.v = V_OK;
+}
+// グループ g のページ(it[0〜GROUP_N[g] − 1])。ページの数を返す
+static int groupItems(int g, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now, InfoItem *it) {
+  switch (g) {
+    case G_CAN: canItems(ls, now, it); return GROUP_N[G_CAN];
+    case G_GPS: gpsItems(si, it); return GROUP_N[G_GPS];
+    case G_IMU: imuItems(si, it); return GROUP_N[G_IMU];
+    case G_RC: rcItems(si, now, it); return GROUP_N[G_RC];
+    default: sysItems(ps, si, it); return GROUP_N[G_SYS];
+  }
 }
 static uint16_t verdictCol(Verdict v) {
   return v == V_OK ? C_OK : v == V_NG ? C_ALARM : C_DOT;
 }
-// 全項目の判定のまとめ(設定の項目に出す): 異常があれば「異常 n」。無くても、通信の項目(core)が 1 つでも正常でなければ「待ち」。
-// 通信の項目が全部正常のときだけ「正常」(2.2.0。前は正常が 1 つでもあれば「正常」で、通信が切れていても「正常」と出ていた)
+// 項目の判定のまとめ: 異常があれば「異常 n」。無くても、core の項目が 1 つでも正常でなければ「待ち」。core が全部正常のときだけ「正常」
+// (2.2.0。前は正常が 1 つでもあれば「正常」で、通信が切れていても「正常」と出ていた)
 static void verdictSummary(const InfoItem *it, int cnt, char *out, size_t n, uint16_t *col) {
   int ng = 0, coreNotOk = 0;
   for (int i = 0; i < cnt; i++) {
@@ -1491,10 +1799,50 @@ static void verdictSummary(const InfoItem *it, int cnt, char *out, size_t n, uin
   else if (coreNotOk) snprintf(out, n, "待ち"), *col = C_LABEL2;
   else snprintf(out, n, "正常"), *col = C_WHITE;
 }
+static Verdict colVerdict(uint16_t col) {
+  return col == C_ALARM ? V_NG : (col == C_WHITE ? V_OK : V_WAIT);
+}
+// グループのまとめ(受信の状態のページ、設定の「本体の状態」)。GPS・IMU・RaceChrono は、送信が切なら「切」の灰
+static void groupSummary(int g, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now, char *out, size_t n, uint16_t *col) {
+  if ((g == G_GPS || g == G_IMU || g == G_RC) && !si.rc.enabled) {
+    snprintf(out, n, "切");
+    *col = C_LABEL2;
+    return;
+  }
+  InfoItem it[GRP_MAX];
+  verdictSummary(it, groupItems(g, ls, ps, si, now, it), out, n, col);
+}
+// 設定の「受信の状態」のまとめ: 4 グループの項目を 1 回ずつ数える。「待ち」にするかは CAN の項目だけで決める
+// (GPS・IMU・RaceChrono は赤だけを数える。スマホが未接続でも「待ち」にしない)
+static void linkSummary(const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now, char *out, size_t n, uint16_t *col) {
+  InfoItem it[GRP_MAX * N_LINK_GROUPS];
+  int cnt = 0;
+  for (int g = 0; g < N_LINK_GROUPS; g++) {
+    const int k = groupItems(g, ls, ps, si, now, it + cnt);
+    if (g != G_CAN)
+      for (int i = 0; i < k; i++) it[cnt + i].core = false;
+    cnt += k;
+  }
+  verdictSummary(it, cnt, out, n, col);
+}
+// 受信の状態のページ: 1 ページ 1 グループ(まとめ。下「開く」で中へ)
+static void linkPages(const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now, InfoItem *it) {
+  for (int g = 0; g < N_LINK_GROUPS; g++) {
+    InfoItem &p = it[g];
+    p.label = GROUP_NAME[g];
+    uint16_t col;
+    groupSummary(g, ls, ps, si, now, p.value, sizeof(p.value), &col);
+    p.v = colVerdict(col);
+    p.core = false;
+    p.act = A_OPEN_GRP;
+  }
+}
 
-// ================================================================ 設定画面(8 章。10/23 に作り直し: 1 画面 1 項目 × 10)
+// ================================================================ 設定画面(8 章。10/23 に作り直し: 1 画面 1 項目。2.4.0: 8 項目)
+// 並び(本人の指示 10/24): 明るさ → 受信の状態 → シフトポイント → 水温の警告 → 時間の記録 → 自動で戻る → デモ。
+// 2.4.0: 受信の状態の次に「本体の状態」(受信と関係ない FPS・起動を受信の状態から出した)
 enum Unit : uint8_t { U_NONE, U_RPM, U_MIN, U_PCT, U_DEGC, U_ONOFF };
-enum ItemKind : uint8_t { K_VALUE, K_TIME, K_INFO, K_RC, K_CAN };
+enum ItemKind : uint8_t { K_VALUE, K_TIME, K_LINK, K_SYS };
 struct Item {
   const char *label;  // 項目の名前
   int Settings::*field;
@@ -1503,20 +1851,25 @@ struct Item {
   ItemKind kind;
 };
 static const Item ITEMS[] = {
-  { "シフトポイント", &Settings::shiftRpm, SET_SHIFT_MIN, SET_SHIFT_MAX, SET_SHIFT_STEP, U_RPM, K_VALUE },
-  { "自動で戻る", &Settings::autoReturnMin, SET_AUTORET_MIN, SET_AUTORET_MAX, SET_AUTORET_STEP, U_MIN, K_VALUE },
   { "明るさ", &Settings::brightnessPct, SET_BRIGHT_MIN, SET_BRIGHT_MAX, SET_BRIGHT_STEP, U_PCT, K_VALUE },
+  { "受信の状態", nullptr, 0, 0, 0, U_NONE, K_LINK },
+  { "本体の状態", nullptr, 0, 0, 0, U_NONE, K_SYS },
+  { "シフトポイント", &Settings::shiftRpm, SET_SHIFT_MIN, SET_SHIFT_MAX, SET_SHIFT_STEP, U_RPM, K_VALUE },
   { "水温の警告", &Settings::warnTempC, SET_WARN_MIN, SET_WARN_MAX, SET_WARN_STEP, U_DEGC, K_VALUE },
-  { "デモ", &Settings::demoOn, 0, 1, 1, U_ONOFF, K_VALUE },
-  { "RaceChrono 送信", &Settings::rcOn, 0, 1, 1, U_ONOFF, K_VALUE },
   { "時間の記録", nullptr, 0, 0, 0, U_NONE, K_TIME },
-  { "受信の状態", nullptr, 0, 0, 0, U_NONE, K_INFO },
-  { "RaceChrono", nullptr, 0, 0, 0, U_NONE, K_RC },
-  { "CAN確認", nullptr, 0, 0, 0, U_NONE, K_CAN },
+  { "自動で戻る", &Settings::autoReturnMin, SET_AUTORET_MIN, SET_AUTORET_MAX, SET_AUTORET_STEP, U_MIN, K_VALUE },
+  { "デモ", &Settings::demoOn, 0, 1, 1, U_ONOFF, K_VALUE },
 };
 static const int N_ITEMS = sizeof(ITEMS) / sizeof(ITEMS[0]);
+// 受信の状態 → RaceChrono の 1 ページ目「送信」(変えると次の起動から効く)
+static const Item RC_SEND_ITEM = { "RaceChrono 送信", &Settings::rcOn, 0, 1, 1, U_ONOFF, K_VALUE };
 static int g_setItem = 0;          // 設定で見ている項目(電源を切るまで覚える。フラッシュには書かない)
-static int g_infoItem = 0;         // 受信の状態・RaceChrono の中で見ている項目
+static int g_infoPage = 0;         // 受信の状態で見ているグループ
+static int g_grp = G_CAN;          // グループの中の画面のグループ
+static int g_grpPage = 0;          // そのページ
+static Screen g_grpFrom = SC_SET_INFO;  // グループの中の画面の上の帯で戻る画面(受信の状態、本体の状態なら設定)
+static const Item *g_editItem = &ITEMS[0];  // 変更の画面で変えている項目
+static Screen g_editFrom = SC_SET_LIST;     // 変更の画面を出した画面(「‹ 戻る」「決定」のあとに戻る)
 static int g_editOrig = 0;         // 変更の画面に入ったときの値(「‹ 戻る」で戻す)
 static bool g_saveTried = false;   // 今の値で保存を試した(失敗したときに、同じ値で繰り返し試さない)
 static bool g_saveFailed = false;  // 「保存できませんでした」を出している
@@ -1530,25 +1883,31 @@ static void valueText(const Item &it, int v, char *out, size_t n) {
   if (it.unit == U_ONOFF) snprintf(out, n, "%s", v ? "入" : "切");
   else snprintf(out, n, "%d", v);
 }
-
-// ---- 設定: 1 項目の画面
+static void startEdit(const Item *it, Screen from) {
+  g_editItem = it;
+  g_editFrom = from;
+  g_editOrig = g_set->*(it->field);
+  g_saveTried = false;
+  g_saveFailed = false;
+  go(SC_SET_EDIT);
+}
+static void openGroup(int g, Screen from) {
+  g_grp = g;
+  g_grpPage = 0;
+  g_grpFrom = from;
+  go(SC_SET_GRP);
+}
+// ---- 設定: 1 項目の画面(2.4.4: 下の帯はどの項目も「長押しで開く」。2.4.3 は「決定」で、値を確定する「決定」と意味が 2 つになっていた)
 static void setItemValue(const Item &it, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now, char *v, size_t n, uint16_t *col) {
   *col = C_WHITE;
   if (it.kind == K_VALUE) {
     valueText(it, g_set->*(it.field), v, n);
   } else if (it.kind == K_TIME) {
     snprintf(v, n, "%u|%u", (unsigned)(trip::aboveMs() / 1000), (unsigned)(trip::belowMs() / 1000));
-  } else if (it.kind == K_INFO) {
-    InfoItem items[INFO_MAX];
-    infoItems(ls, ps, si, now, items);
-    verdictSummary(items, INFO_N_LINK, v, n, col);
-  } else if (it.kind == K_RC) {
-    InfoItem items[INFO_MAX];
-    rcItems(si, now, items);
-    if (!si.rc.enabled) snprintf(v, n, "切"), *col = C_LABEL2;
-    else verdictSummary(items, INFO_N_RC, v, n, col);
+  } else if (it.kind == K_LINK) {
+    linkSummary(ls, ps, si, now, v, n, col);
   } else {
-    snprintf(v, n, "-");
+    groupSummary(G_SYS, ls, ps, si, now, v, n, col);
   }
 }
 static void updSetList(const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now) {
@@ -1567,33 +1926,31 @@ static void updSetList(const LinkStats &ls, const PerfStats &ps, const SysInfo &
   g_tagsDirty = true;
   drawTopSet();
   drawName(it.label);
-  const char *bot = "開く";
-  if (it.kind == K_VALUE) {
-    drawBigValue(v, it.unit == U_ONOFF ? "" : unitText(it.unit), 290, C_WHITE);
-    bot = "変更";
-  } else if (it.kind == K_TIME) {
-    drawTwoTimes(250, 304, C_LABEL2);
-    bot = "リセット";
-  } else if (it.kind == K_INFO || it.kind == K_RC) {
-    drawBigValue(v, "", 290, col);
-  } else {
-    mixDraw(FONT_NUM600_34, FONT_JP600_34, 233 - mixWidth(FONT_NUM600_34, FONT_JP600_34, "CAN の画面を開く") * 0.5f, 280, "CAN の画面を開く", C_LABEL2);
-  }
+  if (it.kind == K_VALUE) drawBigValue(v, it.unit == U_ONOFF ? "" : unitText(it.unit), 290, C_WHITE);
+  else if (it.kind == K_TIME) drawTwoTimes(250, 304, C_LABEL2);
+  else drawBigValue(v, "", 290, col);
   drawSideArrows();
   drawDots(N_ITEMS, g_setItem, nullptr, 330);
-  drawBottom(bot);
+  drawOpenBand();  // 2.4.4: どの項目も下の帯の長押しで開く(値の項目は変更の画面、時間の記録はリセットの確認)
 }
 
-// ---- 設定: 変更の画面(項目の名前のまま、左右が − +(入・切は 切・入)、下「決定」= 保存、上「‹ 戻る」= 変えずに戻る)
+// ---- 設定: 変更の画面(項目の名前のまま、左右が − +(入・切は 切・入)、下「決定」= 保存、上「‹ 戻る」= 変えずに戻る)。
+// 2.4.1: 項目の画面と見た目を分けるため、値を水色にし、下の「決定」を水色の帯にした(2.4.0 の値の枠はやめた。本人「枠で囲まれるのはダサい」)。
+// 2.4.3: 「決定」で保存したら、押した所(下の「決定」の帯)を SAVED_FLASH_COUNT 回点滅させ、その間は値を太くする。点滅が終わったら
+// 元の画面へ(2.3.1〜2.4.2 は戻った画面で値を緑で点滅させていた。本人「押したところにアクションがある方が直感的」「緑は意味がない」)。
+// 2.4.5: 変えていなくても「決定」を押したら点滅させる(leaveEdit)
+static bool g_saveFlash = false;     // 「決定」を押したあとの点滅の途中(この間は操作を受けない)
+static uint32_t g_saveFlashT0 = 0;   // 点滅を始めた時刻
+static int g_saveFlashPhase = -1;    // 描いてある段階(-1 = 点滅なし、偶数 = 帯を消す、奇数 = 水色の帯)
 static void drawEditValue() {
-  const Item &it = ITEMS[g_setItem];
+  const Item &it = *g_editItem;
   gfx::fillRect(80, 206, 306, 98, C_BG);  // 〜303。下の刻みの消す範囲(304〜)と隙間を作らない
   char v[16];
   valueText(it, g_set->*(it.field), v, sizeof(v));
-  drawBigValue(v, it.unit == U_ONOFF ? "" : unitText(it.unit), 290, C_WHITE, 290);
+  drawBigValue(v, it.unit == U_ONOFF ? "" : unitText(it.unit), 290, C_ACCENT, 290, g_saveFlash);
 }
 static void drawEditDesc() {  // 刻み(または「保存できませんでした」)
-  const Item &it = ITEMS[g_setItem];
+  const Item &it = *g_editItem;
   gfx::fillRect(80, 304, 306, 38, C_BG);  // 「ずつ」の濁点の上端(305)まで
   if (g_saveFailed) {
     textC(FONT_JP600_30, 233, 334, "保存できませんでした", C_ALARM);
@@ -1607,10 +1964,33 @@ static void drawEditDesc() {  // 刻み(または「保存できませんでし�
   x = gfx::drawText(FONT_NUM600_28, x, 332, t, C_LABEL2) + 4;
   gfx::drawText(FONT_JP600_30, x, 332, "ずつ", C_LABEL2);
 }
-static void updSetEdit() {
-  if (!g_full) return;
+// 下の「決定」の帯(phase: -1 = ふだんの水色の帯、偶数 = 消す(暗い帯に水色の字)、奇数 = 水色の帯)。帯の行を背景で消してから描く
+// (円の縁のなめらかな画素を 2 度塗りしない。最初から描いた絵と同じにする)
+static void drawEditBottom(int phase) {
+  gfx::fillRect(0, ZONE_BOT_Y, gfx::W, gfx::H - ZONE_BOT_Y, C_BG);
+  if (phase >= 0 && (phase % 2) == 0) drawBottom("決定");
+  else drawBottom("決定", C_ACCENT, C_BG);
+}
+static int saveFlashPhase(uint32_t now) {  // 今の点滅の段階。-1 = 点滅なし、2 × SAVED_FLASH_COUNT 以上 = 終わった
+  return g_saveFlash ? (int)((uint32_t)(now - g_saveFlashT0) / SAVED_FLASH_MS) : -1;
+}
+static void updSetEdit(uint32_t now) {
+  const int ph = saveFlashPhase(now);
+  if (ph >= 2 * SAVED_FLASH_COUNT) {  // 点滅が終わった: 元の画面へ
+    g_saveFlash = false;
+    g_saveFlashPhase = -1;
+    go(g_editFrom);
+    return;
+  }
+  if (!g_full) {
+    if (ph != g_saveFlashPhase) {  // 点滅が進んだ: 下の帯だけ描き直す
+      drawEditBottom(ph);
+      g_saveFlashPhase = ph;
+    }
+    return;
+  }
   g_full = false;
-  const Item &it = ITEMS[g_setItem];
+  const Item &it = *g_editItem;
   gfx::fillAll(C_BG);
   g_tagsDirty = true;
   drawTopBack();
@@ -1625,67 +2005,108 @@ static void updSetEdit() {
     gfx::fillRectF(408.5f, 240.5f, 419.5f, 288.5f, C_ACCENT);
   }
   drawEditDesc();
-  drawBottom("決定");
+  drawEditBottom(ph);
+  g_saveFlashPhase = ph;
 }
 
-// ---- 設定: 時間の記録のリセットの確認(上「‹ 戻る」= 消さずに戻る、下「リセット」= 消して戻る)
+// ---- 設定: 消す操作の確認(上「‹ 戻る」= 消さずに戻る、下の赤い帯 = 消して戻る)。2.4.3: 時間の記録のリセットと、IMU の向きの取り直し
+enum ResetKind : uint8_t { RK_TIME, RK_IMU };
+static ResetKind g_resetKind = RK_TIME;
+static Screen g_resetFrom = SC_SET_LIST;  // 戻る画面(時間の記録 = 設定、向きの補正 = IMU の中)
 static uint64_t g_resetKey = 0;  // 描いてある 2 つの時間(秒)
 static void updSetReset() {
-  // 時間はこの画面にいる間も進むので、秒が変わったら描き直す
-  const uint64_t k = ((uint64_t)(trip::aboveMs() / 1000) << 32) | (trip::belowMs() / 1000);
+  // 時間の記録: 時間はこの画面にいる間も進むので、秒が変わったら描き直す
+  const uint64_t k = g_resetKind == RK_TIME ? (((uint64_t)(trip::aboveMs() / 1000) << 32) | (trip::belowMs() / 1000)) : 0;
   if (!g_full && k == g_resetKey) return;
   g_resetKey = k;
   g_full = false;
   gfx::fillAll(C_BG);
   g_tagsDirty = true;
   drawTopBack();
-  drawName("時間の記録");
-  drawTwoTimes(246, 298, C_LABEL);
-  mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "2 つとも 0 に戻す") * 0.5f, 334, "2 つとも 0 に戻す", C_LABEL2);
-  drawBottom("リセット", C_BAND_RED, C_WHITE);
+  if (g_resetKind == RK_TIME) {
+    drawName("時間の記録");
+    drawTwoTimes(246, 298, C_LABEL);
+    mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "2 つとも 0 に戻す") * 0.5f, 334, "2 つとも 0 に戻す", C_LABEL2);
+    drawBottom("リセット", C_BAND_RED, C_WHITE);
+  } else {
+    drawName("向きの補正");
+    mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "覚えた向き(上・前)を捨てて") * 0.5f, 262, "覚えた向き(上・前)を捨てて", C_LABEL2);
+    mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "停車と発進で取り直す") * 0.5f, 304, "停車と発進で取り直す", C_LABEL2);
+    drawBottom("取り直す", C_BAND_RED, C_WHITE);
+  }
 }
 
-// ---- 受信の状態・RaceChrono の状態の中: 1 項目の画面と、全項目の判定(下の点)
-static void drawInfoItem(const InfoItem *it, int cnt, bool resetOp) {
+// ---- 受信の状態・グループの中: 1 ページの画面と、全ページの判定(下の点)。上の帯は今いる所の名前、下の帯はそのページの操作
+// (2.4.4: 操作のあるページはどれも「長押しで開く」)
+static void drawPageValue(const InfoItem &c, float base = 290, int fonts = 3) {
+  const uint16_t vc = c.act == A_EDIT_RC ? C_WHITE : c.v == V_NG ? C_ALARM : (c.v == V_OK ? C_WHITE : C_LABEL2);
+  fitTextC(FP_VALUE + (3 - fonts), fonts, 320, 233, base, c.value, vc);
+}
+// FPS のグラフ(2.4.3。本人「過去数分の FPS の値がここに出るほうがいい」): 直近 PERF_FPS_SECS 秒(サーキット・タコを出していた秒だけ)の
+// 1 秒ごとの回/秒。右端が新しい。縦は 0〜FPS_GRAPH_MAX 回/秒、INFO_FPS_MIN の所に細い線
+static const float FG_X0 = 93, FG_X1 = 373, FG_Y0 = 250, FG_Y1 = 306;
+static float fpsY(int fps) {
+  const float f = fps > FPS_GRAPH_MAX ? (float)FPS_GRAPH_MAX : (float)fps;
+  return FG_Y1 - (FG_Y1 - FG_Y0) * f / (float)FPS_GRAPH_MAX;
+}
+static void drawFpsGraph(const PerfStats &ps) {
+  gfx::fillRect((int)FG_X0, (int)fpsY(INFO_FPS_MIN), (int)(FG_X1 - FG_X0), 1, C_DOT);  // 異常の境目
+  gfx::fillRect((int)FG_X0, (int)FG_Y1, (int)(FG_X1 - FG_X0), 2, C_DOT);              // 0
+  const int n = ps.histN > PERF_FPS_SECS ? PERF_FPS_SECS : ps.histN;
+  if (n < 2) return;
+  static gfx::Pt p[PERF_FPS_SECS];
+  const float step = (FG_X1 - FG_X0) / (float)(PERF_FPS_SECS - 1);
+  for (int i = 0; i < n; i++) p[i] = { FG_X1 - step * (float)(n - 1 - i), fpsY(ps.fpsHist[i]) };
+  gfx::polyBegin(gfx::Rect{ (int16_t)(FG_X0 - 4), (int16_t)(FG_Y0 - 4), (int16_t)(FG_X1 + 4), (int16_t)(FG_Y1 + 4) });
+  strokePolyline(p, n, 1.5f);
+  gfx::polyFill(C_WHITE);
+}
+static void drawPage(const char *title, const InfoItem *it, int cnt, int cur, const PerfStats *graph = nullptr) {
   gfx::fillAll(C_BG);
   g_tagsDirty = true;  // 全部を塗り直したので「SIM」の印も描き直す
-  drawTopBack();
-  if (g_infoItem < 0 || g_infoItem >= cnt) g_infoItem = 0;
-  const InfoItem &c = it[g_infoItem];
+  drawTopBack(title);
+  const InfoItem &c = it[cur];
   drawName(c.label);
-  fitTextC(FP_VALUE, 3, 320, 233, 290, c.value, c.v == V_NG ? C_ALARM : (c.v == V_OK ? C_WHITE : C_LABEL2));
+  if (graph) {  // FPS: 値を小さくして上に、下にグラフ
+    drawPageValue(c, 238, 2);
+    drawFpsGraph(*graph);
+  } else {
+    drawPageValue(c);
+  }
   drawSideArrows();
-  uint16_t cols[INFO_MAX];
+  uint16_t cols[GRP_MAX];
   for (int i = 0; i < cnt; i++) cols[i] = verdictCol(it[i].v);
-  drawDots(cnt, g_infoItem, cols, 330);
-  if (resetOp) drawBottom("向きを取り直す");  // RaceChrono の「向きの補正」: 覚えた向きを捨てる
+  drawDots(cnt, cur, cols, 330);
+  if (c.act != A_NONE) drawOpenBand();  // 2.4.4: 操作のあるページは下の帯の長押しで開く
 }
-// 値は 0.5 秒ごとに描き直す(項目を送ったとき、開いたときはすぐ)
+// 値は 0.5 秒ごとに描き直す(ページを送ったとき、開いたときはすぐ)
 static void updSetInfo(const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now) {
   if (!g_full && (uint32_t)(now - g_infoMs) < 500) return;
   g_full = false;
   g_infoMs = now;
-  InfoItem it[INFO_MAX];
-  infoItems(ls, ps, si, now, it);
-  drawInfoItem(it, INFO_N_LINK, false);
+  InfoItem it[N_LINK_GROUPS];
+  linkPages(ls, ps, si, now, it);
+  if (g_infoPage < 0 || g_infoPage >= N_LINK_GROUPS) g_infoPage = 0;
+  drawPage("受信の状態", it, N_LINK_GROUPS, g_infoPage);
 }
-static bool g_rcResetShown = false;  // 「向きを取り直す」を出している(タップの判定用)
-static bool rcResetOp(const SysInfo &si) {
-  return g_infoItem == 6 && si.rc.imuOk;
-}
-static void updSetRc(const SysInfo &si, uint32_t now) {
+static PageAct g_grpAct = A_NONE;  // 描いてあるページの下の帯の操作(長押しで開くもの。2.4.4)
+static void updSetGrp(const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now) {
+  if (g_grp < 0 || g_grp >= G_COUNT) g_grp = G_CAN;
+  const int cnt = GROUP_N[g_grp];
+  if (g_grpPage < 0 || g_grpPage >= cnt) g_grpPage = 0;
   if (!g_full && (uint32_t)(now - g_infoMs) < 500) return;
   g_full = false;
   g_infoMs = now;
-  InfoItem it[INFO_MAX];
-  rcItems(si, now, it);
-  g_rcResetShown = rcResetOp(si);
-  drawInfoItem(it, INFO_N_RC, g_rcResetShown);
+  InfoItem it[GRP_MAX];
+  groupItems(g_grp, ls, ps, si, now, it);
+  g_grpAct = it[g_grpPage].act;
+  const bool fps = g_grp == G_SYS && g_grpPage == P_SYS_FPS && it[g_grpPage].value[0] != 0;
+  drawPage(GROUP_NAME[g_grp], it, cnt, g_grpPage, fps ? &ps : nullptr);
 }
 
-// ================================================================ CAN確認(設定の 10 項目目。10/23)
+// ================================================================ CAN確認(10/23。設定 → 受信の状態 → CAN の「CAN確認」のページの下「長押しで開く」。2.4.4)
 // CAN の画面: 件数(今の候補の ID の数)・記録の回数・件数の移り変わり。下「変化を記録」、右半分「一覧」、左半分「やり直す」(確認へ)。
-// 一覧: 1 件ずつ(左右で ID)。候補のバイトは水色。下「詳細」。詳細: 左右でバイトを選び、値とグラフ
+// 一覧: 1 件ずつ(左右のタップかスワイプで ID)。候補のバイトは水色。下「長押しで開く」で詳細(2.4.4)。詳細: 左右でバイトを選び、値とグラフ
 static const int CAN_LIST_MAX = CAN_MAX_IDS;
 static uint16_t g_candE[CAN_LIST_MAX];
 static uint8_t g_candM[CAN_LIST_MAX];
@@ -1783,7 +2204,7 @@ static void updCanId() {
     snprintf(t, sizeof(t), "%d / %d", g_canIdx + 1, shown);
     textC(FONT_NUM600_28, 233, 336, t, C_LABEL);
     drawSideArrows();
-    drawBottom("詳細");
+    drawOpenBand();  // 2.4.4: 長押しで詳細
   }
   drawCanGrid(v, g_candM[g_canIdx], -1, 250, full);
 }
@@ -1874,47 +2295,79 @@ static void updCanRedo() {
   drawBottom("やり直す", C_BAND_RED, C_WHITE);
 }
 
-// ================================================================ オープニング(config.h の OPENING_*)
-// 時刻だけで進む。描くのは変わった所だけ(輪は 1 マスずつ、自己診断は変わった行だけ)。背景の色が変わるときだけ全部を描き直す。
+// ================================================================ オープニング(config.h の OPENING_ON と OPC_*・OPT_*・OPD_*)
+// 2.5.0: 覚えた画面(サーキット・タコ・データ)ごとに 3 種類(流れは config.h)。どれも時刻だけで進む。描くのは変わった所だけ
+// (背景の色を変えるときと、タコの目盛を赤にする・戻すときだけ全部を描き直す)。タップ・スワイプで飛ばせる(openFinish)
+enum OpenKind : uint8_t { OPK_DRIVE, OPK_TACH, OPK_DATA };
+static uint8_t g_openKind = OPK_DRIVE;
 static uint32_t g_openT0 = 0;       // 始めた時刻
-static int g_openLit = 0;           // 点いているマスの数(片側、0〜12)
-static int g_openPhase = 0;         // 0 = 点けていく、1 = 止まる(最大輝度)、2 = 消していく + 自己診断
-static int g_openRows = 0;          // 出した自己診断の行の数(0〜4)
-static uint8_t g_openState[4];      // 出してある行の状態(変わったら描き直す)
-static bool g_openNg = false;
-static uint16_t g_openBg = 0;
-static bool g_openArcs = false;     // 弧(とアイコン)が描いてある
-static uint32_t g_openWaterKey = 0, g_openFuelKey = 0;  // 描いてある弧の内容(走行画面と同じ waterKey / fuelKey)
+static int g_openPhase = 0;         // 進んだ段階(全部を描き直す段階の入口を 1 回だけにする)
+static bool g_openNg = false;       // データ: 自己診断に NG がある(長く見せる)
+static uint16_t g_openBg = 0;       // サーキット: 塗ってある背景
+static bool g_openArcs = false;     // サーキット: 弧(とアイコン)が描いてある
+static uint32_t g_openWaterKey = 0, g_openFuelKey = 0;  // サーキット: 描いてある弧の内容(走行画面と同じ waterKey / fuelKey)
+static int g_openGearA = -1;        // サーキット: 描いてあるギアの濃さ(0〜16。-1 = まだ)
 
-// 仮の回転数 rpmV の色で、下から lit マスを点ける。背景は withBg のときだけ回転数の色(全部描き直すので、点けている間は黒のまま)。
-// 戻り値: 背景を塗り直した(弧とアイコンも描き直す必要がある)
-static bool openRing(int rpmV, int lit, bool withBg) {
+static float easeIn(float u) {  // はじめはゆっくり
+  return u * u;
+}
+static float easeOut(float u) {  // はじめは速く
+  return 1.0f - (1.0f - u) * (1.0f - u);
+}
+static float easeInOut(float u) {  // ゆっくり始まり、ゆっくり止まる
+  return 0.5f - 0.5f * cosf(PI_F * u);
+}
+// 段階の中の進み(0〜1)。t = 始めてからの時刻、from = その段階の始まり、len = 長さ
+static float stepU(uint32_t t, uint32_t from, uint32_t len) {
+  if (t <= from) return 0.0f;
+  if (len == 0 || t - from >= len) return 1.0f;
+  return (float)(t - from) / (float)len;
+}
+// 終わり(飛ばしたときも): 明るさを設定の値に戻して覚えた画面へ(その画面の明るさの段階は次の blinkPoll で決まる)
+static void openFinish() {
+  blinkReset();
+  go(g_homeSaved);
+}
+
+// ---- サーキット
+static const uint16_t C_SEG_GHOST = rgb(0x1E242D);  // 消えているマス(オープニングの間だけ見せる)
+static const uint16_t C_SEG_TAIL = rgb(0x7A8494);   // 走る光のすぐ後ろのマス
+static const uint32_t OPC_T_FLASH = OPC_SCAN_MS;    // 段階の始まりの時刻
+static const uint32_t OPC_T_RISE = OPC_T_FLASH + OPC_FLASH_MS;
+static const uint32_t OPC_T_LIMIT = OPC_T_RISE + OPC_RISE_MS;
+static const uint32_t OPC_T_FALL = OPC_T_LIMIT + OPC_LIMIT_MS;
+static const uint32_t OPC_T_GEAR = OPC_T_FALL + OPC_FALL_MS;
+
+// 仮の回転数 rpmV の色で、下から lit マスを点ける。背景は withBg のときだけ回転数の色(背景が変わるときは全部描き直す)
+static void openRing(int rpmV, int lit, bool withBg) {
   uint16_t bgT = withBg ? to565(colorAt(BACK_C, rpmV, g_set->shiftRpm)) : C_BG;
   uint16_t litC = to565(colorAt(RING_C, rpmV, g_set->shiftRpm));
-  bool refilled = false;
   if (bgT != g_openBg) {
     g_openBg = bgT;
     g_bgCol = bgT;
     gfx::fillAll(bgT);
     for (int k = 0; k < RING_SEGS; k++) g_segCol[k] = 0;
     g_openArcs = false;
-    refilled = true;
   }
   for (int k = 0; k < RING_SEGS; k++) {
     uint16_t c = segLit(k, lit) ? litC : bgT;
     if (c != g_segCol[k]) drawSeg(k, c);
   }
-  return refilled;
 }
-// 水温と燃料の弧とアイコンを、走行画面と同じ描き方(drawWaterPanel / drawFuelPanel)で描く。p = 0〜1 で、水温は
+static void openSegs(const uint16_t want[RING_SEGS]) {  // 色が変わったマスだけ描く
+  for (int k = 0; k < RING_SEGS; k++) {
+    if (want[k] != g_segCol[k]) drawSeg(k, want[k]);
+  }
+}
+// 水温と燃料の弧とアイコンを、走行画面と同じ描き方(drawWaterPanel / drawFuelPanel)で描く。pw・pf = 0〜1 で、水温は
 // WATER_BAR_MIN_C〜WATER_BAR_MAX_C、燃料は 0〜100 % の仮の値にする。異常の表示(水温が警告温度以上、燃料が FUEL_ALARM_PCT 未満)
 // も走行画面と同じに出る(赤で点滅。10/21: 本人の指示「実際と同じように」)。本物の信号の異常の判定(g_waterAlarm など)は壊さない
-static void openPanels(float p) {
+static void openPanels(float pw, float pf) {
   Signals v;
   memset(&v, 0, sizeof(v));
   v.waterOk = v.fuelOk = true;
-  v.waterC = WATER_BAR_MIN_C + (WATER_BAR_MAX_C - WATER_BAR_MIN_C) * p;
-  v.fuelPct = 100.0f * p;
+  v.waterC = WATER_BAR_MIN_C + (WATER_BAR_MAX_C - WATER_BAR_MIN_C) * pw;
+  v.fuelPct = 100.0f * pf;
   bool wa = g_waterAlarm, fa = g_fuelAlarm;
   g_waterAlarm = v.waterC >= g_set->warnTempC;
   g_fuelAlarm = v.fuelPct < FUEL_ALARM_PCT;
@@ -1932,13 +2385,163 @@ static void openPanels(float p) {
   g_waterAlarm = wa;
   g_fuelAlarm = fa;
 }
-static void openPanelsClear() {  // 弧とアイコンを消す(縮み切ったあと。自己診断の行は弧の範囲に掛かるので、消してから出す)
-  if (!g_openArcs) return;
-  fillSide(true, C_BG, true);
-  fillSide(false, C_BG, true);
-  g_openArcs = false;
+static float openWaterP(const Signals &s) {  // 今の水温の弧の長さ(0〜1。信号なしは 0)
+  return s.waterOk ? clampf((s.waterC - WATER_BAR_MIN_C) / (WATER_BAR_MAX_C - WATER_BAR_MIN_C), 0.0f, 1.0f) : 0.0f;
 }
+static float openFuelP(const Signals &s) {  // 今の燃料の弧の長さ(0〜1。信号なしは 0)
+  return s.fuelOk ? clampf(s.fuelPct / 100.0f, 0.0f, 1.0f) : 0.0f;
+}
+static int scanSeg(int p) {  // 走る光の位置 p(0 = 真下、1〜12 = 片側の 1〜12 マス目、13 = 真上)のマス
+  return p == 0 ? RING_SEG_BOTTOM : (p >= 13 ? RING_SEG_TOP : p - 1);
+}
+static void openDrive(const Signals &s, uint32_t t, uint32_t now) {
+  const int sp = g_set->shiftRpm;
+  const int rLo = sp - 11 * RING_STEP_RPM;  // 1 マス目が点く回転数
+  const int rHi = sp + RING_RED_OFFSET;     // 全部が赤
+  uint16_t want[RING_SEGS];
+  if (t < OPC_T_RISE) {  // 1・2: 白い光が下から上へ走り(左右とも)、真上で止まる。通ったマスは暗い灰
+    const int h = t < OPC_T_FLASH ? (int)(14u * t / OPC_SCAN_MS) : 13;
+    for (int k = 0; k < RING_SEGS; k++) want[k] = C_BG;
+    for (int p = 0; p <= h; p++) want[scanSeg(p)] = p == h ? C_WHITE : ((p == h - 1 && t < OPC_T_FLASH) ? C_SEG_TAIL : C_SEG_GHOST);
+    openSegs(want);
+    if (t >= OPC_T_FLASH) openPanels(0.0f, 0.0f);  // 2: 弧の地とアイコン
+    return;
+  }
+  if (t < OPC_T_LIMIT) {  // 3: 回転数を上げるように点いていく(はじめはゆっくり)。弧も一杯まで伸びる
+    const float e = easeIn(stepU(t, OPC_T_RISE, OPC_RISE_MS));
+    const int rpm = rLo + (int)lroundf((float)(rHi - rLo) * e);
+    const int n = litPerSide(rpm, sp);
+    const uint16_t lit = to565(colorAt(RING_C, rpm, sp));
+    for (int k = 0; k < RING_SEGS; k++) want[k] = segLit(k, n) ? lit : C_SEG_GHOST;
+    openSegs(want);
+    openPanels(e, e);
+    blinkRun(true, rpm, true, now);
+    return;
+  }
+  if (t < OPC_T_FALL) {  // 4: 全部点いて背景も赤、最大輝度(リミッター)
+    if (g_openPhase < 1) {
+      g_openPhase = 1;
+      openRing(rHi, 12, true);  // 背景の色が変わるので全部を描き直す(弧も)
+    }
+    openPanels(1.0f, 1.0f);  // 水温の警告の点滅が進む
+    blinkRun(true, rHi, true, now);
+    return;
+  }
+  if (g_openPhase < 2) {  // 5 の入口: 背景を黒に戻す(全部を描き直す)
+    g_openPhase = 2;
+    g_openBg = C_BG;
+    g_bgCol = C_BG;
+    gfx::fillAll(C_BG);
+    for (int k = 0; k < RING_SEGS; k++) g_segCol[k] = C_BG;
+    g_openArcs = false;
+  }
+  // 5: 回転数を下げるように消えていく(はじめは速く。今の回転数まで。信号なしは全部消える)。弧は今の値まで縮む
+  const int rEnd = s.rpmOk ? s.rpm : rLo - RING_STEP_RPM;
+  const float e = easeOut(stepU(t, OPC_T_FALL, OPC_FALL_MS));
+  const int rpm = rHi + (int)lroundf((float)(rEnd - rHi) * e);
+  const int n = litPerSide(rpm, sp);
+  const uint16_t lit = to565(colorAt(RING_C, rpm, sp));
+  for (int k = 0; k < RING_SEGS; k++) want[k] = segLit(k, n) ? lit : C_BG;
+  openSegs(want);
+  openPanels(1.0f + (openWaterP(s) - 1.0f) * e, 1.0f + (openFuelP(s) - 1.0f) * e);
+  blinkRun(true, rpm, true, now);
+  if (t < OPC_T_GEAR) return;
+  // 6: 真ん中にギアが浮かぶ(黒から白へ 16 段)。終わったらサーキットの画面(全部を描き直す。同じ絵になる)
+  const int a = (int)(16.0f * stepU(t, OPC_T_GEAR, OPC_GEAR_MS));
+  if (a != g_openGearA) {
+    g_openGearA = a;
+    gfx::fillRect(GEAR_CLR_X0, GEAR_CLR_Y0, GEAR_CLR_X1 - GEAR_CLR_X0, GEAR_CLR_Y1 - GEAR_CLR_Y0, C_BG);
+    char g[4] = "–";
+    if (s.gearOk) {
+      g[0] = s.gear;
+      g[1] = 0;
+    }
+    if (a > 0) textC(GEAR_FONT, 233, GEAR_BASELINE, g, gfx::blend(C_BG, C_WHITE, (uint32_t)(a * 255 / 16)));
+  }
+  if (t >= OPC_TOTAL_MS) openFinish();
+}
+
+// ---- タコ
+static const uint32_t OPT_T_TOP = OPT_UP_MS;  // 段階の始まりの時刻
+static const uint32_t OPT_T_DOWN = OPT_T_TOP + OPT_TOP_MS;
+static const uint32_t OPT_T_SETTLE = OPT_T_DOWN + OPT_DOWN_MS;
+static Signals openTachSig(int rpm, float bar) {  // 仮の値(回転数とブーストだけ。水温・燃料は無し = 札を出さない)
+  Signals f;
+  memset(&f, 0, sizeof(f));
+  f.linkUp = true;
+  f.rpmOk = true;
+  f.rpm = rpm;
+  f.boostOk = true;
+  f.boostBar = bar;
+  return f;
+}
+// 仮の値でタコの画面を描く(updBoost。ピークの印は出さない)。文字盤を隠している間に目盛を赤にする・戻すときは、ここで
+// 文字盤から描き直して隠す所を黒にする(updBoost の描き直しでは全部が出てしまうため)
+static void openTachDraw(const Signals &f, uint32_t now) {
+  tachRedTrack(f);
+  if (g_tachRed != g_faceRed && g_hideA >= 0 && g_face) {
+    drawBoostFace(f);
+    memcpy(g_face, gfx::frame(), (size_t)gfx::W * gfx::H * sizeof(uint16_t));
+    hideApply(gfx::Rect{ 0, 0, (int16_t)gfx::W, (int16_t)gfx::H });
+    g_needleKey = g_tachKey = g_peakKey = -1;
+  }
+  const float peak = g_peakRpm;
+  g_peakRpm = -1.0f;
+  updBoost(f, now);
+  g_peakRpm = peak;
+  blinkRun(true, f.rpm, true, now);
+}
+static void openTach(const Signals &s, uint32_t t, uint32_t now) {
+  if (g_openPhase < 1) {  // 最初の回: 文字盤を描いて g_face に取り、隠す所を黒に(取っておけなかったときは隠さない)
+    g_openPhase = 1;
+    const Signals f0 = openTachSig(0, 0.0f);
+    tachRedTrack(f0);
+    if (!g_face) g_face = (uint16_t *)platAlloc((size_t)gfx::W * gfx::H * sizeof(uint16_t));
+    drawBoostFace(f0);
+    g_faceOk = g_face != nullptr;
+    if (g_face) {
+      memcpy(g_face, gfx::frame(), (size_t)gfx::W * gfx::H * sizeof(uint16_t));
+      g_hideA = OPT_HIDE_A0;
+      hideApply(gfx::Rect{ 0, 0, (int16_t)gfx::W, (int16_t)gfx::H });
+    }
+    g_needleKey = g_tachKey = g_peakKey = -1;
+  }
+  int rpm;
+  float bar;
+  if (t < OPT_T_SETTLE) {  // 1〜3: 0 → 振り切り → 止まる → 0。ブーストは回転数と同じ割合(輪の先は針と同じ向き)
+    const float e = t < OPT_T_TOP ? easeInOut(stepU(t, 0, OPT_UP_MS)) : (t < OPT_T_DOWN ? 1.0f : 1.0f - easeInOut(stepU(t, OPT_T_DOWN, OPT_DOWN_MS)));
+    rpm = (int)lroundf((float)TACH_MAX_RPM * e);
+    bar = BOOST_SCALE_MAX_BAR * (float)rpm / (float)TACH_MAX_RPM;
+  } else {  // 4: 今の値へ(信号なしは 0)
+    const float e = easeOut(stepU(t, OPT_T_SETTLE, OPT_SETTLE_MS));
+    rpm = (int)lroundf((s.rpmOk ? (float)s.rpm : 0.0f) * e);
+    bar = (s.boostOk ? s.boostBar : 0.0f) * e;
+  }
+  const Signals f = openTachSig(rpm, bar);
+  if (g_hideA >= 0) {  // 針の所まで文字盤を出す(振り切りで全部)
+    float a = t < OPT_T_TOP ? (float)tachKey(f) * 0.25f : OPT_HIDE_A1;
+    if (a > OPT_HIDE_A1) a = OPT_HIDE_A1;
+    if (a > g_hideA) {
+      wedgeReveal(g_hideA, a);
+      g_hideA = a >= OPT_HIDE_A1 ? -1.0f : a;
+      g_barForce = true;  // 写した所に帯の先が掛かっていることがある
+    }
+  }
+  openTachDraw(f, now);
+  if (t >= OPT_TOTAL_MS) {  // 描き直さずに、そのままタコの画面へ(g_face と描いたものの記録はそのまま使える)
+    blinkReset();
+    g_sc = SC_BOOST;
+    g_full = false;
+    g_nextMs = 0;
+    g_holdShown = false;
+    g_guideShown = false;
+    g_tagsDirty = true;  // 「SIM」の印
+  }
+}
+
+// ---- データ
 // 自己診断の行 i(0 = CAN、1 = GPS、2 = IMU、3 = タッチ)の状態。下位 4 ビット = 種類(0 = OK 緑、1 = 待ち 灰、2 = NG 赤、3 = 切 灰)
+static uint8_t g_openState[4];  // 出してある行の状態(変わったら描き直す)
 static uint8_t openRowState(int i, const LinkStats &ls, const SysInfo &si, const char **name, const char **state) {
   uint8_t kind = 0;
   switch (i) {
@@ -1954,99 +2557,121 @@ static uint8_t openRowState(int i, const LinkStats &ls, const SysInfo &si, const
   }
   return kind;
 }
-static void openRow(int i, const LinkStats &ls, const SysInfo &si) {  // 1 行描く(大きい文字。4 行を中央にまとめる)
+static int odBase(int i) {  // 行 i のベースライン(4 行を中央にまとめる。字は 44 px、行の間隔 62 px)
+  return 158 + 62 * i;
+}
+static void openRow(int i, const LinkStats &ls, const SysInfo &si) {  // 結果の行(大きい文字)
   const char *name, *state;
   uint8_t kind = openRowState(i, ls, si, &name, &state);
   g_openState[i] = kind;
   if (kind == 2) g_openNg = true;
   const uint16_t dot = kind == 0 ? rgb(0x22E36A) : kind == 2 ? C_ALARM : gfx::blend(C_BG, C_LABEL, 110);
   const uint16_t fg = kind == 2 ? C_ALARM : (kind == 0 ? C_WHITE : gfx::blend(C_BG, C_LABEL, 190));
-  const int base = 176 + 50 * i;  // 4 行で y 140〜340 あたり
-  gfx::fillRect(96, base - 38, 274, 48, C_BG);
-  gfx::fillArc(112, base - 12, 0, 7, 0, 360, dot);
-  mixDraw(FONT_NUM600_34, FONT_JP600_34, 134, base, name, fg);
-  float sw = mixWidth(FONT_NUM600_34, FONT_JP600_34, state);
-  mixDraw(FONT_NUM600_34, FONT_JP600_34, 362 - sw, base, state, fg);
+  const int base = odBase(i);
+  gfx::fillRect(70, base - 46, 330, 58, C_BG);
+  gfx::fillArc(90, base - 15, 0, 9, 0, 360, dot);
+  mixDraw(FONT_NUM600_44, FONT_JP600_44, 112, base, name, fg);
+  float sw = mixWidth(FONT_NUM600_44, FONT_JP600_44, state);
+  mixDraw(FONT_NUM600_44, FONT_JP600_44, 386 - sw, base, state, fg);
 }
-static void updOpening(const LinkStats &ls, const SysInfo &si, uint32_t now) {
-  if (g_full) {
+static const char *const OD_NAMES[4] = { "CAN", "GPS", "IMU", "タッチ" };
+static void odDot(int i, bool lit) {  // 確かめている途中の点(明・暗で点滅)
+  const int base = odBase(i);
+  gfx::fillRect(79, base - 26, 22, 22, C_BG);
+  gfx::fillArc(90, base - 15, 0, 9, 0, 360, lit ? C_LABEL : gfx::blend(C_BG, C_LABEL, 70));
+}
+static void odChecking(int i, bool lit) {  // 確かめている途中の行(名前を暗めに、結果はまだ出さない)
+  const int base = odBase(i);
+  gfx::fillRect(70, base - 46, 330, 58, C_BG);
+  odDot(i, lit);
+  mixDraw(FONT_NUM600_44, FONT_JP600_44, 112, base, OD_NAMES[i], gfx::blend(C_BG, C_LABEL, 190));
+}
+static const uint16_t C_OD_TRACK = C_DR_TRACK;  // 外周の輪の地(データ画面の回転数の輪と同じ)
+static const float OD_R_IN = DATA_RING_R_IN, OD_R_OUT = DATA_RING_R_OUT;  // 外周の輪の半径(2.5.0: データ画面の回転数の輪と同じ所。214〜224 から寄せた)
+static float g_odTrack = 0.0f;  // 描いた輪の地の広がり(真上から左右へ、度)
+static float g_odFill = 0.0f;   // 埋めた輪(真上から時計回り、度)
+static int8_t g_odPulse[4];     // 行の様子: 2 = まだ出していない、1・0 = 確かめている途中(点の明・暗)、-1 = 結果を出した
+static bool g_odDone = false;   // 全部の結果を出して、輪を結果の色にした
+static bool g_odDoneNg = false; // そのときの色(NG があった)
+static uint32_t odRowT(int i) {  // 行 i を出す時刻
+  return OPD_RING_MS + (uint32_t)i * OPD_ROW_MS;
+}
+static void odArc(float a0, float a1, uint16_t c) {
+  gfx::fillArc(233, 233, OD_R_IN, OD_R_OUT, a0, a1, c);
+}
+static void openData(const LinkStats &ls, const SysInfo &si, uint32_t t) {
+  // 1: 輪の地を真上から左右へ。少しずつ足す(つなぎ目は 1° 重ねて、縁のなめらかさで線が出ないようにする)
+  const float tr = 180.0f * easeOut(stepU(t, 0, OPD_RING_MS));
+  if (tr >= g_odTrack + 0.5f || (tr >= 180.0f && g_odTrack < 180.0f)) {
+    if (g_odTrack <= 0.0f) {
+      odArc(270.0f - tr, 270.0f + tr, C_OD_TRACK);
+    } else {
+      odArc(270.0f - tr, 271.0f - g_odTrack, C_OD_TRACK);
+      odArc(269.0f + g_odTrack, 270.0f + tr + (tr >= 180.0f ? 1.0f : 0.0f), C_OD_TRACK);  // 真下で左右がつながる所も重ねる
+    }
+    g_odTrack = tr;
+  }
+  // 2: 行を出す。確かめている間は点が点滅し、輪が 1/4 ずつ埋まる。結果を出した行は、状態が変わったら描き直す
+  float fill = 0.0f;
+  for (int i = 0; i < 4; i++) {
+    fill += 90.0f * stepU(t, odRowT(i), OPD_CHECK_MS);
+    if (t < odRowT(i)) continue;
+    if (t >= odRowT(i) + OPD_CHECK_MS) {
+      const char *n, *st;
+      if (g_odPulse[i] != -1 || openRowState(i, ls, si, &n, &st) != g_openState[i]) openRow(i, ls, si);
+      g_odPulse[i] = -1;
+    } else {
+      const int8_t lit = (((t - odRowT(i)) / OPD_PULSE_MS) & 1) ? 0 : 1;
+      if (g_odPulse[i] == 2) odChecking(i, lit != 0);
+      else if (g_odPulse[i] != lit) odDot(i, lit != 0);
+      g_odPulse[i] = lit;
+    }
+  }
+  if (!g_odDone && fill >= g_odFill + 0.5f) {
+    odArc(270.0f + (g_odFill > 0.0f ? g_odFill - 1.0f : 0.0f), 270.0f + fill, C_ACCENT);
+    g_odFill = fill;
+  }
+  // 3: 全部出たら、輪を結果の色に(NG が無ければ緑、あれば赤)。版を出す
+  if (t >= odRowT(3) + OPD_CHECK_MS && (!g_odDone || g_odDoneNg != g_openNg)) {
+    if (!g_odDone) textC(FONT_NUM600_24, 233, 404, "v" METER_FW_VERSION, C_LABEL);  // 表示器の版(config.h)。自己診断の下
+    g_odDone = true;
+    g_odDoneNg = g_openNg;
+    gfx::fillArcHard(233, 233, OD_R_IN - 2.0f, OD_R_OUT + 2.0f, 0, 360, C_BG);
+    odArc(0, 360, g_openNg ? C_ALARM : C_OK);
+  }
+  if (t >= OPD_TOTAL_MS + (g_openNg ? OPENING_NG_EXTRA_MS : 0)) openFinish();
+}
+
+static void updOpening(const Signals &s, const LinkStats &ls, const SysInfo &si, uint32_t now) {
+  if (g_full) {  // 始め: 覚えた画面で種類を決め、画面を黒にする(タコは openTach の最初の回で文字盤を描く)
     g_full = false;
+    g_openKind = g_homeSaved == SC_BOOST ? OPK_TACH : (g_homeSaved == SC_DATA ? OPK_DATA : OPK_DRIVE);
     g_openT0 = now;
-    g_openLit = 0;
     g_openPhase = 0;
-    g_openRows = 0;
     g_openNg = false;
-    g_openBg = 0xFFFF;
-    g_openArcs = false;
-    g_bgCol = C_BG;
-    openRing(800, 0, false);
-    openPanels(0.0f);
+    blinkReset();
+    if (g_openKind == OPK_DRIVE) {
+      g_openBg = 0xFFFF;  // 必ず塗る
+      g_openArcs = false;
+      g_openGearA = -1;
+      openRing(0, 0, false);  // 黒で塗る(マスは描かない)
+    } else if (g_openKind == OPK_DATA) {
+      gfx::fillAll(C_BG);
+      g_odTrack = g_odFill = 0.0f;
+      for (int i = 0; i < 4; i++) g_odPulse[i] = 2;
+      g_odDone = false;
+      g_odDoneNg = false;
+    }
   }
   const uint32_t t = now - g_openT0;
-  const uint32_t tSweep = 12u * OPENING_STEP_MS;       // 点けていく時間
-  const uint32_t tHoldEnd = tSweep + OPENING_HOLD_MS;  // 止まる時間の終わり
-  const uint32_t tOff = 12u * OPENING_OFF_STEP_MS;     // 消していく時間
-  const int sp = g_set->shiftRpm;
-  if (g_openPhase == 0) {
-    int lit = (int)(t / OPENING_STEP_MS) + 1;
-    if (lit > 12) lit = 12;
-    if (lit != g_openLit) {
-      g_openLit = lit;
-      openRing(sp - 11 * RING_STEP_RPM + (lit - 1) * RING_STEP_RPM, lit, false);  // マス k が点く回転数の色
-    }
-    openPanels(t < tSweep ? (float)t / tSweep : 1.0f);  // 弧は輪と同じ時間で一杯まで
-    if (t >= tSweep) {
-      g_openPhase = 1;
-      openRing(sp + RING_RED_OFFSET, 12, true);  // 赤(背景も。全部描き直すので弧も)
-      openPanels(1.0f);
-      setLevel(BL_MAX);
-    }
-  } else if (g_openPhase == 1) {
-    if (t >= tSweep + OPENING_HOLD_MS / 2) setLevel(BL_NORMAL);
-    openPanels(1.0f);  // 異常の点滅が進む
-    if (t >= tHoldEnd) {
-      g_openPhase = 2;
-      g_openBg = 0xFFFF;
-      g_openArcs = false;
-      g_bgCol = C_BG;
-      gfx::fillAll(C_BG);  // 背景を黒に。輪は点いたまま
-      for (int k = 0; k < RING_SEGS; k++) g_segCol[k] = 0;
-      for (int k = 0; k < RING_SEGS; k++) drawSeg(k, to565(colorAt(RING_C, sp + RING_RED_OFFSET, sp)));
-      g_openLit = 12;
-      openPanels(1.0f);
-    }
-  } else {
-    uint32_t t2 = t - tHoldEnd;
-    int lit = 12 - (int)(t2 / OPENING_OFF_STEP_MS);  // 輪を上から消す
-    if (lit < 0) lit = 0;
-    if (lit != g_openLit) {
-      for (int k = 0; k < RING_SEGS; k++) if (!segLit(k, lit) && g_segCol[k] != C_BG) drawSeg(k, C_BG);
-      g_openLit = lit;
-    }
-    if (t2 < tOff) openPanels((float)(tOff - t2) / tOff);  // 弧は輪が消える時間で縮む
-    else openPanelsClear();  // 縮み切ったら地とアイコンも消す
-    int rows = t2 >= tOff ? (int)((t2 - tOff) / OPENING_ROW_MS) + 1 : 0;  // 自己診断の行(弧が消えてから OPENING_ROW_MS ごとに 1 行)
-    if (rows > 4) rows = 4;
-    while (g_openRows < rows) {
-      if (g_openRows == 0) textC(FONT_NUM600_24, 233, 392, "v" METER_FW_VERSION, C_LABEL);  // 表示器の版(config.h)。自己診断の下
-      openRow(g_openRows, ls, si);
-      g_openRows++;
-    }
-    for (int i = 0; i < g_openRows; i++) {  // 出してある行は、状態が変わったら描き直す(受信が始まった、衛星をつかんだ)
-      const char *n, *st;
-      if (openRowState(i, ls, si, &n, &st) != g_openState[i]) openRow(i, ls, si);
-    }
-  }
-  uint32_t total = OPENING_MS + (g_openNg ? OPENING_NG_EXTRA_MS : 0);
-  if (t >= total) {
-    setLevel(BL_NORMAL);
-    go(g_homeSaved);
-  }
+  if (g_openKind == OPK_TACH) openTach(s, t, now);
+  else if (g_openKind == OPK_DATA) openData(ls, si, t);
+  else openDrive(s, t, now);
 }
 
 // ================================================================ 「SIM」の印
 // 模擬データを受けている間、「SIM」と場面番号を出す(仕様書に無い。車で模擬の値を本物と取り違えないため)。
-// 置く所(42×21 の四角): データ画面など = 下に「SIM」、上に場面番号。走行画面 = 輪の真上・真下を 10/21 にマスで埋めたので、
+// 置く所(42×21 の四角): データ画面 = 下に「SIM」、上に場面番号(2.5.0: 外周の回転数の輪の内側に入れた)。走行画面 = 輪の真上・真下を 10/21 にマスで埋めたので、
 // 弧の無い左右の真ん中(ギアと輪の間): 左に「SIM」、右に場面番号。アナログ計 = 針の通らない右(ブーストの数字と札の右下)に「SIM」だけ
 static void updTags(const Signals &s, bool redrawn) {
   // 設定・CAN確認の画面は上下が帯なので印は出さない(帯の上を背景色で消してしまうため)
@@ -2068,7 +2693,7 @@ static void updTags(const Signals &s, bool redrawn) {
   if (!redrawn && !lost && sim == g_simShown && scene == g_sceneShown) return;
   uint16_t bg = (g_sc == SC_DRIVE) ? g_bgCol : C_BG;
   uint16_t fg = (g_sc == SC_DRIVE) ? labelOn(g_bgCol) : C_LABEL;
-  int simX = 212, simY = 437, sceneX = 212, sceneY = 8;  // 四角の左上
+  int simX = 212, simY = 430, sceneX = 212, sceneY = 15;  // 四角の左上(データ画面。2.5.0: 437・8 から回転数の輪の内側へ)
   if (g_sc == SC_DRIVE) {
     simX = 76; simY = 223; sceneX = 348; sceneY = 223;
   } else if (g_sc == SC_BOOST) {
@@ -2090,19 +2715,36 @@ static void updTags(const Signals &s, bool redrawn) {
   g_sceneShown = scene;
 }
 
-// ================================================================ スワイプと長押し(サーキット・タコ・データ。config.h の HOLD_*・SWIPE_*)
-// 左右のスワイプで画面を替える(離したときに決める)。長押し HOLD_MS で設定へ。押している間: 画面を暗くし、外周が HOLD_MS で
-// 一周していき、上に「設定」。表示の間は画面の描き直しを止める。指が HOLD_CANCEL_PX 以上動いたら長押しを取り消す
-static const uint16_t C_HOLD_TRACK = rgb(0x1A2433);
-static const uint16_t C_HOLD_PILL = rgb(0x0B1220);
+// ================================================================ タッチ(2.3.0。2.4.0 で作り直し。config.h の TOUCH_CONFIRM_MS・HOLD_*・SWIPE_*)
+// タッチは触れてから TOUCH_CONFIRM_MS 押し続けたら決まる(それより短いタッチは何もしない)。2.4.0: どの画面も離したときに決める:
+//   横に SWIPE_MIN_PX 以上(縦の SWIPE_DIR_RATIO 倍以上)動いていればスワイプ(左へ = 次、右へ = 前。2.4.2: 2.4.0〜2.4.1 の右へ = 次を戻した。
+//   本人 10/24「間違えました 左にスワイプでタコでした」)、
+//   動きが HOLD_CANCEL_PX 未満ならタップ(触れた所)。サーキット・タコ・データのタップは何もしない。
+// サーキット・タコ・データ: 決まったら案内を出す(上に「‹ スワイプ ›」、下に「長押し ▶ 設定」。上下対称で同じ幅。本人の指示 10/24)。
+//   HOLD_SHOW_MS から長押しの途中: 案内の画面のまま、スワイプの札を灰にして外周が HOLD_MS までに一周していく(暗くしない。札の文字も
+//   位置も変えない。本人の指示 10/24「タイトルが変わることで認識しづらい」)。HOLD_MS で設定へ。
+//   指が HOLD_CANCEL_PX 以上動いたら長押しを取り消し、案内は出したまま長押しの札を灰にする(元の画面に戻さない。指を離すまで)。
+//   案内・長押しの表示の間は、画面の描き直しを止める。
+// 設定の中のメニュー(2.4.4): 画面のどこかを押し続けると(2.4.5: 2.4.4 は下の帯だけ)、HOLD_SHOW_MS で下の帯「長押しで開く」を水色にして
+//   (案内の代わり)外周が回り、HOLD_MS で開く(menuOpen)。2.5.0: 2.4.5 までは TOUCH_CONFIRM_MS で帯を水色にしていて、矢印のタップでも
+//   帯が反転した。指が HOLD_CANCEL_PX 以上動いたら取り消し、外周を消して帯の字を灰にする(離すまで)。
+//   短いタップは、その所のタップ(上の帯 = 戻る、左右の半分 = 前・次。下の帯は何もしない)
+static const uint16_t C_HOLD_TRACK = rgb(0x1A2433);    // 外周の地
+static const uint16_t C_HOLD_PILL = rgb(0x0B1220);     // 札の中
+static const uint16_t C_PILL_DIM = rgb(0x343B47);      // 灰にした札の枠
+static const uint16_t C_PILL_DIM_TEXT = rgb(0x5A606A); // 灰にした札の字と印
 static struct {
   bool down;
   int x, y;         // 触れた所
   int lx, ly;       // 最後に知らされた所(スワイプの判定)
   uint32_t t0;      // 触れた時刻
-  bool moved;       // HOLD_CANCEL_PX 以上動いた(長押しを取り消した)
-  bool switched;    // 長押しで設定に入った(離してもタップにしない)
+  bool confirmed;   // TOUCH_CONFIRM_MS 押し続けた(タッチが決まった)
+  bool moved;       // HOLD_CANCEL_PX 以上動いた(長押しを取り消した。離してもタップにしない)
+  bool guided;      // このタッチで案内を出した(取り消したあとも、離すまで案内を出す)
+  bool switched;    // 長押しで設定に入った(離してもタップ・スワイプにしない)
 } g_touch;
+enum GuideMode : uint8_t { GM_GUIDE, GM_HOLD, GM_CANCEL };  // 案内・長押しの途中(スワイプを灰)・長押しを取り消した(長押しを灰)
+static GuideMode g_guideMode = GM_GUIDE;  // 描いてある案内の状態
 static float g_holdDeg = 0;  // 外周に描いた角度
 
 static bool isMain(Screen sc) {
@@ -2114,21 +2756,68 @@ static Screen nextMain(Screen sc) {
 static Screen prevMain(Screen sc) {
   return sc == SC_DRIVE ? SC_DATA : sc == SC_BOOST ? SC_DRIVE : SC_BOOST;
 }
-static void drawHoldShow() {  // 暗くして、外周の地と「設定」
-  uint16_t *f = gfx::frame();
-  for (int i = 0; i < gfx::W * gfx::H; i++) f[i] = gfx::blend(f[i], 0x0000, 153);
-  gfx::addDirty(0, 0, gfx::W, gfx::H);
-  gfx::fillArc(233, 233, 221, 233, 0, 360, C_HOLD_TRACK);
-  const char *nm = "設定";
-  const FontData &fn = FONT_JP600_48;  // 56 px の書体には「設定」の字が無い(タコ・データの字だけ)
-  const float w = gfx::textWidth(fn, nm) + 96;
-  const float x = 233 - w * 0.5f;
-  gfx::frameRoundRect(x, 74, w, 78, 39, 3, C_ACCENT, C_HOLD_PILL);
-  gfx::Pt p[3] = { { x + 30, 95 }, { x + 54, 113 }, { x + 30, 131 } };
-  gfx::polyBegin(gfx::Rect{ (int16_t)(x + 26), 90, (int16_t)(x + 58), 136 });
+// 今の指の位置で離したら、どちらへのスワイプになるか(1 = 左へ = 次、-1 = 右へ = 前、0 = スワイプにならない)
+static int swipeDir() {
+  const int dx = g_touch.lx - g_touch.x, dy = g_touch.ly - g_touch.y;
+  const int ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+  if (ax >= SWIPE_MIN_PX && ax >= SWIPE_DIR_RATIO * ay) return dx < 0 ? 1 : -1;
+  return 0;
+}
+// 札 2 つ(高さ 78、両端は半円、枠 3 px)。上 = スワイプ、下 = 長押し。画面の中心について上下対称、幅は 2 つとも同じ
+static const float PILL_H = 78, PILL_R = 39;
+static const float PILL_Y_TOP = 74;                         // 上の札の上端
+static const float PILL_Y_BOT = 466 - PILL_Y_TOP - PILL_H;  // 下の札の上端(上下対称。314)
+static float pillW() {
+  const FontData &f = FONT_JP600_48;
+  const float ws = gfx::textWidth(f, "スワイプ") + 140;
+  const float wh = 30 + gfx::textWidth(f, "長押し") + 12 + 24 + 12 + gfx::textWidth(f, "設定") + 30;
+  return ws > wh ? ws : wh;
+}
+static void drawPillFrame(float x, float y, float w, bool dim) {
+  gfx::frameRoundRect(x, y, w, PILL_H, PILL_R, 3, dim ? C_PILL_DIM : C_ACCENT, C_HOLD_PILL);
+}
+static void drawPillTri(float x, float cy, uint16_t c) {  // 札の中の「▶」(幅 24、高さ 36)
+  gfx::Pt p[3] = { { x, cy - 18 }, { x + 24, cy }, { x, cy + 18 } };
+  gfx::polyBegin(gfx::Rect{ (int16_t)(x - 4), (int16_t)(cy - 23), (int16_t)(x + 28), (int16_t)(cy + 23) });
   gfx::polyAdd(p, 3);
-  gfx::polyFill(C_ACCENT);
-  gfx::drawText(fn, x + 66, 113 + fn.px * 0.36f, nm, C_WHITE);
+  gfx::polyFill(c);
+}
+static void drawSwipePill(bool dim) {  // 上の札「‹ スワイプ ›」
+  const FontData &f = FONT_JP600_48;
+  const float w = pillW(), x = 233 - w * 0.5f, cy = PILL_Y_TOP + PILL_H * 0.5f;
+  const uint16_t mark = dim ? C_PILL_DIM_TEXT : C_ACCENT, text = dim ? C_PILL_DIM_TEXT : C_WHITE;
+  drawPillFrame(x, PILL_Y_TOP, w, dim);
+  bigChevron(x + 42, cy, 36, -1, mark, 11.0f, 3.5f);
+  bigChevron(x + w - 42, cy, 36, 1, mark, 11.0f, 3.5f);
+  textC(f, 233, cy + f.px * 0.36f, "スワイプ", text);
+}
+static void drawHoldPill(bool dim) {  // 下の札「長押し ▶ 設定」
+  const FontData &f = FONT_JP600_48;
+  const float w1 = gfx::textWidth(f, "長押し"), w2 = gfx::textWidth(f, "設定");
+  const float wc = w1 + 12 + 24 + 12 + w2;  // 中身の幅
+  const float w = pillW(), x = 233 - w * 0.5f, cy = PILL_Y_BOT + PILL_H * 0.5f, cx = 233 - wc * 0.5f;
+  const uint16_t mark = dim ? C_PILL_DIM_TEXT : C_ACCENT, text = dim ? C_PILL_DIM_TEXT : C_WHITE;
+  drawPillFrame(x, PILL_Y_BOT, w, dim);
+  gfx::drawText(f, cx, cy + f.px * 0.36f, "長押し", text);
+  drawPillTri(cx + w1 + 12, cy, mark);
+  gfx::drawText(f, cx + w1 + 12 + 24 + 12, cy + f.px * 0.36f, "設定", text);
+}
+// 案内(2.3.0。本人の指示 10/24「タッチした瞬間に何も反応しない」)。札は同じ形・同じ所のまま、状態で色だけを変える。
+// 設定の中のメニュー(2.4.4)は、下の帯「長押しで開く」の色を変える(長押しの途中 = 水色の帯、取り消した = 灰の字。
+// 2.5.0: 水色にするのは HOLD_SHOW_MS から。タップ・スワイプでは帯を変えない)
+static void drawGuide(GuideMode m) {
+  g_guideMode = m;
+  if (!isMain(g_sc)) {
+    if (m == GM_CANCEL) drawOpenBand(C_BAND_BOT, C_PILL_DIM_TEXT);
+    else drawOpenBand(C_ACCENT, C_BG);
+    return;
+  }
+  drawSwipePill(m == GM_HOLD);
+  drawHoldPill(m == GM_CANCEL);
+}
+static void drawHoldShow() {  // 長押しの途中: スワイプの札を灰にし、外周の地を描く
+  drawGuide(GM_HOLD);
+  gfx::fillArc(233, 233, 221, 233, 0, 360, C_HOLD_TRACK);
   g_holdDeg = 0;
 }
 static void drawHoldProgress(float frac) {
@@ -2137,28 +2826,145 @@ static void drawHoldProgress(float frac) {
   gfx::fillArc(233, 233, 221, 233, 270 + g_holdDeg, 270 + deg, C_ACCENT);
   g_holdDeg = deg;
 }
-// update の最初で呼ぶ。長押しで設定へ(前回見ていた項目)
-static void holdStep(uint32_t now) {
-  if (!g_touch.down || !isMain(g_sc) || g_touch.moved || g_touch.switched) return;
-  if ((uint32_t)(now - g_touch.t0) >= HOLD_MS) {
-    g_lastActMs = now;
-    g_homeCur = g_sc;
-    go(SC_SET_LIST);
-    g_touch.switched = true;
+// 今の画面に、下の帯「長押しで開く」があるか(2.4.4。設定の項目はどれも、受信の状態はどのグループも、グループの中は操作のあるページ、
+// CAN確認の一覧は候補があるとき)
+static bool menuOpenable() {
+  switch (g_sc) {
+    case SC_SET_LIST:
+    case SC_SET_INFO:
+      return true;
+    case SC_SET_GRP:
+      return g_grpAct != A_NONE;
+    case SC_CAN_ID:
+      return g_canIdx < (g_candN < CAN_LIST_MAX ? g_candN : CAN_LIST_MAX);
+    default:
+      return false;
   }
 }
-// 画面を描いたあとで呼ぶ。押している間の表示
-static void holdShow(uint32_t now) {
-  if (!g_touch.down || !isMain(g_sc) || g_touch.moved) return;
+// 下の帯「長押しで開く」の長押し(2.4.4。2.4.3 までは帯のタップで開いていた)
+static void menuOpen() {
+  switch (g_sc) {
+    case SC_SET_LIST: {
+      const Item &it = ITEMS[g_setItem];
+      if (it.kind == K_VALUE) {
+        startEdit(&it, SC_SET_LIST);
+      } else if (it.kind == K_TIME) {
+        g_resetKind = RK_TIME;
+        g_resetFrom = SC_SET_LIST;
+        go(SC_SET_RESET);
+      } else if (it.kind == K_LINK) {
+        g_infoPage = 0;
+        go(SC_SET_INFO);
+      } else {
+        openGroup(G_SYS, SC_SET_LIST);
+      }
+      break;
+    }
+    case SC_SET_INFO:
+      openGroup(g_infoPage, SC_SET_INFO);
+      break;
+    case SC_SET_GRP:
+      if (g_grpAct == A_OPEN_CAN) {
+        go(SC_CAN);
+      } else if (g_grpAct == A_EDIT_RC) {
+        startEdit(&RC_SEND_ITEM, SC_SET_GRP);
+      } else if (g_grpAct == A_IMU_RESET) {
+        g_resetKind = RK_IMU;  // 確かめてから捨てる(2.4.3。前は押すとすぐ捨てていた)
+        g_resetFrom = SC_SET_GRP;
+        go(SC_SET_RESET);
+      }
+      break;
+    case SC_CAN_ID:
+      g_detEntry = g_candE[g_canIdx];
+      g_detByte = 0;
+      for (int b = 0; b < 8; b++) {
+        if (g_candM[g_canIdx] >> b & 1) {
+          g_detByte = b;
+          break;
+        }
+      }
+      go(SC_CAN_DETAIL);
+      break;
+    default:
+      break;
+  }
+}
+// 長押しを数える画面: サーキット・タコ・データと、設定の中で「長押しで開く」がある画面。どちらも画面のどこでも
+// (2.4.5。本人「長押しで開くはその場所ではなく画面全体です」。2.4.4 は下の帯だけで数えていた)
+static bool holdArea() {
+  return isMain(g_sc) || menuOpenable();
+}
+// 長押しとして数えているタッチ(長押しを数える所で、決まっていて、動いていない)
+static bool holdTouch() {
+  return g_touch.down && holdArea() && g_touch.confirmed && !g_touch.moved && !g_touch.switched;
+}
+static bool holdDue(uint32_t now) {  // 長押しの表示を出す時刻を過ぎた
+  return holdTouch() && (uint32_t)(now - g_touch.t0) >= HOLD_SHOW_MS;
+}
+// update の最初で呼ぶ。タッチが決まったか(案内は画面を描いたあと。スワイプ・タップは離したとき、長押しは holdStep)
+static void touchStep(uint32_t now) {
+  if (!g_touch.down || g_touch.confirmed || g_touch.switched) return;
+  if ((uint32_t)(now - g_touch.t0) < TOUCH_CONFIRM_MS) return;
+  g_touch.confirmed = true;
+  g_lastActMs = now;
+}
+// update の最初で呼ぶ。長押しで設定へ(前回見ていた項目)。設定の中のメニューは開く(2.4.4)
+static void holdStep(uint32_t now) {
+  if (!holdTouch() || (uint32_t)(now - g_touch.t0) < HOLD_MS) return;
+  g_lastActMs = now;
+  if (isMain(g_sc)) {
+    g_homeCur = g_sc;
+    go(SC_SET_LIST);
+  } else {
+    menuOpen();
+  }
+  g_touch.switched = true;
+}
+// 外周を今の時刻まで進める(表示を出したところ(HOLD_SHOW_MS)から HOLD_MS までに一周する。2.2.0: 出した瞬間に半分まで飛ばない)
+static void holdProgress(uint32_t now) {
   const uint32_t el = now - g_touch.t0;
-  if (!g_holdShown) {
-    if (el < HOLD_SHOW_MS) return;
+  const float span = (float)(HOLD_MS - HOLD_SHOW_MS);
+  drawHoldProgress(el > HOLD_SHOW_MS ? (float)(el - HOLD_SHOW_MS) / span : 0.0f);
+}
+// 画面を描いたあとで呼ぶ。タッチが決まっていれば案内を出す(長押しの時刻を過ぎていれば長押しの途中の形で)。
+// 決まる前から指が動いていた(スワイプの途中)ときは出さない。案内を出したあとに取り消したときは、長押しの札を灰にして出し直す。
+// 設定の中は、長押しの時刻(HOLD_SHOW_MS)になってから出す(下の帯を水色にして外周。2.5.0)
+static void guideShow(uint32_t now) {
+  if (g_guideShown || !g_touch.down || !holdArea() || !g_touch.confirmed || g_touch.switched) return;
+  if (g_touch.moved && !g_touch.guided) return;
+  // 2.5.0: 設定の中は、長押しの表示を出す時刻(HOLD_SHOW_MS)までは何も出さない(本人「設定で左右の矢印をタップした時に長押しで開く
+  // ボタンが反転してしまうので混乱します」。2.4.5 は触れて TOUCH_CONFIRM_MS で下の帯を水色にしていて、矢印のタップでも帯が変わった)
+  if (!isMain(g_sc) && !g_touch.guided && !holdDue(now)) return;
+  g_guideShown = true;
+  g_touch.guided = true;
+  if (holdDue(now)) {
+    drawHoldShow();
+    g_holdShown = true;
+    holdProgress(now);
+  } else {
+    drawGuide(g_touch.moved ? GM_CANCEL : GM_GUIDE);
+  }
+}
+// 案内・長押しの表示を出している間の update(画面は描き直さない)。true = この回はここまで(画面を描かない)
+static bool guideStep(uint32_t now) {
+  if (!g_guideShown) return false;
+  if (g_touch.moved) {
+    if (!g_holdShown) {  // 案内の間に取り消した: 長押しの札だけを灰に
+      if (g_guideMode != GM_CANCEL) drawGuide(GM_CANCEL);
+      return true;
+    }
+    // 長押しの途中で取り消した: 外周を消すため今の画面を描き直し、そのあと案内を出し直す(guideShow。長押しの札は灰)
+    g_holdShown = false;
+    g_guideShown = false;
+    g_full = true;
+    return false;
+  }
+  if (!g_holdShown && holdDue(now)) {
     drawHoldShow();
     g_holdShown = true;
   }
-  // 外周は表示を出したところ(HOLD_SHOW_MS)から HOLD_MS までに一周する(2.2.0。出した瞬間に半分まで飛ばない)
-  const float span = (float)(HOLD_MS - HOLD_SHOW_MS);
-  drawHoldProgress(el > HOLD_SHOW_MS ? (float)(el - HOLD_SHOW_MS) / span : 0.0f);
+  if (g_holdShown) holdProgress(now);
+  return true;
 }
 
 // ================================================================ 入口
@@ -2169,73 +2975,66 @@ void begin(Settings *settings, uint8_t home) {
   for (int k = 0; k < RING_SEGS; k++) g_segCol[k] = 0;
   g_homeSaved = isMain((Screen)home) ? (Screen)home : SC_DRIVE;
   g_homeCur = g_homeSaved;
-  go(OPENING_MS > 0 ? SC_OPENING : g_homeSaved);
+  go(OPENING_ON ? SC_OPENING : g_homeSaved);
 }
 uint8_t homeScreen() {
   return g_homeSaved;
 }
 
-static void leaveEdit() {  // 保存して項目の画面へ
-  const Item &it = ITEMS[g_setItem];
-  if (it.field && g_set->*(it.field) != g_editOrig && !g_saveTried) {
+// 「決定」: 変えていれば保存する。そのあと下の「決定」の帯を点滅させ(値は太く)、点滅が終わってから戻る(updSetEdit)。
+// 2.4.5: 変えていないとき・保存に失敗したあとの 2 回目も点滅させる(本人「決定のフラッシュが消えました」。2.4.3 は保存したときだけだった)
+static void leaveEdit(uint32_t now) {
+  const Item &it = *g_editItem;
+  if (g_set->*(it.field) != g_editOrig && !g_saveTried) {
     g_saveTried = true;
     if (!platSaveSettings(*g_set)) {  // 保存に失敗: 1 回目はここに留まって知らせる。もう一度「決定」で抜ける
       g_saveFailed = true;
       drawEditDesc();
       return;
     }
+    g_editOrig = g_set->*(it.field);  // 保存した値(時間で戻るときに、もう一度保存しない)
   }
-  go(SC_SET_LIST);
+  g_saveFlash = true;
+  g_saveFlashT0 = now;
+  drawEditValue();  // 太く
+  drawEditBottom(0);  // 押した所をすぐ消す(点滅の 1 回目)
+  g_saveFlashPhase = 0;
 }
-static void cancelEdit() {  // 変えずに項目の画面へ
-  const Item &it = ITEMS[g_setItem];
-  if (it.field && g_set->*(it.field) != g_editOrig) {
+static void cancelEdit() {  // 変えずに元の画面へ
+  const Item &it = *g_editItem;
+  if (g_set->*(it.field) != g_editOrig) {
     g_set->*(it.field) = g_editOrig;
     if (it.field == &Settings::brightnessPct) platSetBrightness(g_editOrig);
   }
-  go(SC_SET_LIST);
+  go(g_editFrom);
 }
 
+// タップ(離したとき。位置は触れた所)。真ん中の左半分・右半分は前・次(スワイプと同じ。2.4.1 で戻した)
 void tap(int x, int y, uint32_t nowMs) {
   g_lastActMs = nowMs;
   const Zone z = zoneAt(x, y);
   switch (g_sc) {
     case SC_OPENING:  // オープニングを飛ばす
-      setLevel(BL_NORMAL);
-      go(g_homeSaved);
+      openFinish();
       break;
     case SC_DRIVE:
     case SC_BOOST:
     case SC_DATA:  // 2.1.0: タップは何もしない(設定は長押し、画面の切り替えはスワイプ)
       break;
-    case SC_SET_LIST: {
-      const Item &it = ITEMS[g_setItem];
+    case SC_SET_LIST:  // 下の帯「長押しで開く」はタップでは開かない(2.4.4。長押しは menuOpen)
       if (z == Z_TOP) {
         go(g_homeCur);
       } else if (z == Z_LEFT || z == Z_RIGHT) {
-        g_setItem = (g_setItem + N_ITEMS + (z == Z_LEFT ? -1 : 1)) % N_ITEMS;
-        g_full = true;
-      } else if (it.kind == K_VALUE) {
-        g_editOrig = g_set->*(it.field);
-        g_saveTried = false;
-        g_saveFailed = false;
-        go(SC_SET_EDIT);
-      } else if (it.kind == K_TIME) {
-        go(SC_SET_RESET);
-      } else if (it.kind == K_INFO || it.kind == K_RC) {
-        g_infoItem = 0;
-        go(it.kind == K_INFO ? SC_SET_INFO : SC_SET_RC);
-      } else {
-        go(SC_CAN);
+        swipe(z == Z_RIGHT ? 1 : -1, nowMs);
       }
       break;
-    }
     case SC_SET_EDIT: {
-      const Item &it = ITEMS[g_setItem];
+      const Item &it = *g_editItem;
+      if (g_saveFlash) break;  // 保存したあとの点滅の間は受けない(終わったら元の画面へ)
       if (z == Z_TOP) {
         cancelEdit();
       } else if (z == Z_BOT) {
-        leaveEdit();
+        leaveEdit(nowMs);
       } else {
         int v;
         if (it.unit == U_ONOFF) v = z == Z_RIGHT ? 1 : 0;
@@ -2255,29 +3054,35 @@ void tap(int x, int y, uint32_t nowMs) {
     }
     case SC_SET_RESET:
       if (z == Z_TOP) {
-        go(SC_SET_LIST);
+        go(g_resetFrom);
       } else if (z == Z_BOT) {
-        trip::resetTimes();
-        platSaveTimes();
-        go(SC_SET_LIST);
+        if (g_resetKind == RK_TIME) {
+          trip::resetTimes();
+          platSaveTimes();
+        } else {
+          platResetImuCal();
+        }
+        go(g_resetFrom);
       }
       break;
     case SC_SET_INFO:
-    case SC_SET_RC:
       if (z == Z_TOP) {
         go(SC_SET_LIST);
       } else if (z == Z_LEFT || z == Z_RIGHT) {
-        const int cnt = g_sc == SC_SET_RC ? INFO_N_RC : INFO_N_LINK;
-        g_infoItem = (g_infoItem + cnt + (z == Z_LEFT ? -1 : 1)) % cnt;
-        g_full = true;
-      } else if (z == Z_BOT && g_sc == SC_SET_RC && g_infoItem == 6 && g_rcResetShown) {
-        platResetImuCal();
-        g_infoMs = nowMs - 1000;  // 次の update で描き直す
+        swipe(z == Z_RIGHT ? 1 : -1, nowMs);
+      }
+      break;
+    case SC_SET_GRP:
+      if (z == Z_TOP) {
+        if (g_grpFrom == SC_SET_INFO) g_infoPage = g_grp;  // 受信の状態の、そのグループのページへ
+        go(g_grpFrom);
+      } else if (z == Z_LEFT || z == Z_RIGHT) {
+        swipe(z == Z_RIGHT ? 1 : -1, nowMs);
       }
       break;
     case SC_CAN:
       if (z == Z_TOP) {
-        go(SC_SET_LIST);
+        go(SC_SET_GRP);  // 受信の状態 → CAN の「CAN確認」のページへ(2.4.3)
       } else if (z == Z_BOT) {
         cantab::record();
         g_full = true;
@@ -2288,32 +3093,18 @@ void tap(int x, int y, uint32_t nowMs) {
         go(SC_CAN_ID);
       }
       break;
-    case SC_CAN_ID: {
-      int shown = g_candN < CAN_LIST_MAX ? g_candN : CAN_LIST_MAX;
+    case SC_CAN_ID:  // 下の帯「長押しで開く」で詳細(2.4.4。menuOpen)
       if (z == Z_TOP) {
         go(SC_CAN);
-      } else if ((z == Z_LEFT || z == Z_RIGHT) && shown > 0) {
-        g_canIdx = (g_canIdx + shown + (z == Z_LEFT ? -1 : 1)) % shown;
-        g_full = true;
-      } else if (z == Z_BOT && shown > 0 && g_canIdx < shown) {
-        g_detEntry = g_candE[g_canIdx];
-        g_detByte = 0;
-        for (int b = 0; b < 8; b++)
-          if (g_candM[g_canIdx] >> b & 1) {
-            g_detByte = b;
-            break;
-          }
-        go(SC_CAN_DETAIL);
+      } else if (z == Z_LEFT || z == Z_RIGHT) {
+        swipe(z == Z_RIGHT ? 1 : -1, nowMs);
       }
       break;
-    }
     case SC_CAN_DETAIL:
       if (z == Z_TOP) {
         go(SC_CAN_ID);
       } else if (z == Z_LEFT || z == Z_RIGHT) {
-        cantab::View v;
-        int n = cantab::getView(g_detEntry, &v) && v.dlc ? v.dlc : 8;
-        g_detByte = (g_detByte + n + (z == Z_LEFT ? -1 : 1)) % n;
+        swipe(z == Z_RIGHT ? 1 : -1, nowMs);
       }
       break;
     case SC_CAN_REDO:
@@ -2329,13 +3120,62 @@ void tap(int x, int y, uint32_t nowMs) {
   }
 }
 
+// 横のスワイプ(2.4.0。dir = 1: 次(左へのスワイプ、右の「›」)、-1: 前(右へのスワイプ、左の「‹」))。サーキット・タコ・データは画面、設定の中は項目・ページ、
+// CAN確認の一覧は ID、詳細はバイト。ほかの画面では何もしない(オープニングは飛ばす)
+void swipe(int dir, uint32_t nowMs) {
+  g_lastActMs = nowMs;
+  const int d = dir > 0 ? 1 : -1;
+  switch (g_sc) {
+    case SC_OPENING:
+      openFinish();
+      break;
+    case SC_DRIVE:
+    case SC_BOOST:
+    case SC_DATA:
+      go(d > 0 ? nextMain(g_sc) : prevMain(g_sc));
+      break;
+    case SC_SET_LIST:
+      g_setItem = (g_setItem + N_ITEMS + d) % N_ITEMS;
+      g_full = true;
+      break;
+    case SC_SET_INFO:
+      g_infoPage = (g_infoPage + N_LINK_GROUPS + d) % N_LINK_GROUPS;
+      g_full = true;
+      break;
+    case SC_SET_GRP: {
+      const int n = GROUP_N[g_grp < G_COUNT ? g_grp : G_SYS];
+      g_grpPage = (g_grpPage + n + d) % n;
+      g_full = true;
+      break;
+    }
+    case SC_CAN_ID: {
+      const int shown = g_candN < CAN_LIST_MAX ? g_candN : CAN_LIST_MAX;
+      if (shown > 0) {
+        g_canIdx = (g_canIdx + shown + d) % shown;
+        g_full = true;
+      }
+      break;
+    }
+    case SC_CAN_DETAIL: {
+      cantab::View v;
+      const int n = cantab::getView(g_detEntry, &v) && v.dlc ? v.dlc : 8;
+      g_detByte = (g_detByte + n + d) % n;
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 void touchDown(int x, int y, uint32_t nowMs) {
   g_lastActMs = nowMs;
   g_touch.down = true;
   g_touch.x = g_touch.lx = x;
   g_touch.y = g_touch.ly = y;
   g_touch.t0 = nowMs;
+  g_touch.confirmed = false;
   g_touch.moved = false;
+  g_touch.guided = false;
   g_touch.switched = false;
 }
 void touchMove(int x, int y, uint32_t nowMs) {
@@ -2344,30 +3184,29 @@ void touchMove(int x, int y, uint32_t nowMs) {
   g_touch.ly = y;
   const int dx = x - g_touch.x, dy = y - g_touch.y;
   if (!g_touch.moved && dx * dx + dy * dy >= HOLD_CANCEL_PX * HOLD_CANCEL_PX) {
-    g_touch.moved = true;  // 長押しを取り消す(スワイプの途中で設定に入らない)
+    g_touch.moved = true;  // 長押しを取り消す(案内の札は次の update で灰にする)。離してもタップにしない
     g_lastActMs = nowMs;
-    if (g_holdShown && isMain(g_sc)) {  // 暗くした表示を消す(今の画面を描き直す)
-      g_holdShown = false;
-      g_full = true;
-    }
   }
 }
 void touchUp(uint32_t nowMs) {
   if (!g_touch.down) return;
   g_touch.down = false;
   g_lastActMs = nowMs;
-  if (g_holdShown) {  // 暗くした表示を消す(今の画面を描き直す)
+  if (g_holdShown || g_guideShown) {  // 案内・長押しの表示を消す(今の画面を描き直す)
     g_holdShown = false;
+    g_guideShown = false;
     g_full = true;
   }
-  if (g_touch.switched) return;  // 長押しで設定に入った。離してもタップにしない
-  if (isMain(g_sc)) {  // サーキット・タコ・データ: 横のスワイプだけ。短いタップは何もしない
-    const int dx = g_touch.lx - g_touch.x, dy = g_touch.ly - g_touch.y;
-    const int ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
-    if (ax >= SWIPE_MIN_PX && ax >= SWIPE_DIR_RATIO * ay) go(dx < 0 ? nextMain(g_sc) : prevMain(g_sc));
-    return;
+  if (g_touch.switched) return;  // 長押しで設定に入った。離しても何もしない
+  // 決まる前に離した: 短いタッチは何もしない(押していた時間は足りているのに update で確かめていなかったときは、ここで決める)
+  if (!g_touch.confirmed && (uint32_t)(nowMs - g_touch.t0) < TOUCH_CONFIRM_MS) return;
+  g_touch.confirmed = true;
+  const int dir = swipeDir();
+  if (dir) {
+    swipe(dir, nowMs);
+  } else if (!g_touch.moved) {
+    tap(g_touch.x, g_touch.y, nowMs);
   }
-  tap(g_touch.x, g_touch.y, nowMs);
 }
 
 void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now) {
@@ -2380,13 +3219,14 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
   else if (s.fuelPct >= FUEL_ALARM_PCT + FUEL_ALARM_HYST_PCT) g_fuelAlarm = false;
 
   // 設定から時間で戻る(2.3)。戻る先は覚えている画面。CAN確認は戻らない(操作を待っていることがある)
-  if (g_sc == SC_SET_LIST || g_sc == SC_SET_EDIT || g_sc == SC_SET_INFO || g_sc == SC_SET_RC || g_sc == SC_SET_RESET) {
+  if (g_sc == SC_SET_LIST || g_sc == SC_SET_EDIT || g_sc == SC_SET_INFO || g_sc == SC_SET_GRP || g_sc == SC_SET_RESET) {
     if (!g_touch.down && (uint32_t)(now - g_lastActMs) >= (uint32_t)g_set->autoReturnMin * 60000u) {
-      if (g_sc == SC_SET_EDIT && ITEMS[g_setItem].field && g_set->*(ITEMS[g_setItem].field) != g_editOrig) platSaveSettings(*g_set);
+      if (g_sc == SC_SET_EDIT && g_set->*(g_editItem->field) != g_editOrig) platSaveSettings(*g_set);
       g_homeCur = g_homeSaved;
       go(g_homeSaved);
     }
   }
+  touchStep(now);
   holdStep(now);
   // 覚える画面: サーキット・タコ・データのどれかを HOME_CONFIRM_MS 続けて見ていたら、それを覚える
   if (isMain(g_sc)) {
@@ -2403,24 +3243,22 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
 
   g_alarmOff = ((now / ALARM_BLINK_HALF_MS) & 1) != 0;  // 異常の表示の点滅
   g_pageFrame = false;
-  bool redrawn = g_full;
   blinkPoll(s, now);  // 回転数の点滅(サーキットとタコだけ。ほかの画面では点灯側に戻る)
   peakTrack(s, now);  // 回転数のピークホールド(どの画面でも記録する)
+  tachRedTrack(s);    // タコの目盛と針を赤にするか(どの画面でも。2.4.0)
   idleTrack(s, now);  // 3000rpm 以下の経過時間(どの画面でも)
-  infoTrack(ls, si, now);  // 受信の状態・RaceChrono の判定のための記録(どの画面でも)
+  infoTrack(ls, si, now);  // 受信の状態の判定のための記録(どの画面でも)
   if (g_sc == SC_OPENING) {
-    updOpening(ls, si, now);
+    updOpening(s, ls, si, now);
     if (g_sc == SC_OPENING) return;  // 「SIM」の印は出さない
-    redrawn = g_full;  // 終わって次の画面に移った。同じ回にその画面を描く(オープニングの絵を 1 回ぶん残さない)
-    blinkPoll(s, now);
+    blinkPoll(s, now);  // 終わって次の画面に移った。同じ回にその画面を描く(オープニングの絵を 1 回ぶん残さない)
   }
-  if (g_holdShown) {  // 長押しの表示の間は描き直さない(外周だけ進める)
-    holdShow(now);
-    return;
-  }
+  if (guideStep(now)) return;  // 案内・長押しの表示の間は描き直さない(札と外周だけ)
+  bool redrawn = g_full;
   if (g_sc == SC_DRIVE) {
     updDrive(s, now);
   } else if (g_sc == SC_BOOST) {
+    redrawn = redrawn || g_tachRed != g_faceRed;  // 目盛を赤に・赤から戻すときは全部を描き直す(updBoost)
     updBoost(s, now);
   } else if (g_full || (int32_t)(now - g_nextMs) >= 0) {  // サーキットとタコ以外の画面は 20 回/秒まで
     g_nextMs = now + 50;
@@ -2431,19 +3269,21 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
       case SC_CAN_DETAIL: updCanDetail(now); break;
       case SC_CAN_REDO: updCanRedo(); break;
       case SC_SET_LIST: updSetList(ls, ps, si, now); break;
-      case SC_SET_EDIT: updSetEdit(); break;
+      case SC_SET_EDIT: updSetEdit(now); break;
       case SC_SET_RESET: updSetReset(); break;
       case SC_SET_INFO: updSetInfo(ls, ps, si, now); break;
-      case SC_SET_RC: updSetRc(si, now); break;
+      case SC_SET_GRP: updSetGrp(ls, ps, si, now); break;
       default: break;
     }
+  } else if (g_sc == SC_DATA) {
+    updDataRing(s, false);  // 2.5.0: データ画面の回転数の輪は毎回(なめらかに動かす。描くのは先の所だけ)。字は 20 回/秒まで
   }
   if (g_full) return;  // update の中で画面が切り替わった。次の回に描く
   updTags(s, redrawn);
-  holdShow(now);
-  // サーキット・タコをふだんどおり描いた回(受信の状態の「描画」に使う)。画面を切り替えた回の全体の描き直しと、
-  // 長押しの表示(この回に出し始めた場合も含む)は除く
-  g_pageFrame = (g_sc == SC_DRIVE || g_sc == SC_BOOST) && !redrawn && !g_holdShown;
+  guideShow(now);
+  // サーキット・タコをふだんどおり描いた回(本体の状態の「FPS」に使う)。画面を切り替えた回の全体の描き直しと、
+  // 案内・長押しの表示(この回に出し始めた場合も含む)は除く
+  g_pageFrame = (g_sc == SC_DRIVE || g_sc == SC_BOOST) && !redrawn && !g_guideShown;
 }
 bool pageFrame() {
   return g_pageFrame;
@@ -2458,16 +3298,40 @@ void testShow(Screen sc, int a, int b) {
     g_detEntry = a;
     g_detByte = b;
   } else if (sc == SC_SET_EDIT) {
-    g_setItem = a;
-    g_editOrig = ITEMS[a].field ? g_set->*(ITEMS[a].field) : 0;
+    g_editItem = b == 1 ? &RC_SEND_ITEM : &ITEMS[(a >= 0 && a < N_ITEMS && ITEMS[a].field) ? a : 0];
+    g_editFrom = b == 1 ? SC_SET_GRP : SC_SET_LIST;
+    if (b == 1) {
+      g_grp = G_RC;
+      g_grpPage = P_RC_SEND;
+      g_grpFrom = SC_SET_INFO;
+    } else {
+      g_setItem = (int)(g_editItem - ITEMS);
+    }
+    g_editOrig = g_set->*(g_editItem->field);
     g_saveTried = false;
     g_saveFailed = false;
+    g_saveFlash = false;
   } else if (sc == SC_SET_LIST) {
     g_setItem = a;
-  } else if (sc == SC_SET_INFO || sc == SC_SET_RC) {
-    g_infoItem = a;
+  } else if (sc == SC_SET_RESET) {
+    g_resetKind = a == 1 ? RK_IMU : RK_TIME;
+    g_resetFrom = a == 1 ? SC_SET_GRP : SC_SET_LIST;
+    if (a == 1) {
+      g_grp = G_IMU;
+      g_grpPage = P_IMU_CAL;
+      g_grpFrom = SC_SET_INFO;
+    }
+  } else if (sc == SC_SET_INFO) {
+    g_infoPage = a;
+  } else if (sc == SC_SET_GRP) {
+    g_grp = (b >= 0 && b < G_COUNT) ? b : G_CAN;
+    g_grpPage = a;
+    g_grpFrom = g_grp == G_SYS ? SC_SET_LIST : SC_SET_INFO;
   } else if (sc == SC_CAN_ID) {
     g_canIdx = a;
+  } else if (sc == SC_OPENING) {  // オープニングの種類(0 サーキット、1 タコ、2 データ)。覚えた画面もそれにする(終わったらそこへ)
+    g_homeSaved = a == 1 ? SC_BOOST : (a == 2 ? SC_DATA : SC_DRIVE);
+    g_homeCur = g_homeSaved;
   }
   if (isMain(sc)) {
     g_homeCur = sc;
@@ -2483,31 +3347,50 @@ void testTouch(uint32_t nowMs) {
 int testSetItem() {
   return g_setItem;
 }
+int testPage() {
+  return g_sc == SC_SET_INFO ? g_infoPage : g_sc == SC_SET_GRP ? g_grpPage : g_setItem;
+}
+int testGroup() {
+  return g_grp;
+}
 bool testHolding() {
   return g_holdShown;
 }
-int testInfoSummary(bool rc, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs, char *out, size_t n) {
-  InfoItem it[INFO_MAX];
+bool testGuide() {
+  return g_guideShown;
+}
+int testGuideMode() {
+  return (int)g_guideMode;
+}
+bool testTachRed() {
+  return g_tachRed;
+}
+bool testFlashing() {
+  return g_saveFlash;
+}
+int testInfoSummary(int g, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs, char *out, size_t n) {
   uint16_t col = C_LABEL2;
-  if (rc) {
-    rcItems(si, nowMs, it);
-    verdictSummary(it, INFO_N_RC, out, n, &col);
-  } else {
-    infoItems(ls, ps, si, nowMs, it);
-    verdictSummary(it, INFO_N_LINK, out, n, &col);
-  }
+  if (g < 0) linkSummary(ls, ps, si, nowMs, out, n, &col);
+  else groupSummary(g < G_COUNT ? g : G_SYS, ls, ps, si, nowMs, out, n, &col);
   return col == C_ALARM ? 2 : (col == C_WHITE ? 1 : 0);
 }
 void testPeakReset() {
   g_peakRpm = -1.0f;
+  g_peakShowOk = false;
+  g_peakShow = false;
+  g_peakLow = -1.0f;
+}
+float testPeakRpm() {
+  return g_peakRpm;
 }
 bool testPeakDrawn() {
   return g_sc == SC_BOOST ? g_peakKey >= 0 : g_triKey >= 0;
 }
-int testInfoItem(int i, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs, char *out, size_t n) {
-  InfoItem it[INFO_MAX];
-  infoItems(ls, ps, si, nowMs, it);
-  if (i < 0 || i >= INFO_N_LINK) return -1;
+int testInfoItem(int g, int i, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t nowMs, char *out, size_t n) {
+  if (g < 0 || g >= G_COUNT) return -1;
+  InfoItem it[GRP_MAX];
+  const int cnt = groupItems(g, ls, ps, si, nowMs, it);
+  if (i < 0 || i >= cnt) return -1;
   snprintf(out, n, "%s", it[i].value);
   return it[i].v;
 }

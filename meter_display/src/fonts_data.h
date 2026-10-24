@@ -46,6 +46,7 @@ extern const FontData FONT_JP600_64;
 extern const FontData FONT_JP600_56;
 extern const FontData FONT_JP600_48;
 extern const FontData FONT_JP600_44;
+extern const FontData FONT_JP600_40;
 extern const FontData FONT_JP600_34;
 extern const FontData FONT_JP600_30;
 extern const FontData FONT_JP500_24;

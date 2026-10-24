@@ -79,7 +79,9 @@ int main(int argc, char **argv) {
   now += 10000;
   shot("BoostMax", sig(5000, '4', 92, 62, true, true, 2.35f), ui::SC_BOOST);         // 目盛の上限で止まる
   now += 10000;
-  shot("BoostShift", sig(6300, '3', 97, 41, true, true, 1.6f), ui::SC_BOOST);        // シフト点以上: 回転計の針が赤の範囲(最大輝度)
+  shot("BoostShift", sig(6300, '3', 97, 41, true, true, 1.6f), ui::SC_BOOST);        // シフト点以上: 回転計の目盛・数字・針が全部赤(2.4.0)
+  now += 10000;
+  shot("BoostBelowShift", sig(5600, '3', 97, 41, true, true, 1.5f), ui::SC_BOOST);   // シフト点の手前: ふだんの色
   now += 10000;
   shot("BoostNoData", sig(3400, '2', 90, 50, true, true, 0, false), ui::SC_BOOST);   // ブーストの信号なし: ブースト計の帯と目印なし
   now += 10000;
@@ -128,6 +130,13 @@ int main(int argc, char **argv) {
     shot("DataNg", s, ui::SC_DATA);
     Signals a = sig(5600, '4', 112, 12);
     shot("DataAlarm", a, ui::SC_DATA);
+    // 2.5.0: 外周の回転数の輪。振り切り(全周が赤)と、行の字がいちばん長くなる値(輪に掛からないこと)
+    si.rc.fixType = 3; si.rc.numSV = 99; si.rc.pvtPerSec = 25; si.rc.imuOk = true; si.rc.gLon = -1.99f; si.rc.gLat = -1.99f;
+    ls.info.can_fps[0] = 9999; ls.info.can_fps[1] = 9999;
+    trip::setTimes(359999000u, 359999000u);  // 99:59:59
+    shot("DataRingMax", sig(8000, '3', 118, 100), ui::SC_DATA);
+    shot("DataRingIdle", sig(850, 'N', -18, 100), ui::SC_DATA);
+    trip::setTimes(5025000, 45296000);
     memset(&si.rc, 0, sizeof(si.rc));
     memset(&ls, 0, sizeof(ls));
   }
@@ -172,68 +181,180 @@ int main(int argc, char **argv) {
     shot("CanRedo", s, ui::SC_CAN_REDO);
   }
 
-  // ---- 設定
+  // ---- 設定(2.4.0: 8 項目。受信の状態は CAN・GPS・IMU・RaceChrono のグループ、本体の状態は FPS・起動)
   {
     Signals s = sig(4200, '3', 92, 62);
     trip::setTimes(5025000, 45296000);
-    const char *items[] = { "Set1Shift", "Set2Auto", "Set3Bright", "Set4Warn", "Set5Demo", "Set6RcSend", "Set7Time", "Set8Info", "Set9Rc", "Set10Can" };
-    for (int i = 0; i < 10; i++) shot(items[i], s, ui::SC_SET_LIST, i);  // 10/23: 1 画面 1 項目 × 10
-    shot("SettingsShift", s, ui::SC_SET_EDIT, 0);
-    shot("SettingsAuto", s, ui::SC_SET_EDIT, 1);
-    shot("SettingsBright", s, ui::SC_SET_EDIT, 2);
-    shot("SettingsWarn", s, ui::SC_SET_EDIT, 3);
+    const char *items[] = { "Set1Bright", "Set2Info", "Set3Sys", "Set4Shift", "Set5Warn", "Set6Time", "Set7Auto", "Set8Demo" };
+    for (int i = 0; i < 8; i++) shot(items[i], s, ui::SC_SET_LIST, i);
+    shot("SettingsBright", s, ui::SC_SET_EDIT, 0);
+    shot("SettingsShift", s, ui::SC_SET_EDIT, 3);
+    shot("SettingsWarn", s, ui::SC_SET_EDIT, 4);
+    shot("SettingsAuto", s, ui::SC_SET_EDIT, 6);
     set.demoOn = 1;
-    shot("SettingsDemo", s, ui::SC_SET_EDIT, 4);
+    shot("SettingsDemo", s, ui::SC_SET_EDIT, 7);
     set.demoOn = 0;
+    shot("SettingsRcSend", s, ui::SC_SET_EDIT, 0, 1);
     shot("SetReset", s, ui::SC_SET_RESET);
+    // 保存したあとの点滅(2.4.3): 変更の画面で、押した「決定」の帯が消える(1 回目)・点く(1 回目)。その間は値が太い
+    {
+      ui::testShow(ui::SC_SET_EDIT, 3);
+      ui::testTouch(now);
+      ui::update(s, ls, ps, si, now);
+      ui::tap(366, 233, now + 10);  // + 100
+      ui::tap(233, 400, now + 20);  // 決定
+      ui::update(s, ls, ps, si, now + 20);
+      saveShot("SavedFlash1");
+      ui::update(s, ls, ps, si, now + 20 + SAVED_FLASH_MS + 10);
+      saveShot("SavedFlash2");
+      printf("%-22s missing=%u\n", "SavedFlash", (unsigned)gfx::missingGlyphs());
+      gfx::dirtyClear();
+      set.shiftRpm = SET_SHIFT_DEFAULT;
+    }
     ls.baud = 921600; ls.locked = true; ls.framesPerSec = 248; ls.crcErrors = 0; ls.lostFrames = 0; ls.infoValid = true;
     ls.info.proto_ver = METER_LINK_PROTO_VER; ls.info.flags = ML_F_SIM; ls.info.can_fps[0] = 1015; ls.info.can_fps[1] = 143;
     strcpy(ls.info.name, "c6dbg r1");
-    ps.fps = 58; ps.loopMaxMs = 21; ps.pageMaxUs = 21400;
+    ps.fps = 58; ps.loopMaxMs = 21; ps.pageMaxUs = 61000; ps.pageFrames = 5400; ps.pageAvgUs = 21400; ps.pageSlowUs = 111000;
+    ps.histN = PERF_FPS_SECS;  // 直近 3 分: ふだん 40〜50、背景の色を塗り直す秒は 9〜20
+    for (int i = 0; i < PERF_FPS_SECS; i++) ps.fpsHist[i] = (uint8_t)((i % 37) < 30 ? 44 + (i * 7) % 7 : 9 + (i * 5) % 12);
     si.axpOk = true; si.powerOnSrc = 0x04;
-    shot("Info", s, ui::SC_SET_INFO, 0);
-    shot("Info2", s, ui::SC_SET_INFO, 3);
+    si.cpu.ok = true;
+    snprintf(si.cpu.model, sizeof(si.cpu.model), "ESP32-S3");
+    si.cpu.rev = 2; si.cpu.cores = 2; si.cpu.cpuMHz = 240; si.cpu.flashBytes = 16u << 20; si.cpu.flashHz = 80000000;
+    si.cpu.heapBytes = 327680; si.cpu.heapFree = 184320; si.cpu.psramBytes = 8u << 20; si.cpu.psramFree = 7340032; si.cpu.tempOk = true; si.cpu.tempC = 41.25f;
+    // 受信の状態(グループのまとめ)と CAN の中
+    shot("InfoCan", s, ui::SC_SET_INFO, 0);
+    shot("CanBaud", s, ui::SC_SET_GRP, 0, 0);
+    shot("CanReader", s, ui::SC_SET_GRP, 3, 0);
+    shot("CanBus", s, ui::SC_SET_GRP, 4, 0);
+    shot("CanFuel", s, ui::SC_SET_GRP, 5, 0);
+    shot("CanCheck", s, ui::SC_SET_GRP, 6, 0);
+    // 本体の状態
+    shot("SysFps", s, ui::SC_SET_GRP, 0, 4);
+    ps.pageFrames = 3;  // 描いた回が少ない(受信が無いとき)
+    shot("SysFpsFew", s, ui::SC_SET_GRP, 0, 4);
+    ps.pageFrames = 100;
+    shot("SysCpu", s, ui::SC_SET_GRP, 1, 4);
+    shot("SysClock", s, ui::SC_SET_GRP, 2, 4);
+    shot("SysTemp", s, ui::SC_SET_GRP, 3, 4);
+    shot("SysRam", s, ui::SC_SET_GRP, 4, 4);
+    shot("SysPsram", s, ui::SC_SET_GRP, 5, 4);
+    shot("SysFlash", s, ui::SC_SET_GRP, 6, 4);
+    shot("SysBoot", s, ui::SC_SET_GRP, 7, 4);
     ls.locked = false; ls.infoValid = false; si.axpOk = false; ls.crcErrors = 3; ls.bytesPerSec = 1480; ls.framesPerSec = 0;
-    shot("InfoNoLink", s, ui::SC_SET_INFO, 2);
-    shot("Set8InfoNg", s, ui::SC_SET_LIST, 7);
+    shot("CanNoLink", s, ui::SC_SET_GRP, 2, 0);
+    shot("InfoCanNg", s, ui::SC_SET_INFO, 0);
+    shot("Set2InfoNg", s, ui::SC_SET_LIST, 1);
     si.rc.enabled = true; si.rc.bleOk = true; si.rc.connected = true; si.rc.canPerSec = 62; si.rc.gpsPerSec = 25; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 11;
     si.rc.pvtPerSec = 25; si.rc.lat = 355812345; si.rc.lon = 1396821234; si.rc.gpsKmh = 48.3f; si.rc.imuOk = true; si.rc.imuLevel = true; si.rc.imuForward = true;
     si.rc.gLon = 0.32f; si.rc.gLat = -0.85f;
-    shot("RaceChrono", s, ui::SC_SET_RC, 2);
-    shot("RaceChronoImu", s, ui::SC_SET_RC, 5);
-    shot("RaceChronoCal", s, ui::SC_SET_RC, 6);
+    shot("InfoGps", s, ui::SC_SET_INFO, 1);
+    shot("InfoImu", s, ui::SC_SET_INFO, 2);
+    shot("InfoRc", s, ui::SC_SET_INFO, 3);
+    shot("GpsFix", s, ui::SC_SET_GRP, 0, 1);
+    shot("GpsPos", s, ui::SC_SET_GRP, 1, 1);
+    shot("GpsSpeed", s, ui::SC_SET_GRP, 2, 1);
+    shot("ImuAcc", s, ui::SC_SET_GRP, 0, 2);
+    shot("ImuCal", s, ui::SC_SET_GRP, 1, 2);
+    shot("ImuReset", s, ui::SC_SET_RESET, 1);
+    shot("RcSend", s, ui::SC_SET_GRP, 0, 3);
+    si.rc.enabled = false;  // 入にしたが、動いているのは切(次の起動から)
+    shot("RcSendPending", s, ui::SC_SET_GRP, 0, 3);
+    si.rc.enabled = true;
+    shot("RcLink", s, ui::SC_SET_GRP, 1, 3);
+    shot("RcRate", s, ui::SC_SET_GRP, 2, 3);
     memset(&si.rc, 0, sizeof(si.rc));
     si.rc.enabled = true; si.rc.bleOk = true; si.rc.imuOk = true;
-    shot("RaceChronoIdle", s, ui::SC_SET_RC);
+    shot("RcIdle", s, ui::SC_SET_GRP, 1, 3);
     memset(&si.rc, 0, sizeof(si.rc));
-    shot("RaceChronoOff", s, ui::SC_SET_RC);
+    shot("RcOff", s, ui::SC_SET_GRP, 1, 3);
+    shot("GpsOff", s, ui::SC_SET_GRP, 0, 1);
+    shot("InfoRcOff", s, ui::SC_SET_INFO, 3);
     memset(&si.rc, 0, sizeof(si.rc));
   }
 
-  // ---- 長押しの表示(押したまま、表示を出してから外周が 6 割ほど進んだ所。2.2.0: 表示は HOLD_SHOW_MS = 長押しの半分から)
+  // ---- 触れたときの案内(2.3.0。タッチが決まった所。2.4.0: 上に「‹ スワイプ ›」、下に「長押し ▶ 設定」。上下対称)
+  {
+    Signals s = sig(4200, '3', 92, 62);
+    const ui::Screen scs[3] = { ui::SC_DRIVE, ui::SC_BOOST, ui::SC_DATA };
+    const char *nm[3] = { "GuideCircuit", "GuideTach", "GuideData" };
+    for (int k = 0; k < 3; k++) {
+      ui::testShow(scs[k]);
+      ui::testTouch(now);
+      ui::update(s, ls, ps, si, now);
+      ui::touchDown(233, 233, now + 10);
+      ui::update(s, ls, ps, si, now + 10 + TOUCH_CONFIRM_MS + 10);
+      saveShot(nm[k]);
+      printf("%-22s guide=%d missing=%u\n", nm[k], (int)ui::testGuide(), (unsigned)gfx::missingGlyphs());
+      if (k == 0) {  // 指がずれた: 案内のまま、長押しの札が灰
+        ui::touchMove(233 + HOLD_CANCEL_PX + 5, 233, now + 10 + TOUCH_CONFIRM_MS + 30);
+        ui::update(s, ls, ps, si, now + 10 + TOUCH_CONFIRM_MS + 40);
+        saveShot("GuideCancel");
+        printf("%-22s guide=%d mode=%d\n", "GuideCancel", (int)ui::testGuide(), ui::testGuideMode());
+      }
+      ui::touchUp(now + 10 + TOUCH_CONFIRM_MS + 60);
+      ui::testShow(scs[k]);
+      gfx::dirtyClear();
+      now += 5000;
+    }
+  }
+
+  // ---- 長押しの途中(押したまま、表示を出してから外周が 6 割ほど進んだ所。2.4.0: 案内のまま、スワイプの札が灰で外周が回る)
   {
     Signals s = sig(4200, '3', 92, 62);
     const uint32_t at = HOLD_SHOW_MS + (HOLD_MS - HOLD_SHOW_MS) * 6 / 10;
-    ui::testShow(ui::SC_DRIVE);
+    const ui::Screen scs[3] = { ui::SC_DRIVE, ui::SC_BOOST, ui::SC_DATA };
+    const char *nm[3] = { "HoldCircuit", "HoldTach", "HoldData" };
+    for (int k = 0; k < 3; k++) {
+      ui::testShow(scs[k]);
+      ui::testTouch(now);
+      ui::update(s, ls, ps, si, now);
+      ui::touchDown(233, 233, now);
+      ui::update(s, ls, ps, si, now + TOUCH_CONFIRM_MS + 10);
+      ui::update(s, ls, ps, si, now + HOLD_SHOW_MS + 10);
+      ui::update(s, ls, ps, si, now + at);
+      saveShot(nm[k]);
+      if (k == 0) {  // 長押しの途中で指がずれた: 外周を消し、案内のまま長押しの札が灰
+        ui::touchMove(233, 233 + HOLD_CANCEL_PX + 5, now + at + 5);
+        ui::update(s, ls, ps, si, now + at + 10);
+        saveShot("HoldCancel");
+        printf("%-22s guide=%d mode=%d holding=%d\n", "HoldCancel", (int)ui::testGuide(), ui::testGuideMode(), (int)ui::testHolding());
+      }
+      ui::touchUp(now + at + 20);
+      ui::testShow(scs[k]);
+      gfx::dirtyClear();
+      now += 5000;
+    }
+    now += 20000;
+  }
+
+  // ---- 設定の中の「長押しで開く」(2.4.4): 右の矢印を押して決まった所(2.5.0: 帯は変えない)、長押しの途中(帯が水色、外周が 6 割)、
+  // 動いて取り消した所(帯の字が灰)
+  {
+    Signals s = sig(4200, '3', 92, 62);
+    const uint32_t at = HOLD_SHOW_MS + (HOLD_MS - HOLD_SHOW_MS) * 6 / 10;
+    ui::testShow(ui::SC_SET_LIST, 3);
     ui::testTouch(now);
     ui::update(s, ls, ps, si, now);
-    ui::touchDown(233, 233, now);
-    ui::update(s, ls, ps, si, now + HOLD_SHOW_MS + 10);
-    ui::update(s, ls, ps, si, now + at);
-    saveShot("HoldCircuit");
-    ui::touchUp(now + at + 10);
-    ui::testShow(ui::SC_BOOST);
-    ui::touchDown(233, 233, now + 2000);
-    ui::update(s, ls, ps, si, now + 2000 + at);
-    saveShot("HoldTach");
-    ui::touchUp(now + 2000 + at + 10);
-    ui::testShow(ui::SC_DATA);
-    ui::touchDown(233, 233, now + 4000);
-    ui::update(s, ls, ps, si, now + 4000 + at);
-    saveShot("HoldData");
-    ui::touchUp(now + 4000 + at + 10);
+    ui::touchDown(366, 233, now + 10);
+    ui::update(s, ls, ps, si, now + 10 + TOUCH_CONFIRM_MS + 10);
+    saveShot("MenuTap");
+    ui::touchMove(366, 233 + HOLD_CANCEL_PX + 5, now + 10 + TOUCH_CONFIRM_MS + 15);  // 縦に動かして離す(タップにもスワイプにもしない)
+    ui::touchUp(now + 10 + TOUCH_CONFIRM_MS + 20);
+    now += 1000;
+    ui::update(s, ls, ps, si, now);
+    ui::touchDown(233, 400, now + 10);
+    ui::update(s, ls, ps, si, now + 10 + TOUCH_CONFIRM_MS + 10);
+    ui::update(s, ls, ps, si, now + 10 + at);
+    saveShot("MenuHold");
+    ui::touchMove(233 + HOLD_CANCEL_PX + 5, 400, now + 10 + at + 5);
+    ui::update(s, ls, ps, si, now + 10 + at + 10);
+    saveShot("MenuCancel");
+    printf("%-22s guide=%d mode=%d holding=%d missing=%u\n", "MenuCancel", (int)ui::testGuide(), ui::testGuideMode(), (int)ui::testHolding(), (unsigned)gfx::missingGlyphs());
+    ui::touchUp(now + 10 + at + 20);
+    ui::testShow(ui::SC_SET_LIST, 3);
     gfx::dirtyClear();
-    now += 20000;
+    now += 5000;
   }
 
   // ---- そのほかの状態
@@ -269,36 +390,54 @@ int main(int argc, char **argv) {
     odd.gearOk = false;
     shot("DriveGearUnknown", odd, ui::SC_DRIVE);
   }
-  // ---- オープニング(時刻で進む): 点けている途中、全部点いて最大輝度、消えながら自己診断、NG のとき
+  // ---- オープニング(2.5.0: 覚えた画面ごとに 3 種類。時刻で進む)
   {
     LinkStats lo;
     memset(&lo, 0, sizeof(lo));
     SysInfo so;
     memset(&so, 0, sizeof(so));
     so.touchOk = true; so.nvsOk = true; so.rc.enabled = true; so.rc.bleOk = true; so.rc.imuOk = true; so.rc.gpsOk = true;
-    Signals o;
-    memset(&o, 0, sizeof(o));
+    Signals o = sig(850, 'N', 62, 74, true, true, -0.55f);
+    struct Mark { int kind; uint32_t at; const char *name; };
+    const Mark marks[] = {
+      { 0, OPC_SCAN_MS / 2, "OpenCircuit1" },                                     // 白い光が下から上へ走る
+      { 0, OPC_SCAN_MS + OPC_FLASH_MS + OPC_RISE_MS * 8 / 10, "OpenCircuit2" },  // 点いていく
+      { 0, OPC_SCAN_MS + OPC_FLASH_MS + OPC_RISE_MS + 100, "OpenCircuit3" },     // 全部点いて背景も赤(リミッター)
+      { 0, OPC_SCAN_MS + OPC_FLASH_MS + OPC_RISE_MS + OPC_LIMIT_MS + OPC_FALL_MS / 4, "OpenCircuit4" },  // 消えていく
+      { 0, OPC_TOTAL_MS - 40, "OpenCircuit5" },                                   // ギアが浮かぶ
+      { 1, OPT_UP_MS * 4 / 10, "OpenTach1" },                                     // 針が通った所から文字盤が出る
+      { 1, OPT_UP_MS + OPT_TOP_MS / 2, "OpenTach2" },                             // 振り切り(赤)
+      { 1, OPT_UP_MS + OPT_TOP_MS + OPT_DOWN_MS * 6 / 10, "OpenTach3" },          // 戻っていく
+      { 2, OPD_RING_MS + OPD_ROW_MS + OPD_CHECK_MS / 2, "OpenData1" },            // 2 行目を確かめている
+      { 2, OPD_TOTAL_MS - 100, "OpenData2" },                                     // 全部出た(輪が緑、版)
+    };
     const uint32_t t0 = 300000;
-    const uint32_t marks[] = { 200, 12 * OPENING_STEP_MS + 20, 12 * OPENING_STEP_MS + OPENING_HOLD_MS + 150, OPENING_MS - 100 };
-    const char *names[] = { "Opening1", "Opening2", "Opening3", "Opening4" };
-    ui::testShow(ui::SC_OPENING);
-    uint32_t tt = t0;
-    for (int m = 0; m < 4; m++) {
-      for (; tt <= t0 + marks[m]; tt += 5) {
-        lo.locked = tt - t0 >= 700;
+    int kind = -1;
+    uint32_t tt = 0, base = 0;
+    for (const Mark &m : marks) {
+      if (m.kind != kind) {
+        kind = m.kind;
+        base = t0 + 10000u * (uint32_t)(kind + 1);
+        tt = base;
+        ui::testShow(ui::SC_OPENING, kind);
+      }
+      for (; tt <= base + m.at; tt += 5) {
+        lo.locked = tt - base >= 700;
         ui::update(o, lo, ps, so, tt);
         gfx::dirtyClear();
       }
-      saveShot(names[m]);
-      printf("%-22s level=%d\n", names[m], (int)ui::blinkLevel());
+      saveShot(m.name);
+      printf("%-22s level=%d screen=%d\n", m.name, (int)ui::blinkLevel(), (int)ui::screen());
     }
-    so.touchOk = false;
-    ui::testShow(ui::SC_OPENING);
-    for (tt = t0 + 10000; tt <= t0 + 10000 + OPENING_MS - 100; tt += 5) {
+    so.touchOk = false;  // NG: 輪が赤
+    ui::testShow(ui::SC_OPENING, 2);
+    for (tt = t0 + 50000; tt <= t0 + 50000 + OPD_TOTAL_MS - 100; tt += 5) {
       ui::update(o, lo, ps, so, tt);
       gfx::dirtyClear();
     }
-    saveShot("OpeningNg");
+    saveShot("OpenDataNg");
+    ui::testShow(ui::SC_OPENING, 0);  // 覚えた画面をサーキットに戻す
+    ui::tap(233, 233, t0 + 60000);
     ui::testShow(ui::SC_DRIVE);
   }
   printf("missing glyphs total: %u\n", (unsigned)gfx::missingGlyphs());

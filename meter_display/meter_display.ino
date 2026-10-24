@@ -19,14 +19,25 @@
  *   ヘッダのピンは、端から数えた位置ではなく基板の印字で確かめること(公式の HARDWARE_REFERENCE.md と回路図で、
  *   ピン番号と信号の対応が食い違っている。回路図では 6 番 = GPIO16、7 番 = GPIO17、8 番 = GPIO18)。
  *
- * 操作(2.1.0): サーキット・タコ・データは、左へスワイプで次の画面、右へスワイプで前の画面(サーキット → タコ → データ → サーキット)。
- *   長押し(0.8 秒。2.2.0)で設定。短いタップは何もしない。設定の中はタップ(上・下の帯と左右の半分)。しきい値は config.h の HOLD_*・SWIPE_*。
- *   電源を入れた直後はオープニング(輪が点く → 自己診断。config.h の OPENING_MS。タップで飛ばせる)。2026-10-21
+ * 操作(2.4.2): 左へスワイプで次、右へスワイプで前。サーキット・タコ・データは画面(サーキット → タコ → データ → サーキット)、
+ *   設定の中は項目・ページ。長押しで設定(0.4 秒でスワイプの札が灰になって外周が回り始め、0.8 秒で一周して 1.2 秒で設定)。
+ *   設定の中のボタンはタップ(上の帯 = 1 つ上へ、左右の半分 = 前・次。変更の画面では − +。2.4.1)。メニューに入るのは画面のどこかの
+ *   長押し(設定に入るのと同じ 1.2 秒。下の帯は「長押しで開く」。0.4 秒で帯が水色になり外周が回る。2.4.4、2.4.5、2.5.0)。
+ *   値を確定する「決定」と、赤い帯(リセットなど)はタップ。
+ *   どの画面も、触れてから 0.1 秒(config.h の TOUCH_CONFIRM_MS)押し続けたらタッチと決め、離したときに操作する。短いタッチは何もしない。
+ *   サーキット・タコ・データでは、決まったら案内(上に「‹ スワイプ ›」、下に「長押し ▶ 設定」)が出る。指が 80 px 以上動くと
+ *   長押しは取り消し(長押しの札が灰)。しきい値は config.h の TOUCH_CONFIRM_MS・HOLD_*・SWIPE_*。
+ *   設定の並び(2.4.0): 明るさ・受信の状態・本体の状態・シフトポイント・水温の警告・時間の記録・自動で戻る・デモ。
+ *   受信の状態は CAN・GPS・IMU・RaceChrono のまとめ(長押しで中へ)、本体の状態は FPS・CPU・メモリーなど。「決定」を押すと
+ *   (変えていれば保存して)、押した「決定」の帯が数回点滅し、その間は値が太くなる(2.4.3。2.4.5: 変えていなくても点滅)。
+ *   電源を入れた直後はオープニング(覚えた画面ごとに 3 種類。サーキット = 輪が点いて消える、タコ = 針が振り切りまで上がって戻る、
+ *   データ = 自己診断。config.h の OPENING_ON・OPC_*・OPT_*・OPD_*。タッチで飛ばせる)。2026-10-21、2.5.0 で 3 種類に
  *
- * デモ表示: 設定 →「⌄」→「デモ」を「入」にすると、XIAO をつながずに模擬の値(c6_display_debug と同じ場面 1〜9)を出す。
+ * デモ表示: 設定の最後の項目「デモ」を「入」にすると、XIAO をつながずに模擬の値(c6_display_debug と同じ場面 1〜9)を出す。
  *   入の間は UART を読まない。画面の下に「SIM」、上に場面番号が出る。設定は保存され、電源を入れ直しても続く。
  *
- * RaceChrono: 設定 → 3 ページ目「RaceChrono」で、BLE の接続・送った数・GPS・IMU の状態が見られる。
+ * RaceChrono: 設定 → 受信の状態 →「RaceChrono」の「長押しで開く」で、送信の入・切、BLE の接続、送った数が見られる(GPS・IMU は
+ *   受信の状態のそれぞれのグループ。2.4.0)。
  *   スマホの RaceChrono では「設定 → Add other device → Add other device → RaceChrono DIY」で「595 meter」を 1 つ登録する
  *   (GPS 機器の一覧には出ない。GPS も CAN もこの 1 つの登録で届く)。
  *   IMU の値は CAN の 1 つ(PID は config.h の RC_PID_IMU_ACCEL / RC_PID_IMU_GYRO = 0x0618A0F1 / F2)として送る。
@@ -35,19 +46,19 @@
  *   覚える前は「画面を立てて運転者に向け、背面が車の前」(config.h の IMU_DEF_UP / IMU_DEF_FWD)として扱う。
  *   車速が無い机の上でも、立てた向き(45° 以内)で動かさずに 3 秒置けば、その向きを「上」にする(置き直すたびに更新)。
  *   「前」は車で発進したときに覚える。停車中の重力の大きさ(倍率のずれ)も覚え、1 g になるように割る。
- *   設定 → 3 ページ目「RaceChrono 送信」を切にすると、次の起動から BLE・GPS・IMU を使わない(切り分け用)。
+ *   設定 → 受信の状態 → RaceChrono の 1 ページ目「送信」を切にすると、次の起動から BLE・GPS・IMU を使わない(切り分け用)。
  *   落ちる起動(パニック・ウォッチドッグによるリセット)が 2 回続いたら、表示器が自分でこれを切にして動き続ける(シリアルに理由)。
  *   config.h の RC_ENABLE 0 にすると、この機能をコンパイルから外せる(NimBLE-Arduino が無くてもビルドできる)。
  *
  * 書き込んだ直後の見え方(XIAO をつながなくても確かめられる):
  *   走行画面が出て、輪は全部消え、ギアは「–」、水温と燃料は「– –」(信号がないときの表示)。
- *   左右のスワイプで画面が切り替わる。長押しで設定 →「受信の状態」で、受信・描画・起動のきっかけが見られる。
+ *   左右のスワイプで画面が切り替わる。長押しで設定 →「受信の状態」で受信、「本体の状態」で FPS・起動のきっかけが見られる。
  *   画面が真っ赤 = 画面用のメモリー(PSRAM)を取れなかった。真っ暗のまま = 画面の初期化まで進んでいない(シリアルを見る)。
  *
  * シリアル(USB。USB CDC なのでモニター側の速度の設定は無視される。何 bps でもよい):
  *   起動時に確かめた結果(画面・メモリー・電源 IC・タッチ・設定・UART・BLE・GPS・IMU、最後に「自己診断: OK / NG」)。
  *   同じ内容を 60 秒ごとに出し直すので、シリアルモニターはいつ開いてもよい。
- *   5 秒ごとに描画・受信・RaceChrono の状態を 1 行。タップのたびに座標と画面の移り変わりを 1 行。
+ *   5 秒ごとに描画・受信・RaceChrono の状態を 1 行。タッチを離すたびに動きと画面の移り変わりを 1 行。
  *   CAN の生データから値を作っているとき(c6_can_link 2.0.0)は、5 秒ごとに「車の値(CAN から)」の行(作った値、燃料の生の値・
  *   なましの値、ギアの推定に使った比)。起動時の結果には、燃料を前回の値から始めたかを 1 行。
  *   回転数の点滅(輪が黄になる所(シフト点 − 400)から、近づくほど速く。消灯は 80 ms で一定、点灯を 150 → 50 ms に縮める。
@@ -70,7 +81,7 @@
  *     PSRAM            → OPI PSRAM
  *   どちらも、違っているとコンパイルがエラーで止まる(下の #error)。「USB Mode」が既定値(Hardware CDC and JTAG)で
  *   ないときも同じ。
- *   スケッチは約 1.2MB で、既定の Partition Scheme(1.2MB APP)の 92 %(2.2.0、2026-10-23)。Flash Size も既定値のままで動く。
+ *   スケッチは約 1.2MB で、既定の Partition Scheme(1.2MB APP)の 96 %(2.5.0、2026-10-24)。Flash Size も既定値のままで動く。
  *   コンパイルの最後に「Sketch too big」と出るようになったら、Partition Scheme を「Huge APP (3MB No OTA/1MB SPIFFS)」にする
  *   (設定の保存領域はどちらでも同じ場所にあり、保存した値は消えない)。
  *   「コンパイラの警告」を「すべて」にすると NimBLE-Arduino の nimconfig.h から「redefined」の警告がたくさん出るが、
@@ -114,7 +125,7 @@
 #error "「ツール」→「PSRAM」を「OPI PSRAM」にしてください。この基板の PSRAM(8MB)は OPI 接続で、画面用のメモリーに使います。"
 #endif
 
-static SysInfo g_sys = { false, 0, false, false };  // 起動時に確かめた結果(「受信の状態」とシリアルに出す)
+static SysInfo g_sys = { false, 0, false, false };  // 起動時に確かめた結果(「本体の状態」とシリアルに出す)
 
 // ================================================================ 画面(CO5300、QSPI)
 // コマンド: 0x02 + 24 ビット(コマンド << 8)+ データ。全部 1 本の線で送る。
@@ -306,7 +317,7 @@ static bool lcdBegin() {
 }
 
 static const char *screenName(int sc) {
-  static const char *const NAMES[] = { "サーキット", "タコ", "データ", "CAN確認", "CAN確認の詳細", "設定", "設定の変更", "受信の状態", "RaceChrono の状態", "オープニング",
+  static const char *const NAMES[] = { "サーキット", "タコ", "データ", "CAN確認", "CAN確認の詳細", "設定", "設定の変更", "受信の状態", "グループの中", "オープニング",
                                        "CAN確認の一覧", "CAN確認のやり直す", "時間の記録のリセット" };
   return (sc >= 0 && sc < (int)(sizeof(NAMES) / sizeof(NAMES[0]))) ? NAMES[sc] : "?";
 }
@@ -395,7 +406,8 @@ static int touchRead(int *x, int *y) {
 }
 
 // 触れた瞬間に ui::touchDown、押している間の知らせごとに ui::touchMove、離したら ui::touchUp
-// (サーキット・タコ・データは、左右のスワイプで画面を替え、長押しで設定。ほかの画面は離したときにタップ)
+// (サーキット・タコ・データは、左右のスワイプで画面を替え、長押しで設定。ほかの画面は、触れてから TOUCH_CONFIRM_MS 押し続けた時点で
+// タップ(ui::update の中)。2.3.0)
 static void touchRelease(uint32_t now, const char *why) {
   int before = (int)ui::screen();
   g_tpDown = false;
@@ -440,7 +452,7 @@ static void touchPoll(uint32_t now) {
 static SemaphoreHandle_t g_mutex = nullptr;
 static Preferences g_prefs;
 static Settings g_set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT };
-static PerfStats g_perf = { 0, 0, 0, 0, 0 };
+static PerfStats g_perf = {};
 
 void platLock() {
   if (g_mutex) xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -1397,6 +1409,28 @@ static bool i2cRead(uint8_t addr, uint8_t reg, uint8_t *v) {
   return ok;
 }
 
+// 本体の状態の CPU・メモリ・温度(2.4.3。本人「クロック数など CPU に関わるデータ、型式など」)。型式・版・コアの数・クロック・フラッシュ・
+// 全体の大きさは起動時に 1 回(all = true)、空きと温度は 1 秒ごと。温度はチップの中のセンサー(temperatureRead。読めなければ NaN)
+static void cpuInfoUpdate(bool all) {
+  CpuInfo &c = g_sys.cpu;
+  if (all) {
+    snprintf(c.model, sizeof(c.model), "%s", ESP.getChipModel());
+    c.rev = ESP.getChipRevision();
+    c.cores = ESP.getChipCores();
+    c.cpuMHz = (uint16_t)ESP.getCpuFreqMHz();
+    c.flashBytes = ESP.getFlashChipSize();
+    c.flashHz = ESP.getFlashChipSpeed();
+    c.heapBytes = ESP.getHeapSize();
+    c.psramBytes = ESP.getPsramSize();
+  }
+  c.heapFree = ESP.getFreeHeap();
+  c.psramFree = ESP.getFreePsram();
+  const float t = temperatureRead();
+  c.tempOk = !isnan(t);
+  if (c.tempOk) c.tempC = t;
+  c.ok = true;
+}
+
 static bool selfCheckOk() {
   return g_lcdOk && g_spiErr == ESP_OK && g_memOk && g_sys.touchOk && g_sys.nvsOk && g_linkOk && (!g_sys.rc.enabled || rcSelfCheckOk());
 }
@@ -1408,6 +1442,9 @@ static void printSelfCheck() {
   Serial.println("==== meter_display v" METER_FW_VERSION "  595 メーター表示器 ====");
   Serial.printf("PSRAM: %u バイト(空き %u)  内部メモリーの空き: %u バイト  フラッシュ: %u バイト\n", (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram(),
                 (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFlashChipSize());
+  if (g_sys.cpu.ok)
+    Serial.printf("CPU: %s v%u.%u %u コア %u MHz  フラッシュ %u MHz  温度 %s\n", g_sys.cpu.model, (unsigned)(g_sys.cpu.rev / 100), (unsigned)(g_sys.cpu.rev % 100),
+                  (unsigned)g_sys.cpu.cores, (unsigned)g_sys.cpu.cpuMHz, (unsigned)(g_sys.cpu.flashHz / 1000000u), g_sys.cpu.tempOk ? String(g_sys.cpu.tempC, 1).c_str() : "読めない");
   if (!g_lcdOk) Serial.println("画面(CO5300): SPI の準備に失敗");
   else if (g_spiErr != ESP_OK) Serial.printf("画面(CO5300): SPI の送信でエラー 0x%X\n", (unsigned)g_spiErr);
   else Serial.printf("画面(CO5300、QSPI %d MHz): 初期化のコマンドを送った(画面からの返事は無いので、映ったかは目で見る)\n", LCD_SPI_HZ / 1000000);
@@ -1431,7 +1468,7 @@ static void printSelfCheck() {
     else Serial.println("燃料: 前回の値なし(最初に受けた正しい値から始める)。0C014003 の b5 = 0 は使わない");
   }
   Serial.printf("前回のリセットの理由: %s(%d)。落ちた回数 %lu\n", resetReasonName(g_resetReason), (int)g_resetReason, (unsigned long)g_crashCount);
-  if (g_rcAutoOff) Serial.printf("RaceChrono の送信: 切にした(落ちる起動が %d 回続いたため。設定 → 3 ページ目「RaceChrono 送信」で入に戻せる)\n", RC_CRASH_LIMIT);
+  if (g_rcAutoOff) Serial.printf("RaceChrono の送信: 切にした(落ちる起動が %d 回続いたため。設定 → 受信の状態 → RaceChrono の「送信」で入に戻せる)\n", RC_CRASH_LIMIT);
   else if (!g_sys.rc.enabled) Serial.println("RaceChrono の送信: 切(設定)");
   else rcPrintSelfCheck();
   Serial.printf("自己診断: %s\n", selfCheckOk() ? "OK" : "NG(上の行を見る)");
@@ -1476,6 +1513,7 @@ void setup() {
   rcCrashCheck();
   ui::begin(&g_set, g_homeLoaded);
   g_linkOk = linkBegin();
+  cpuInfoUpdate(true);
   g_sys.rc.enabled = g_set.rcOn != 0;
   if (g_sys.rc.enabled) {
 #if RC_ENABLE
@@ -1553,8 +1591,9 @@ void loop() {
   }
   ui::blinkPoll(s, millis());  // 送り終えた直後にも見る(次の loop() の描画を待たない)
 
-  // 受信の状態の「描画」(2.0.1): サーキット・タコで 1 回描いて送るのにかかった最長。サーキット・タコに入り直したら測り直し、
-  // ほかの画面にいる間は前の値のまま。画面を切り替えた回の全体の描き直しと、長押しの表示は数えない(ui::pageFrame)
+  // 本体の状態の「FPS」(2.3.0。2.0.1〜2.2.0 は「描画」。2.4.0 で受信の状態から移した): サーキット・タコで 1 回描いて送るのにかかった時間を perf に覚えさせる
+  // (平均と遅い方の値は 1 秒ごとに perf::pageStats で出す)。シリアルの「最長」は、サーキット・タコに入り直したら測り直す。
+  // 画面を切り替えた回の全体の描き直しと、案内・長押しの表示は数えない(ui::pageFrame)
   const ui::Screen scNow = ui::screen();
   const bool onPage = scNow == ui::SC_DRIVE || scNow == ui::SC_BOOST;
   if (onPage && !onPagePrev) pageNew = true;
@@ -1562,6 +1601,7 @@ void loop() {
   if (n && ui::pageFrame()) {
     uint32_t us = t2 - tu;
     if (us == 0) us = 1;  // 0 は「まだ測っていない」の印なので使わない
+    perf::pageAdd(us, now);
     if (pageNew || us > g_perf.pageMaxUs) g_perf.pageMaxUs = us;
     pageNew = false;
   }
@@ -1576,14 +1616,19 @@ void loop() {
     g_perf.renderMaxMs = renderMax;
     g_perf.flushMaxMs = flushMax;
     g_perf.loopMaxMs = loopMax;
+    perf::pageStats(&g_perf);
+    cpuInfoUpdate(false);  // 本体の状態の空きと温度
     logFrames = frames;
     renderMax = flushMax = loopMax = 0;
   }
   if ((uint32_t)(now - logMs) >= 5000) {
     logMs = now;
-    char pageTxt[16] = "– –";  // サーキット・タコの 1 回 最長(受信の状態の「描画」と同じ値。切り上げの ms)
-    if (g_perf.pageMaxUs) snprintf(pageTxt, sizeof(pageTxt), "%lu ms", (unsigned long)((g_perf.pageMaxUs + 999) / 1000));
-    Serial.printf("t=%lus 画面=%s | 描画 %lu 回/秒 最長: 描く %lu ms 送る %lu ms 1周 %lu ms サーキット・タコの 1 回 %s | 受信 %lu bps%s %lu フレーム/秒 %lu バイト/秒 CRC誤り %lu 欠落 %lu 捨てた %lu バイト 送り側で捨てた %lu フレーム%s | 無い文字 %lu | 自己診断 %s\n",
+    // サーキット・タコの FPS(本体の状態の「FPS」と同じ値)と、覚えている回数、1 回の最長(切り上げの ms)
+    char pageTxt[96] = "– –";
+    if (g_perf.pageFrames && g_perf.pageAvgUs && g_perf.pageSlowUs)
+      snprintf(pageTxt, sizeof(pageTxt), "平均 %lu 最低 %lu(%lu 回、最長 %lu ms)", (unsigned long)((1000000u + g_perf.pageAvgUs / 2) / g_perf.pageAvgUs),
+               (unsigned long)(1000000u / g_perf.pageSlowUs), (unsigned long)g_perf.pageFrames, (unsigned long)((g_perf.pageMaxUs + 999) / 1000));
+    Serial.printf("t=%lus 画面=%s | 描画 %lu 回/秒 最長: 描く %lu ms 送る %lu ms 1周 %lu ms サーキット・タコの FPS %s | 受信 %lu bps%s %lu フレーム/秒 %lu バイト/秒 CRC誤り %lu 欠落 %lu 捨てた %lu バイト 送り側で捨てた %lu フレーム%s | 無い文字 %lu | 自己診断 %s\n",
                   (unsigned long)(now / 1000), screenName((int)ui::screen()), (unsigned long)g_perf.fps, (unsigned long)g_perf.renderMaxMs, (unsigned long)g_perf.flushMaxMs,
                   (unsigned long)g_perf.loopMaxMs, pageTxt, (unsigned long)ls.baud, (ls.locked || (s.linkUp && s.sim)) ? "" : "(受信なし)", (unsigned long)ls.framesPerSec, (unsigned long)ls.bytesPerSec, (unsigned long)ls.crcErrors,
                   (unsigned long)ls.lostFrames, (unsigned long)ls.junkBytes, (unsigned long)(ls.infoValid ? ls.info.tx_drop : 0), (s.linkUp && s.sim) ? " 模擬" : "",

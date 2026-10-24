@@ -748,6 +748,71 @@ uint32_t wotMs() {
 
 }  // namespace trip
 
+// ================================================================ perf(本体の状態の「FPS」。2.3.0。2.4.3: 1 秒ごと)
+namespace perf {
+
+// 2.4.3(本人「過去数分の FPS の値がここに出るほうがいい」): 1 秒ごとに 回数・時間の合計 をまとめる。回を数えた秒だけを覚えるので、
+// 設定などを出していた間は飛ばして、サーキット・タコを出していた直近 PERF_FPS_SECS 秒になる
+struct Sec {
+  uint32_t frames;
+  uint32_t sumUs;
+};
+static Sec g_sec[PERF_FPS_SECS];  // 閉じた秒(古い方から g_n 個。g_pos が次に書く所)
+static int g_n = 0, g_pos = 0;
+static bool g_open = false;       // 今の秒を数えている
+static uint32_t g_openSec = 0;    // 今の秒(ms / 1000)
+static Sec g_cur;
+
+void pageAdd(uint32_t us, uint32_t nowMs) {
+  if (!us) us = 1;
+  const uint32_t sec = nowMs / 1000;
+  if (g_open && sec != g_openSec) {  // 前の秒を閉じる
+    g_sec[g_pos] = g_cur;
+    g_pos = (g_pos + 1) % PERF_FPS_SECS;
+    if (g_n < PERF_FPS_SECS) g_n++;
+    g_open = false;
+  }
+  if (!g_open) {
+    g_open = true;
+    g_openSec = sec;
+    g_cur.frames = 0;
+    g_cur.sumUs = 0;
+  }
+  g_cur.frames++;
+  g_cur.sumUs += us;
+}
+// 覚えている秒(数えている今の秒も入れて、新しい方から PERF_FPS_SECS 秒)から入れる。平均 = 全部の回の時間の平均、
+// 最低 = 1 秒ごとの平均の時間が一番長い秒、fpsHist = 1 秒ごとの回/秒(古い方から)
+void pageStats(PerfStats *ps) {
+  ps->pageFrames = 0;
+  ps->pageAvgUs = ps->pageSlowUs = 0;
+  ps->histN = 0;
+  const int total = g_n + (g_open ? 1 : 0);
+  const int use = total > PERF_FPS_SECS ? PERF_FPS_SECS : total;
+  if (!use) return;
+  const int skip = total - use;  // 古い方から捨てる数(今の秒があって、閉じた秒が満杯のとき 1)
+  uint64_t frames = 0, sum = 0;
+  uint32_t slow = 0;
+  for (int i = skip; i < total; i++) {
+    const Sec &x = i < g_n ? g_sec[(g_pos - g_n + i + PERF_FPS_SECS) % PERF_FPS_SECS] : g_cur;
+    frames += x.frames;
+    sum += x.sumUs;
+    const uint32_t avg = (uint32_t)((x.sumUs + x.frames / 2) / x.frames);
+    if (avg > slow) slow = avg;
+    const uint32_t fps = avg ? (1000000u + avg / 2) / avg : 255;
+    ps->fpsHist[ps->histN++] = (uint8_t)(fps > 255 ? 255 : fps);
+  }
+  ps->pageFrames = (uint32_t)frames;
+  ps->pageAvgUs = (uint32_t)((sum + frames / 2) / frames);
+  ps->pageSlowUs = slow;
+}
+void pageClear() {
+  g_n = g_pos = 0;
+  g_open = false;
+}
+
+}  // namespace perf
+
 // ================================================================ gnss
 namespace gnss {
 

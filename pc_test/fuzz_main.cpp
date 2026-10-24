@@ -86,6 +86,7 @@ int main(int argc, char **argv) {
   uint64_t updates = 0, taps = 0, compares = 0, mismatches = 0, badDirty = 0, cmpByScreen[16] = { 0 }, seenScreen[16] = { 0 };
   for (uint32_t run = 0; run < runs; run++) {
     rngState = 0x9E3779B97F4A7C15ull * (run + 1) + 12345;
+    ui::testShow(ui::SC_OPENING, (int)(run % 3));  // 2.5.0: オープニング 3 種類(回ごとに替える。途中でもときどき出す)
     int sigMode = 0;
     uint32_t quietUntil = 0;
     bool held = false;        // 押したまま(長押しの試験)
@@ -133,12 +134,25 @@ int main(int argc, char **argv) {
       mlink::tick(now);
       cantab::tick(now);
       mlink::autoBaud(now, rndN(200));
-      // ---- タッチ(触れる・動かす・離す。2.1.0: サーキット・タコ・データは横のスワイプで画面が変わり、長押しで設定。ほかは離したときにタップ)
+      // ---- タッチ(触れる・動かす・離す。2.1.0: サーキット・タコ・データは横のスワイプで画面が変わり、長押しで設定。
+      //      2.3.0: TOUCH_CONFIRM_MS 押し続けたらタッチが決まる。サーキット・タコ・データは案内を出す。
+      //      2.4.0: どの画面も離したときに決める(横のスワイプ = 次・前、動きが小さければタップ))
       ui::Screen cur = ui::screen();
+      if ((cur == ui::SC_DRIVE || cur == ui::SC_BOOST || cur == ui::SC_DATA) && rndN(20000) == 0) {
+        ui::testShow(ui::SC_OPENING, (int)rndN(3));  // 2.5.0: オープニング(タコは描き直さずにタコの画面になるので、そのあとの照合で確かめる)
+        cur = ui::SC_OPENING;
+      }
       if (cur == ui::SC_SET_LIST && chance(10)) {  // 中の画面はタップの並びが長くて滅多に届かないので、たまに直接出す
-        static const ui::Screen deep[] = { ui::SC_SET_RC, ui::SC_SET_INFO, ui::SC_CAN, ui::SC_CAN_ID, ui::SC_SET_RESET, ui::SC_CAN_REDO };
+        static const ui::Screen deep[] = { ui::SC_SET_GRP, ui::SC_SET_INFO, ui::SC_CAN, ui::SC_CAN_ID, ui::SC_SET_RESET, ui::SC_CAN_REDO, ui::SC_SET_EDIT, ui::SC_CAN_DETAIL };
         cur = deep[rndN(sizeof(deep) / sizeof(deep[0]))];
-        ui::testShow(cur);
+        // 2.4.0: 設定 8 項目、受信の状態 4 グループ、グループの中は 2〜6 ページ(多すぎるページの番号も試す)。
+        // 2.5.0: CAN確認の詳細も直接出す(2.4.4 から一覧の長押しで開くので、乱数のタッチでは滅多に届かない。表の番号は範囲外も試す)
+        if (cur == ui::SC_CAN_DETAIL) {
+          ui::testShow(cur, (int)rndN(CAN_MAX_IDS + 2) - 1, (int)rndN(9));
+        } else {
+          ui::testShow(cur, cur == ui::SC_SET_EDIT ? (int)rndN(8) : (cur == ui::SC_SET_INFO ? (int)rndN(5) : (cur == ui::SC_SET_GRP ? (int)rndN(7) : 0)),
+                       cur == ui::SC_SET_EDIT ? (int)rndN(2) : (cur == ui::SC_SET_GRP ? (int)rndN(6) : 0));
+        }
       }
       if (held && heldDx && chance(400)) {  // 押している間の動き(横に進めて、縦は少し揺らす)
         heldX += heldDx + (int)rndN(11) - 5;
@@ -163,15 +177,17 @@ int main(int argc, char **argv) {
           x = (int)rndN(gfx::W);
           y = (int)rndN(gfx::H);
         }
-        if (chance(300)) {
+        if (chance(150)) {
           ui::tap(x, y, now);  // すぐのタップ(試験の入口)
+        } else if (chance(150)) {
+          ui::swipe(chance(500) ? 1 : -1, now);  // すぐのスワイプ(試験の入口。2.4.0)
         } else {
           ui::touchDown(x, y, now);
           held = true;
           heldX = x;
           heldY = y;
           heldDx = chance(500) ? 0 : (int)rndN(41) - 20;  // 半分は横に動かす(スワイプになるもの、ならないもの)
-          releaseAt = now + (chance(500) ? rndN(HOLD_MS) : rndN(2000));
+          releaseAt = now + (chance(300) ? rndN(TOUCH_CONFIRM_MS + 50) : (chance(500) ? rndN(HOLD_MS) : rndN(2000)));
         }
         taps++;
       }
@@ -182,7 +198,12 @@ int main(int argc, char **argv) {
       trip::update(s, now);
       ps.fps = rndN(100);
       ps.loopMaxMs = rndN(60);
-      ps.pageMaxUs = chance(100) ? 0 : rndN(120000);  // 受信の状態の「描画」(0 = まだ測っていない)
+      ps.pageMaxUs = chance(100) ? 0 : rndN(120000);
+      ps.pageFrames = chance(100) ? rndN(FPS_MIN_FRAMES) : rndN(3000);  // 本体の状態の「FPS」
+      ps.histN = (uint16_t)rndN(PERF_FPS_SECS + 1);
+      for (int k = 0; k < PERF_FPS_SECS; k++) ps.fpsHist[k] = (uint8_t)rndN(256);
+      ps.pageAvgUs = chance(50) ? 0 : 1 + rndN(60000);
+      ps.pageSlowUs = chance(50) ? 0 : ps.pageAvgUs + rndN(80000);
       si.axpOk = chance(900);
       si.powerOnSrc = (uint8_t)rnd();
       si.rc.enabled = chance(900);
@@ -219,7 +240,7 @@ int main(int argc, char **argv) {
       gfx::dirtyClear();
       // ---- 照合: 入力を止めて描き直しが落ち着くまで進め、同じ時刻で最初から描いたものと比べる
       if (chance(15)) {
-        if (held) {  // 照合の前に離す(長押しの表示の間は描き直さないので)
+        if (held) {  // 照合の前に離す(案内・長押しの表示の間は描き直さないので)
           ui::touchUp(now);
           held = false;
         }
@@ -229,9 +250,10 @@ int main(int argc, char **argv) {
           ui::update(s, ls, ps, si, now);
         }
         // 受信が途切れる境目(1 秒)と自動で戻る境目をまたがないよう、値はここで止める
+        // オープニングは照合しない(最初から描くと始めからやり直す作りなので、同じ時刻の絵にならない。2.4.3)
         ui::Screen sc = ui::screen();
         ui::update(s, ls, ps, si, now);
-        if (ui::screen() == sc) {
+        if (ui::screen() == sc && sc != ui::SC_OPENING) {
           memcpy(fbRef, fb, sizeof(fb));
           ui::testRedraw();
           ui::update(s, ls, ps, si, now);
@@ -254,7 +276,7 @@ int main(int argc, char **argv) {
   }
   mlink::getStats(&ls);
   printf("乱数試験: %u 回 × %u 歩  画面の更新 %llu 回  タップ %llu 回\n", runs, steps, (unsigned long long)updates, (unsigned long long)taps);
-  static const char *const NM[] = { "サーキット", "タコ", "データ", "CAN", "CAN詳細", "設定", "変更", "受信の状態", "RaceChrono", "オープニング", "CAN一覧", "CANやり直す", "時間リセット" };
+  static const char *const NM[] = { "サーキット", "タコ", "データ", "CAN", "CAN詳細", "設定", "変更", "受信の状態", "グループの中", "オープニング", "CAN一覧", "CANやり直す", "時間リセット" };
   printf("  画面ごとの更新回数 / 照合回数:");
   for (int k = 0; k < 13; k++) printf(" %s %llu/%llu", NM[k], (unsigned long long)seenScreen[k], (unsigned long long)cmpByScreen[k]);
   printf("\n  最初から描いたものとの照合 %llu 回、不一致 %llu 回\n", (unsigned long long)compares, (unsigned long long)mismatches);

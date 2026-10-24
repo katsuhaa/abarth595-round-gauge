@@ -55,6 +55,11 @@ void fillArc(float cx, float cy, float rIn, float rOut, float a0, float a1, uint
 // 同じ形を、縁をなめらかにせずに塗る(画素の中心が中にある画素だけ)。fillArc で描いたものを消すときに、
 // 半径と角度を少し広げて呼ぶ(なめらかに塗った縁の画素まで消える)
 void fillArcHard(float cx, float cy, float rIn, float rOut, float a0, float a1, uint16_t c);
+// 輪の一部を塗り直す(2.5.0。データ画面の回転数の輪)。中心 (cx, cy)、半径 rIn〜rOut の輪のうち、角度 a0〜a1 [度] の範囲にある画素を、
+// 「litA0〜litA1 は lit、残りは track」の色で塗る(角度は fillArc と同じ。litA1 − litA0 ≥ 360 で全部 lit、≤ 0 で全部 track)。
+// 縁はなめらかにし、半径の方向の縁は base と混ぜる。今ある色とは混ぜないので、同じ所を何度塗っても、少しずつ塗っても、
+// 全部を一度に塗ったのと同じ絵になる(輪の縁の外は base の一色であること)
+void ringPaint(float cx, float cy, float rIn, float rOut, float a0, float a1, float litA0, float litA1, uint16_t lit, uint16_t track, uint16_t base);
 
 // ---- 多角形(縁をなめらかに塗る) ----
 // polyBegin → polyAdd(何個でも。重なった所は 1 回ぶんとして塗る)→ polyFill か polyToMask
