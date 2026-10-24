@@ -287,9 +287,9 @@ struct State {
   uint16_t speedRaw;      // km/h × 128
   bool clutch;
   int water;              // ℃
-  uint8_t boostRaw;       // 0A18A001 b4(そのまま)
+  uint8_t boostRaw;       // 0A1CA001 b2(そのまま。2.8.0。2.7.0 までは 0A18A001 b4 = 燃料の量だった)
   bool reverse;           // R に入っている
-  uint32_t rpmMs, speedMs, clutchMs, engMs;  // 最後に受けた時刻(0 = まだ)
+  uint32_t rpmMs, speedMs, clutchMs, engMs, boostMs;  // 最後に受けた時刻(0 = まだ)
   // 燃料(2.7.0: 0A18A000 b5 = %)
   uint32_t fuelSeenMs;    // 0A18A000 を最後に受けた時刻(b5 = 0 も含む)
   uint8_t fuelPct;        // 最後に使った値 [%]
@@ -339,9 +339,13 @@ void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *
     } else if (id == VEH_ID_ENGINE && dlc >= 8) {
       platLock();
       g.water = (int)d[3] - 40;
-      g.boostRaw = d[4];
       g.reverse = (d[7] & VEH_REVERSE_MASK) != 0;
       g.engMs = stamp(now);
+      platUnlock();
+    } else if (id == VEH_ID_BOOST && dlc >= 3) {
+      platLock();
+      g.boostRaw = d[2];
+      g.boostMs = stamp(now);
       platUnlock();
     } else if (id == VEH_ID_FUEL && dlc >= 6) {
       platLock();
@@ -398,7 +402,8 @@ void getSignals(Signals *out, uint32_t now) {
   bool speedOk = within(r.speedMs, now, VEH_TIMEOUT_MS);
   bool clutchOk = within(r.clutchMs, now, VEH_TIMEOUT_MS);
   bool waterOk = within(r.engMs, now, VEH_WATER_TIMEOUT_MS);
-  bool engOk = within(r.engMs, now, VEH_TIMEOUT_MS);  // 0A18A001(ブースト・リバース)が届いている
+  bool engOk = within(r.engMs, now, VEH_TIMEOUT_MS);  // 0A18A001(リバース)が届いている
+  bool boostOk = within(r.boostMs, now, VEH_TIMEOUT_MS);  // 0A1CA001(ブースト)が届いている
   bool fuelOk = r.fuelHave && within(r.fuelSeenMs, now, VEH_FUEL_TIMEOUT_MS);
   updateGear(rpmOk, speedOk, clutchOk, r);
   char gear = (engOk && r.reverse) ? 'R' : g_gear;  // R のビットは推定より優先
@@ -408,7 +413,7 @@ void getSignals(Signals *out, uint32_t now) {
   out->throttleOk = rpmOk;
   out->speedOk = speedOk;
   out->waterOk = waterOk;
-  out->boostOk = engOk;
+  out->boostOk = boostOk;
   out->fuelOk = fuelOk;
   out->gearOk = gear != 0;
   out->rpm = r.rpm;

@@ -669,9 +669,9 @@ static void updDrive(const Signals &s, uint32_t now) {
 // ================================================================ アナログ計(仕様書に無いページ。2026-10-14 にブースト計として追加、
 // 2026-10-21 に回転計を主役にした。2026-10-22 に遠くから見やすく描き直した(遠目の案 C))。
 // 回転計: 色を抑えた目盛線(1000・500・250)、数字(60 px、太さ 600)、白い針(同じ太さ、黒い縁と影)、
-// ピークホールドの黄色い長い印。ブースト: 中央の輪(10/23: 太さ 46。0 bar から今の値までトーンを落とした白、外に 0.5 bar ごとの目盛線)と、
+// ピークホールドの黄色い長い印。ブースト: 中央の輪(10/23: 太さ 46。0 bar から今の値までトーンを落とした白、外に目盛線)と、
 // 輪の右に今の値の大きい数字(太さ 500、白)。水温・燃料: 異常のときだけ数字の下に赤い札(純正のメーターにあるので普段は出さない)。
-// 回転計は 6000 rpm が真上(config.h の TACH_*)。
+// 回転計は 6000 rpm が真上(config.h の TACH_*)。ブーストは 1.4 bar が真上、2.0 bar が端(2.8.0。config.h の BOOST_TOP_*・BOOST_END_DEG)。
 // 描き方: 針・帯・ピークの印を除いた絵(文字盤 = 目盛・数字・帯の地・ブーストの数字・札)を別の画面メモリー g_face に取っておき、
 // 動くものは「前の範囲を g_face から写して消す → 描き直す」(最初から描いたものと 1 画素も違わない)。
 // ブーストの数字と札が変わったときは、針を消してから描き直し、その範囲を g_face にも写す。
@@ -729,9 +729,19 @@ static float tachAngle(float rpm) {
   float v = clampf(rpm, 0.0f, (float)TACH_MAX_RPM);
   return TACH_START_DEG + TACH_DEG_PER_1000 * v / 1000.0f;
 }
-static float boostAngle(float bar) {  // ブーストの輪の角度(0 bar が TACH_START_DEG、増えると時計回り)
+// ブーストの輪の角度(増えると時計回り)。0 bar が TACH_START_DEG(左下)、BOOST_TOP_BAR が BOOST_TOP_DEG(真上)、
+// BOOST_SCALE_MAX_BAR が BOOST_END_DEG(端)で、その間はそれぞれ比例(2.8.0。BOOST_SCALE_MIN_BAR は 0 の前提)
+static float boostAngle(float bar) {
   float v = clampf(bar, BOOST_SCALE_MIN_BAR, BOOST_SCALE_MAX_BAR);
-  return TACH_START_DEG + BOOST_RING_DEG_PER_BAR * v;
+  if (v <= BOOST_TOP_BAR) return TACH_START_DEG + (BOOST_TOP_DEG - TACH_START_DEG) * v / BOOST_TOP_BAR;
+  return BOOST_TOP_DEG + (BOOST_END_DEG - BOOST_TOP_DEG) * (v - BOOST_TOP_BAR) / (BOOST_SCALE_MAX_BAR - BOOST_TOP_BAR);
+}
+// boostAngle の逆(角度 → bar)。オープニングで輪の先を回転計の針と同じ向きにするのに使う
+static float boostBarAt(float deg) {
+  if (deg <= TACH_START_DEG) return 0.0f;
+  if (deg <= BOOST_TOP_DEG) return BOOST_TOP_BAR * (deg - TACH_START_DEG) / (BOOST_TOP_DEG - TACH_START_DEG);
+  if (deg >= BOOST_END_DEG) return BOOST_SCALE_MAX_BAR;
+  return BOOST_TOP_BAR + (BOOST_SCALE_MAX_BAR - BOOST_TOP_BAR) * (deg - BOOST_TOP_DEG) / (BOOST_END_DEG - BOOST_TOP_DEG);
 }
 static int needleKey(const Signals &s) {
   return s.boostOk ? (int)lroundf(boostAngle(s.boostBar) * 4.0f) : -1;
@@ -1084,12 +1094,13 @@ static void drawBoostFace(const Signals &s) {
     }
   }
   platBlinkTick();  // 2.4.0: 赤にする・戻すときはシフト点の近く(点滅の途中)で全部を描き直すので、合間に点滅の切り替えの時刻を見る
-  // ブーストの輪の地(赤の範囲は暗い赤)、0.5 bar ごとの目盛線(輪の外)、数字 0・1・2(輪の内側。赤の範囲は赤)
+  // ブーストの輪の地(赤の範囲は暗い赤)、目盛線(BOOST_TICK_BARS。輪の外)、数字 0・1・2(輪の内側。赤の範囲は赤)
   {
     const float aRed = boostAngle(BOOST_RED_FROM_BAR), aMax = boostAngle(BOOST_SCALE_MAX_BAR);
     gfx::fillArc(233, 233, BOOST_RING_R_IN, BOOST_RING_R_OUT, TACH_START_DEG, aRed, C_RIM);
     gfx::fillArc(233, 233, BOOST_RING_R_IN, BOOST_RING_R_OUT, aRed, aMax, C_RIM_RED);
-    for (float b = 0.0f; b <= BOOST_SCALE_MAX_BAR + 0.01f; b += 0.5f) {
+    static const float TICKS[] = BOOST_TICK_BARS;
+    for (float b : TICKS) {
       float a = boostAngle(b);
       gfx::fillArc(233, 233, BOOST_TICK_R_IN, BOOST_TICK_R_OUT, a - BOOST_TICK_HALF_DEG, a + BOOST_TICK_HALF_DEG, b >= BOOST_RED_FROM_BAR - 0.01f ? C_TICK_R : C_TICK);
     }
@@ -2617,7 +2628,7 @@ static void openTach(const Signals &s, uint32_t t, uint32_t now) {
   if (t < OPT_T_SETTLE) {  // 1〜3: 0 → 振り切り → 止まる → 0。ブーストは回転数と同じ割合(輪の先は針と同じ向き)
     const float e = t < OPT_T_TOP ? easeInOut(stepU(t, 0, OPT_UP_MS)) : (t < OPT_T_DOWN ? 1.0f : 1.0f - easeInOut(stepU(t, OPT_T_DOWN, OPT_DOWN_MS)));
     rpm = (int)lroundf((float)TACH_MAX_RPM * e);
-    bar = BOOST_SCALE_MAX_BAR * (float)rpm / (float)TACH_MAX_RPM;
+    bar = boostBarAt(tachAngle((float)rpm));  // 2.8.0: 目盛が真上で折れるので、角度で合わせる(6000 rpm = 1.4 bar、8000 rpm = 2.0 bar)
   } else {  // 4: 今の値へ(信号なしは 0)
     const float e = easeOut(stepU(t, OPT_T_SETTLE, OPT_SETTLE_MS));
     rpm = (int)lroundf((s.rpmOk ? (float)s.rpm : 0.0f) * e);

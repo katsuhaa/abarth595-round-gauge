@@ -1045,12 +1045,23 @@ int main() {
     const int bx0 = AN_BADGE_X, bx1 = AN_BADGE_X + AN_BADGE_W, by0 = AN_BADGE_Y, by1 = AN_BADGE_Y + AN_BADGE_PITCH + AN_BADGE_H;
     CHECK(countIn(bx0, by0, bx1, by1, gfx::rgb(0xE3241B)) == 0, "札: 水温 90 ℃・燃料 50 % では出ない");
     CHECK(countIn(BOOST_NUM_X - 160, BOOST_NUM_BASE - 50, BOOST_NUM_X, BOOST_NUM_BASE, gfx::rgb(0xFFFFFF)) > 300, "ブーストの今の値を白い数字で出す(10/23)");
+    // ブーストの輪の角度(2.8.0 の決まり): 0 bar = 左下 120°、1.4 bar = 真上 270°、2.0 bar = 端 320°。その間はそれぞれ比例
+    auto boostDeg = [](float bar) { return bar <= 1.4f ? 120.0f + 150.0f * bar / 1.4f : 270.0f + 50.0f * (bar - 1.4f) / 0.6f; };
+    auto ringPx = [&](float deg) {  // 輪の太さの真ん中の画素
+      const float r = (BOOST_RING_R_IN + BOOST_RING_R_OUT) * 0.5f, a = deg * 3.14159265f / 180.0f;
+      return px((int)(233 + r * cosf(a)), (int)(233 + r * sinf(a)));
+    };
+    CHECK(ringPx(boostDeg(0.3f)) == gfx::rgb(0xA9AFBA), "ブーストの輪: 0.65 bar のとき 0.3 bar の所はトーンを落とした白");
+    CHECK(ringPx(boostDeg(1.2f)) == gfx::rgb(0x161E2A), "ブーストの輪: 1.2 bar の所は地の色");
+    b.boostBar = 1.4f;  // 2.8.0: 1.4 bar で真上(0 時)
+    ui::update(b, ls, ps, si, tc);
     {
-      float a = (TACH_START_DEG + BOOST_RING_DEG_PER_BAR * 0.3f) * 3.14159265f / 180.0f, r = (BOOST_RING_R_IN + BOOST_RING_R_OUT) * 0.5f;
-      CHECK(px((int)(233 + r * cosf(a)), (int)(233 + r * sinf(a))) == gfx::rgb(0xA9AFBA), "ブーストの輪: 0.65 bar のとき 0.3 bar の所はトーンを落とした白");
-      a = (TACH_START_DEG + BOOST_RING_DEG_PER_BAR * 1.2f) * 3.14159265f / 180.0f;
-      CHECK(px((int)(233 + r * cosf(a)), (int)(233 + r * sinf(a))) == gfx::rgb(0x161E2A), "ブーストの輪: 1.2 bar の所は地の色");
+      const float rm = (BOOST_MARK_R_IN + BOOST_MARK_R_OUT) * 0.5f;
+      CHECK(px(233, (int)(233 - rm)) == gfx::rgb(0xFFFFFF), "ブーストの輪: 1.4 bar のとき先端の白い目印が真上(0 時。2.8.0)");
     }
+    CHECK(ringPx(265.0f) == gfx::rgb(0xA9AFBA) && ringPx(275.0f) == gfx::rgb(0x2E1A1C), "ブーストの輪: 1.4 bar のとき真上の手前まで白、真上から先は赤の範囲の地");
+    b.boostBar = 0.65f;
+    ui::update(b, ls, ps, si, tc);
     gfx::dirtyClear();
     b.fuelPct = FUEL_ALARM_PCT - 1;  // 29 %: 燃料の札(1 つだけ: 上の段)
     b.rpm = 1000;  // 針も動かす
@@ -1064,10 +1075,13 @@ int main() {
     CHECK(memcmp(fbC, fb, sizeof(fbC)) == 0, "札が出て針が動いたあとの絵 = 同じ時刻に最初から描いた絵");
     gfx::dirtyClear();
     b.waterC = 115;  // 警告温度(110)以上: 2 段
-    b.boostBar = 1.8f;  // 赤の範囲
+    b.boostBar = 1.8f;  // 赤の範囲(2.8.0: 1.4 bar = 真上から)
     b.rpm = 5000;
     ui::update(b, ls, ps, si, tc + 3 * ALARM_BLINK_HALF_MS);  // 消灯側
     CHECK(countIn(bx0, by0, bx1, by1, gfx::rgb(0x8E130D)) > 4000, "札: 2 つとも出て、点滅の消灯側は暗い赤");
+    // 2.8.0: 1.8 bar は 270 + 50 × 0.4 / 0.6 = 303.3°
+    CHECK(ringPx(260.0f) == gfx::rgb(0xA9AFBA) && ringPx(290.0f) == gfx::rgb(0x9E3A33), "ブーストの輪: 1.8 bar のとき真上の手前は白、真上から先は赤(2.8.0)");
+    CHECK(ringPx(312.0f) == gfx::rgb(0x2E1A1C), "ブーストの輪: 1.8 bar の先(312°)は赤の範囲の地(端は 320°)");
     memcpy(fbC, fb, sizeof(fbC));
     ui::testRedraw();
     ui::update(b, ls, ps, si, tc + 3 * ALARM_BLINK_HALF_MS);
@@ -1957,7 +1971,8 @@ int main() {
     uint32_t t = 500000;
     const uint8_t rpm3000[8] = { 0, 0, 0x0B, 0xB8, 0, 0, 0, 255 };  // 3000 rpm、アクセル 255(100 %)
     const uint8_t kmh60[8] = { 0, 0, 0, 0, 0x1E, 0x00, 0, 0 };     // 7680 ÷ 128 = 60 km/h
-    const uint8_t eng[8] = { 0, 0, 0, 130, 65, 0, 0, 0 };          // 水温 130 − 40 = 90 ℃、ブースト 65 × 0.01 = 0.65 bar
+    const uint8_t eng[8] = { 0, 0, 0, 130, 65, 0, 0, 0 };          // 水温 130 − 40 = 90 ℃(b4-b5 は燃料の量。ブーストには使わない: 2.8.0)
+    const uint8_t trb[8] = { 0, 1, 68, 0x48, 0x31, 0x10, 1, 0x80 };  // ブースト 68 × 0.02 = 1.36 bar(0A1CA001 b2。10/22 のログの全開の最大)
     const uint8_t clutch[8] = { 0, 0, 0, 0, 0, 0x20, 0, 0 };
     canFrame(0, 0x0618A001, rpm3000, 8, t);
     canFrame(0, 0x0210A006, kmh60, 8, t);
@@ -1966,7 +1981,10 @@ int main() {
     mlink::getSignals(&s, t);
     CHECK(s.linkUp && mlink::usingRaw(t) && s.rpmOk && s.rpm == 3000 && s.throttleOk && s.throttlePct == 100.0f, "生データ: 回転数・アクセル(0618A001 b2-3、b7)");
     CHECK(s.speedOk && s.speedKmh == 60.0f, "生データ: 車速(0210A006 b4-5 ÷ 128)");
-    CHECK(s.waterOk && s.waterC == 90.0f && s.boostOk && fabsf(s.boostBar - 0.65f) < 0.0001f, "生データ: 水温 b3 − 40、ブースト b4 × 0.01 bar(0A18A001)");
+    CHECK(s.waterOk && s.waterC == 90.0f && !s.boostOk, "生データ: 水温 b3 − 40(0A18A001)。b4 はブーストに使わない(0A1CA001 が来るまでブーストは信号なし。2.8.0)");
+    canFrame(0, 0x0A1CA001, trb, 8, t);
+    mlink::getSignals(&s, t);
+    CHECK(s.boostOk && fabsf(s.boostBar - 1.36f) < 0.0001f, "生データ: ブースト 0A1CA001 b2 × 0.02 bar(68 → 1.36 bar。2.8.0)");
     CHECK(s.gearOk && s.gear == '3', "生データ: 3000 rpm ÷ 60 km/h = 50 → 3 速(仮の変速比、クラッチを踏んでいても止めない)");
     CHECK(!s.fuelOk && !s.sim && s.scene == 0, "生データ: 燃料はまだ無い。模擬ではない");
     const uint8_t engR[8] = { 0, 0, 0, 130, 0, 0, 0, 0x04 };
@@ -1990,7 +2008,7 @@ int main() {
     mlink::getSignals(&s, t + 60 + VEH_TIMEOUT_MS);
     CHECK(s.linkUp && s.rpmOk && s.speedOk, "生データ: VEH_TIMEOUT_MS ちょうどまでは信号あり");
     mlink::getSignals(&s, t + 61 + VEH_TIMEOUT_MS);
-    CHECK(s.linkUp && !s.rpmOk && !s.speedOk && !s.throttleOk && !s.gearOk && s.waterOk, "生データ: VEH_TIMEOUT_MS を過ぎた値は信号なし(水温は VEH_WATER_TIMEOUT_MS)");
+    CHECK(s.linkUp && !s.rpmOk && !s.speedOk && !s.throttleOk && !s.gearOk && !s.boostOk && s.waterOk, "生データ: VEH_TIMEOUT_MS を過ぎた値は信号なし(水温は VEH_WATER_TIMEOUT_MS)");
     CHECK(!s.fuelOk, "燃料: b5 = 0(エンジンをかける前)だけでは値なし");
     veh::FuelInfo fi;
     veh::fuelInfo(&fi, t + 61 + VEH_TIMEOUT_MS);
@@ -2041,14 +2059,15 @@ int main() {
     uint32_t r = 12345;
     for (int i = 0; i < 20000; i++) {
       for (int b = 0; b < 8; b++) rnd[b] = (uint8_t)((r = r * 1103515245u + 12345u) >> 16);
-      static const uint32_t IDS[] = { 0x0618A001, 0x0210A006, 0x0628A001, 0x0A18A001, 0x0A18A000, 0x12345678 };
-      uint32_t id = IDS[(r >> 8) % 6];
+      static const uint32_t IDS[] = { 0x0618A001, 0x0210A006, 0x0628A001, 0x0A18A001, 0x0A18A000, 0x0A1CA001, 0x12345678 };
+      uint32_t id = IDS[(r >> 8) % 7];
       veh::onFrame((uint8_t)((r >> 4) & 1), (uint8_t)((r >> 5) & 1), id, (uint8_t)((r >> 12) % 9), rnd, t2 + 10000 + (uint32_t)i * 7);
       if (i % 50 == 0) {
         Signals v;
         memset(&v, 0, sizeof(v));
         veh::getSignals(&v, t2 + 10000 + (uint32_t)i * 7);
-        CHECK(v.fuelPct >= 0.0f && v.fuelPct <= 100.0f && v.speedKmh >= 0.0f && v.speedKmh < 512.0f && v.throttlePct <= 100.0f && v.waterC >= -40.0f && v.waterC <= 215.0f,
+        CHECK(v.fuelPct >= 0.0f && v.fuelPct <= 100.0f && v.speedKmh >= 0.0f && v.speedKmh < 512.0f && v.throttlePct <= 100.0f && v.waterC >= -40.0f && v.waterC <= 215.0f &&
+                  v.boostBar >= 0.0f && v.boostBar <= 255 * VEH_BOOST_BAR_PER_LSB + 0.01f,
               "でたらめな生データでも値は範囲の中");
       }
     }
@@ -2110,7 +2129,7 @@ int main() {
     if (run("../logs/can_boost.txt", UINT32_MAX, &lr)) {
       printf("  実車ログ %s: %d 行、ブーストの最大 %.2f bar、ギア %s、燃料 %.0f〜%.0f %%\n", lr.path, lr.lines, (double)lr.boostMax, lr.sawGear ? "あり" : "なし", (double)lr.fuelMin[0],
              (double)lr.fuelMax[0]);
-      CHECK(fabsf(lr.boostMax - 0.67f) < 0.001f && lr.sawGear, "実車ログ(ブースト): ログの b4 の最大 0x43 = 67 → 0.67 bar、走行中にギアが出る");
+      CHECK(fabsf(lr.boostMax - 1.36f) < 0.001f && lr.sawGear, "実車ログ(ブースト): 0A1CA001 b2 の最大 68 → 1.36 bar(2.8.0。2.7.0 は 0A18A001 b4 の 67 → 0.67)、走行中にギアが出る");
       CHECK(lr.fuelMin[0] == 33.0f && lr.fuelMax[0] == 34.0f, "実車ログ(ブースト): 燃料は 33〜34 %");
     }
     if (run("../logs/can_fuel.txt", 848686, &lr)) {
@@ -2118,6 +2137,7 @@ int main() {
              (unsigned)lr.ignored, (double)lr.fuelMin[0], (double)lr.fuelMax[0], (double)lr.fuelMin[1], (double)lr.fuelMax[1]);
       CHECK(lr.ignored >= 1 && lr.fuelMin[0] == 31.0f && lr.fuelMax[0] == 33.0f, "実車ログ(給油): 給油の前は 33 → 31 %(残り 30 % ほど)。エンジンを止めた間の b5 = 0 は捨てる");
       CHECK(lr.fuelMin[1] == 100.0f && lr.fuelMax[1] == 100.0f, "実車ログ(給油): 給油してエンジンをかけたら 100 % を出し続ける(満タン)");
+      CHECK(fabsf(lr.boostMax - 0.52f) < 0.001f, "実車ログ(給油): ブーストの最大 26 → 0.52 bar(アクセル 49 % が最大の走り。2.8.0)");
     }
   }
 
