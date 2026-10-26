@@ -16,7 +16,7 @@
 extern bool g_hostSaveOk;
 static uint16_t fb[gfx::W * gfx::H], fbRef[gfx::W * gfx::H];
 static float scratch[gfx::W * (gfx::H + 2)];
-static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT };
+static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT };
 static LinkStats ls;
 static PerfStats ps;
 static SysInfo si;
@@ -147,6 +147,7 @@ int main(int argc, char **argv) {
                                            ui::SC_CAN_PP };  // 2.6.0: 前後で比べる
         cur = deep[rndN(sizeof(deep) / sizeof(deep[0]))];
         // 2.4.0: 設定 8 項目、受信の状態 4 グループ、グループの中は 2〜6 ページ(多すぎるページの番号も試す)。
+        // 2.9.0: 設定 9 項目(イルミネーションの明るさ)、CAN は 9 ページ(ライト)
         // 2.5.0: CAN確認の詳細も直接出す(2.4.4 から一覧の長押しで開くので、乱数のタッチでは滅多に届かない。表の番号は範囲外も試す)
         if (cur == ui::SC_CAN_DETAIL) {
           ui::testShow(cur, (int)rndN(CAN_MAX_IDS + 2) - 1, (int)rndN(9));
@@ -154,7 +155,7 @@ int main(int argc, char **argv) {
           const int pp = (int)rndN(2);
           ui::testShow(cur, cur == ui::SC_CAN_REDO ? pp : 0, cur == ui::SC_CAN_ID ? pp : 0);
         } else {
-          ui::testShow(cur, cur == ui::SC_SET_EDIT ? (int)rndN(8) : (cur == ui::SC_SET_INFO ? (int)rndN(5) : (cur == ui::SC_SET_GRP ? (int)rndN(7) : 0)),
+          ui::testShow(cur, cur == ui::SC_SET_EDIT ? (int)rndN(9) : (cur == ui::SC_SET_INFO ? (int)rndN(5) : (cur == ui::SC_SET_GRP ? (int)rndN(10) : 0)),
                        cur == ui::SC_SET_EDIT ? (int)rndN(2) : (cur == ui::SC_SET_GRP ? (int)rndN(6) : 0));
         }
       }

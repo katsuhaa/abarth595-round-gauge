@@ -11,7 +11,7 @@
 
 static uint16_t fb[gfx::W * gfx::H];
 static float scratch[gfx::W * (gfx::H + 2)];
-static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT };
+static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT };
 static LinkStats ls;
 static PerfStats ps;
 static SysInfo si;
@@ -182,24 +182,26 @@ int main(int argc, char **argv) {
     shot("CanRedo", s, ui::SC_CAN_REDO);
   }
 
-  // ---- 設定(2.4.0: 8 項目。受信の状態は CAN・GPS・IMU・RaceChrono のグループ、本体の状態は FPS・起動)
+  // ---- 設定(2.4.0: 8 項目。受信の状態は CAN・GPS・IMU・RaceChrono のグループ、本体の状態は FPS・起動。
+  //      2.9.0: 2 番目にイルミネーションの明るさ(絵の名前は 2.4.0 の番号のまま、足した項目は SetIllum))
   {
     Signals s = sig(4200, '3', 92, 62);
     trip::setTimes(5025000, 45296000);
-    const char *items[] = { "Set1Bright", "Set2Info", "Set3Sys", "Set4Shift", "Set5Warn", "Set6Time", "Set7Auto", "Set8Demo" };
-    for (int i = 0; i < 8; i++) shot(items[i], s, ui::SC_SET_LIST, i);
+    const char *items[] = { "Set1Bright", "SetIllum", "Set2Info", "Set3Sys", "Set4Shift", "Set5Warn", "Set6Time", "Set7Auto", "Set8Demo" };
+    for (int i = 0; i < 9; i++) shot(items[i], s, ui::SC_SET_LIST, i);
     shot("SettingsBright", s, ui::SC_SET_EDIT, 0);
-    shot("SettingsShift", s, ui::SC_SET_EDIT, 3);
-    shot("SettingsWarn", s, ui::SC_SET_EDIT, 4);
-    shot("SettingsAuto", s, ui::SC_SET_EDIT, 6);
+    shot("SettingsIllum", s, ui::SC_SET_EDIT, 1);  // 2.9.0: 名前は 2 行
+    shot("SettingsShift", s, ui::SC_SET_EDIT, 4);
+    shot("SettingsWarn", s, ui::SC_SET_EDIT, 5);
+    shot("SettingsAuto", s, ui::SC_SET_EDIT, 7);
     set.demoOn = 1;
-    shot("SettingsDemo", s, ui::SC_SET_EDIT, 7);
+    shot("SettingsDemo", s, ui::SC_SET_EDIT, 8);
     set.demoOn = 0;
     shot("SettingsRcSend", s, ui::SC_SET_EDIT, 0, 1);
     shot("SetReset", s, ui::SC_SET_RESET);
     // 保存したあとの点滅(2.4.3): 変更の画面で、押した「決定」の帯が消える(1 回目)・点く(1 回目)。その間は値が太い
     {
-      ui::testShow(ui::SC_SET_EDIT, 3);
+      ui::testShow(ui::SC_SET_EDIT, 4);
       ui::testTouch(now);
       ui::update(s, ls, ps, si, now);
       ui::tap(366, 233, now + 10);  // + 100
@@ -233,7 +235,20 @@ int main(int argc, char **argv) {
       veh::onFrame(0, 1, VEH_ID_FUEL, 8, f, now);
     }
     shot("CanFuel", s, ui::SC_SET_GRP, 5, 0);
-    shot("CanCheck", s, ui::SC_SET_GRP, 6, 0);
+    // 2.9.0: ライト(B-CAN 06214000 b0 の 0x08)。不明 → 切(電源を入れて 0.8 秒で最初に受けた)→ 入 → 受信なし
+    shot("CanLightNone", s, ui::SC_SET_GRP, 6, 0);
+    {
+      uint8_t l[8] = { 0x20, 0x00, 0x40, 0x00, 0x00, 0x55, 0x0B, 0x00 };  // 10/26 の写真(スイッチ 切)
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, l, 800);
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, l, now - 1000);
+      shot("CanLightOff", s, ui::SC_SET_GRP, 6, 0);
+      l[0] = 0x28;  // 写真(スイッチ 入)
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, l, now - 500);
+      shot("CanLightOn", s, ui::SC_SET_GRP, 6, 0);
+      now += VEH_LIGHT_TIMEOUT_MS + 1000;
+      shot("CanLightLost", s, ui::SC_SET_GRP, 6, 0);
+    }
+    shot("CanCheck", s, ui::SC_SET_GRP, 7, 0);
     // 本体の状態
     shot("SysFps", s, ui::SC_SET_GRP, 0, 4);
     ps.pageFrames = 3;  // 描いた回が少ない(受信が無いとき)
@@ -249,7 +264,7 @@ int main(int argc, char **argv) {
     ls.locked = false; ls.infoValid = false; si.axpOk = false; ls.crcErrors = 3; ls.bytesPerSec = 1480; ls.framesPerSec = 0;
     shot("CanNoLink", s, ui::SC_SET_GRP, 2, 0);
     shot("InfoCanNg", s, ui::SC_SET_INFO, 0);
-    shot("Set2InfoNg", s, ui::SC_SET_LIST, 1);
+    shot("Set2InfoNg", s, ui::SC_SET_LIST, 2);
     si.rc.enabled = true; si.rc.bleOk = true; si.rc.connected = true; si.rc.canPerSec = 62; si.rc.gpsPerSec = 25; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 11;
     si.rc.pvtPerSec = 25; si.rc.lat = 355812345; si.rc.lon = 1396821234; si.rc.gpsKmh = 48.3f; si.rc.imuOk = true; si.rc.imuLevel = true; si.rc.imuForward = true;
     si.rc.gLon = 0.32f; si.rc.gLat = -0.85f;
@@ -338,7 +353,7 @@ int main(int argc, char **argv) {
   {
     Signals s = sig(4200, '3', 92, 62);
     const uint32_t at = HOLD_SHOW_MS + (HOLD_MS - HOLD_SHOW_MS) * 6 / 10;
-    ui::testShow(ui::SC_SET_LIST, 3);
+    ui::testShow(ui::SC_SET_LIST, 4);
     ui::testTouch(now);
     ui::update(s, ls, ps, si, now);
     ui::touchDown(366, 233, now + 10);
@@ -357,7 +372,7 @@ int main(int argc, char **argv) {
     saveShot("MenuCancel");
     printf("%-22s guide=%d mode=%d holding=%d missing=%u\n", "MenuCancel", (int)ui::testGuide(), ui::testGuideMode(), (int)ui::testHolding(), (unsigned)gfx::missingGlyphs());
     ui::touchUp(now + 10 + at + 20);
-    ui::testShow(ui::SC_SET_LIST, 3);
+    ui::testShow(ui::SC_SET_LIST, 4);
     gfx::dirtyClear();
     now += 5000;
   }
@@ -481,7 +496,7 @@ int main(int argc, char **argv) {
     shot("CanPpList", s, ui::SC_CAN_ID, 0, 1);   // 1/2  b5  31 → 100  +69
     shot("CanPpList2", s, ui::SC_CAN_ID, 1, 1);  // 2/2  b3  43 → 0  -43
     shot("CanPpRedo", s, ui::SC_CAN_REDO, 1);
-    shot("CanPpPage", s, ui::SC_SET_GRP, 7, 0);
+    shot("CanPpPage", s, ui::SC_SET_GRP, 8, 0);
     g_hostCanPreN = 0;
     cantab::begin();
   }

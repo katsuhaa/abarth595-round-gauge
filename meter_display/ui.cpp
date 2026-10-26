@@ -1563,8 +1563,35 @@ static void drawDots(int n, int cur, const uint16_t *cols, int y) {
     }
   }
 }
-static void drawName(const char *name) {  // 項目の名前(帯の下)
-  fitTextC(FP_NAME, 3, 330, 233, 184, name, C_LABEL2);
+// 項目の名前(帯の下)。いちばん小さい書体(34 px)でも 1 行に入らない名前は 2 行に分けて 34 px で描く(2.9.0: 「イルミネーションの明るさ」
+// →「イルミネーション」「の明るさ」)。分ける所は真ん中に近い「の」の前(無ければ真ん中に近い文字の切れ目)。2 行目は値(上端 206)に
+// 掛からない高さ
+static const float NAME_MAX_W = 330;
+static size_t nameCut(const char *name) {
+  const size_t len = strlen(name);
+  auto dist = [len](size_t pos) { return pos * 2 > len ? pos * 2 - len : len - pos * 2; };
+  size_t cut = 0;
+  for (const char *p = strstr(name, "の"); p; p = strstr(p + 1, "の")) {
+    const size_t pos = (size_t)(p - name);
+    if (pos > 0 && (!cut || dist(pos) < dist(cut))) cut = pos;
+  }
+  if (!cut)
+    for (size_t i = 1; i < len; i++)
+      if (((uint8_t)name[i] & 0xC0) != 0x80 && (!cut || dist(i) < dist(cut))) cut = i;
+  return cut;
+}
+static void drawName(const char *name) {
+  const FontPair &s = FP_NAME[2];
+  if (mixWidth(*s.a, *s.j, name) <= NAME_MAX_W) {
+    fitTextC(FP_NAME, 3, NAME_MAX_W, 233, 184, name, C_LABEL2);
+    return;
+  }
+  char l1[64], l2[64];
+  const size_t cut = nameCut(name);
+  snprintf(l1, sizeof(l1), "%.*s", (int)cut, name);
+  snprintf(l2, sizeof(l2), "%s", name + cut);
+  mixDraw(*s.a, *s.j, 233 - mixWidth(*s.a, *s.j, l1) * 0.5f, 161, l1, C_LABEL2);
+  mixDraw(*s.a, *s.j, 233 - mixWidth(*s.a, *s.j, l2) * 0.5f, 200, l2, C_LABEL2);
 }
 // 大きい値(数字 96 px と単位 44 px。入らなければ小さく)。unit = "" なら単位なし。
 // bold = true なら値を太く(2.4.3: 横に 1 px ずつずらして重ねる。96 px 以上は 3 回、64 px は 2 回ずらす。単位は太くしない)
@@ -1610,9 +1637,9 @@ static void drawTwoTimes(int y1, int y2, uint16_t labc) {
 enum Group : uint8_t { G_CAN, G_GPS, G_IMU, G_RC, G_SYS, G_COUNT };
 static const int N_LINK_GROUPS = 4;  // 受信の状態のグループ(CAN・GPS・IMU・RaceChrono)
 static const char *const GROUP_NAME[G_COUNT] = { "CAN", "GPS", "IMU", "RaceChrono", "本体の状態" };
-static const int GROUP_N[G_COUNT] = { 8, 3, 2, 3, 8 };  // グループの中のページの数(2.6.0: CAN に「前後で比べる」)
-static const int GRP_MAX = 8;
-enum { P_CAN_BAUD, P_CAN_RX, P_CAN_ERR, P_CAN_READER, P_CAN_BUS, P_CAN_FUEL, P_CAN_CHECK, P_CAN_PP };  // CAN の中のページ
+static const int GROUP_N[G_COUNT] = { 9, 3, 2, 3, 8 };  // グループの中のページの数(2.6.0: CAN に「前後で比べる」。2.9.0: CAN に「ライト」)
+static const int GRP_MAX = 9;
+enum { P_CAN_BAUD, P_CAN_RX, P_CAN_ERR, P_CAN_READER, P_CAN_BUS, P_CAN_FUEL, P_CAN_LIGHT, P_CAN_CHECK, P_CAN_PP };  // CAN の中のページ
 enum { P_GPS_FIX, P_GPS_POS, P_GPS_SPEED };                                                   // GPS
 enum { P_IMU_ACC, P_IMU_CAL };                                                                // IMU
 enum { P_RC_SEND, P_RC_LINK, P_RC_RATE };                                                     // RaceChrono
@@ -1655,9 +1682,9 @@ static void initItems(InfoItem *it, int n, const char *const *labels) {
   }
 }
 static const char *const RC_OFF_TEXT = "切(RaceChrono 送信)";  // RaceChrono の送信が切(GPS・IMU も動かしていない)
-// CAN: 車の CAN を CANリーダー(XIAO ESP32C6)が読み、UART で表示器へ送る。燃料のほかは、まとめで緑でなければ「正常」にしない
+// CAN: 車の CAN を CANリーダー(XIAO ESP32C6)が読み、UART で表示器へ送る。燃料・ライトのほかは、まとめで緑でなければ「正常」にしない
 static void canItems(const LinkStats &ls, uint32_t now, InfoItem *it) {
-  static const char *const L[] = { "通信速度", "受信", "誤り・欠落", "CANリーダー", "C-CAN・B-CAN", "燃料", "CAN確認", "前後で比べる" };
+  static const char *const L[] = { "通信速度", "受信", "誤り・欠落", "CANリーダー", "C-CAN・B-CAN", "燃料", "ライト", "CAN確認", "前後で比べる" };
   initItems(it, GROUP_N[G_CAN], L);
   for (int i = P_CAN_BAUD; i <= P_CAN_BUS; i++) it[i].core = true;
   // 受けていない: バイトは届くのに読めなければ赤。何も届かないときも、起動から INFO_LINK_GRACE_MS たったら赤(2.2.0。前は灰で、
@@ -1694,6 +1721,14 @@ static void canItems(const LinkStats &ls, uint32_t now, InfoItem *it) {
   veh::fuelInfo(&fi, now);
   if (fi.seen && fi.have) snprintf(f.value, sizeof(f.value), "%u %%", (unsigned)fi.pct), f.v = V_OK;
   else snprintf(f.value, sizeof(f.value), "– –");
+  // ライト(2.9.0: B-CAN 06214000 b0 の 0x08 = ライトのスイッチ): 点・消と、いま使っているふだんの明るさ。判定に使わない(緑 = 受けている、
+  // 灰 = 不明(電源を入れてからまだ受けていない)・受信なし(明るさは最後の状態のまま))。下の行は lightSub
+  InfoItem &l = it[P_CAN_LIGHT];
+  veh::LightInfo li;
+  veh::lightInfo(&li, now);
+  if (!li.have) snprintf(l.value, sizeof(l.value), "不明");
+  else if (!li.seen) snprintf(l.value, sizeof(l.value), "受信なし");
+  else snprintf(l.value, sizeof(l.value), "%s %d %%", li.on ? "点" : "消", bright::normalPct(*g_set, li.on)), l.v = V_OK;
   // CAN確認(2.4.3: CAN の最後のページ。2.6.0 からは最後の 1 つ前。2.4.4: 下「長押しで開く」。2.4.0〜2.4.2 は C-CAN・B-CAN のページの
   // 下「CAN確認」)。判定なし
   InfoItem &k = it[P_CAN_CHECK];
@@ -1709,6 +1744,14 @@ static void canItems(const LinkStats &ls, uint32_t now, InfoItem *it) {
   if (cantab::ppHasResult()) cantab::ppResults(nullptr, 0, &up, &down), snprintf(q.value, sizeof(q.value), "候補 %d 件", up + down);
   else snprintf(q.value, sizeof(q.value), "%s", cantab::ppHasPre() ? "前を記録した" : "記録なし");
   q.act = A_OPEN_CANPP;
+}
+// CAN の「ライト」のページの下の行(2.9.0): 最後に受けた b0 と、電源を入れてから最初に受けるまでの秒(夜にエンジンをかけたとき、
+// オープニングの間に暗くなるかを見る。仕様書 7 章)。まだ受けていなければ空
+static void lightSub(uint32_t now, char *out, size_t n) {
+  veh::LightInfo li;
+  veh::lightInfo(&li, now);
+  out[0] = 0;
+  if (li.have) snprintf(out, n, "b0 %02X 最初の受信 %u.%u 秒", (unsigned)li.lastB0, (unsigned)(li.firstMs / 1000), (unsigned)(li.firstMs % 1000 / 100));
 }
 // GPS(M100。RaceChrono の送信が入のときだけ動かす): 測位(届かなければ赤)・位置・速度
 static void gpsItems(const SysInfo &si, InfoItem *it) {
@@ -1866,9 +1909,10 @@ static void linkPages(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
   }
 }
 
-// ================================================================ 設定画面(8 章。10/23 に作り直し: 1 画面 1 項目。2.4.0: 8 項目)
+// ================================================================ 設定画面(8 章。10/23 に作り直し: 1 画面 1 項目。2.4.0: 8 項目。2.9.0: 9 項目)
 // 並び(本人の指示 10/24): 明るさ → 受信の状態 → シフトポイント → 水温の警告 → 時間の記録 → 自動で戻る → デモ。
-// 2.4.0: 受信の状態の次に「本体の状態」(受信と関係ない FPS・起動を受信の状態から出した)
+// 2.4.0: 受信の状態の次に「本体の状態」(受信と関係ない FPS・起動を受信の状態から出した)。
+// 2.9.0: 明るさの次に「イルミネーションの明るさ」(ライトのスイッチが入の間の明るさ。仕様書 light_dimming_spec.md 第 3 版)
 enum Unit : uint8_t { U_NONE, U_RPM, U_MIN, U_PCT, U_DEGC, U_ONOFF };
 enum ItemKind : uint8_t { K_VALUE, K_TIME, K_LINK, K_SYS };
 struct Item {
@@ -1880,6 +1924,7 @@ struct Item {
 };
 static const Item ITEMS[] = {
   { "明るさ", &Settings::brightnessPct, SET_BRIGHT_MIN, SET_BRIGHT_MAX, SET_BRIGHT_STEP, U_PCT, K_VALUE },
+  { "イルミネーションの明るさ", &Settings::illumPct, SET_ILLUM_MIN, SET_ILLUM_MAX, SET_ILLUM_STEP, U_PCT, K_VALUE },  // 2.9.0
   { "受信の状態", nullptr, 0, 0, 0, U_NONE, K_LINK },
   { "本体の状態", nullptr, 0, 0, 0, U_NONE, K_SYS },
   { "シフトポイント", &Settings::shiftRpm, SET_SHIFT_MIN, SET_SHIFT_MAX, SET_SHIFT_STEP, U_RPM, K_VALUE },
@@ -1889,6 +1934,10 @@ static const Item ITEMS[] = {
   { "デモ", &Settings::demoOn, 0, 1, 1, U_ONOFF, K_VALUE },
 };
 static const int N_ITEMS = sizeof(ITEMS) / sizeof(ITEMS[0]);
+// 画面の明るさの項目(変えたその場で反映し、変更の画面を出している間はその値で表示する。2.9.0: イルミネーションの明るさも)
+static bool isBrightField(int Settings::*f) {
+  return f == &Settings::brightnessPct || f == &Settings::illumPct;
+}
 // 受信の状態 → RaceChrono の 1 ページ目「送信」(変えると次の起動から効く)
 static const Item RC_SEND_ITEM = { "RaceChrono 送信", &Settings::rcOn, 0, 1, 1, U_ONOFF, K_VALUE };
 static int g_setItem = 0;          // 設定で見ている項目(電源を切るまで覚える。フラッシュには書かない)
@@ -2089,7 +2138,9 @@ static void drawFpsGraph(const PerfStats &ps) {
   strokePolyline(p, n, 1.5f);
   gfx::polyFill(C_WHITE);
 }
-static void drawPage(const char *title, const InfoItem *it, int cnt, int cur, const PerfStats *graph = nullptr) {
+// ページの下の行(値の下に小さい字で 1 行。2.9.0: CAN の「ライト」)の書体
+static const FontPair FP_SUB[] = { { &FONT_NUM600_30, &FONT_JP600_30 } };
+static void drawPage(const char *title, const InfoItem *it, int cnt, int cur, const PerfStats *graph = nullptr, const char *sub = nullptr) {
   gfx::fillAll(C_BG);
   g_tagsDirty = true;  // 全部を塗り直したので「SIM」の印も描き直す
   drawTopBack(title);
@@ -2098,6 +2149,9 @@ static void drawPage(const char *title, const InfoItem *it, int cnt, int cur, co
   if (graph) {  // FPS: 値を小さくして上に、下にグラフ
     drawPageValue(c, 238, 2);
     drawFpsGraph(*graph);
+  } else if (sub && sub[0]) {  // 値を少し上に、下に小さい字の行(2.9.0)
+    drawPageValue(c, 262);
+    fitTextC(FP_SUB, 1, 360, 233, 306, sub, C_LABEL2);
   } else {
     drawPageValue(c);
   }
@@ -2129,7 +2183,9 @@ static void updSetGrp(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
   groupItems(g_grp, ls, ps, si, now, it);
   g_grpAct = it[g_grpPage].act;
   const bool fps = g_grp == G_SYS && g_grpPage == P_SYS_FPS && it[g_grpPage].value[0] != 0;
-  drawPage(GROUP_NAME[g_grp], it, cnt, g_grpPage, fps ? &ps : nullptr);
+  char sub[48] = "";
+  if (g_grp == G_CAN && g_grpPage == P_CAN_LIGHT) lightSub(now, sub, sizeof(sub));
+  drawPage(GROUP_NAME[g_grp], it, cnt, g_grpPage, fps ? &ps : nullptr, sub);
 }
 
 // ================================================================ CAN確認(10/23。設定 → 受信の状態 → CAN の「CAN確認」のページの下「長押しで開く」。2.4.4)
@@ -3144,6 +3200,10 @@ void begin(Settings *settings, uint8_t home) {
 uint8_t homeScreen() {
   return g_homeSaved;
 }
+int previewPct() {  // 2.9.0
+  if (g_sc != SC_SET_EDIT || !g_set || !isBrightField(g_editItem->field)) return -1;
+  return g_set->*(g_editItem->field);
+}
 
 // 「決定」: 変えていれば保存する。そのあと下の「決定」の帯を点滅させ(値は太く)、点滅が終わってから戻る(updSetEdit)。
 // 2.4.5: 変えていないとき・保存に失敗したあとの 2 回目も点滅させる(本人「決定のフラッシュが消えました」。2.4.3 は保存したときだけだった)
@@ -3166,11 +3226,11 @@ static void leaveEdit(uint32_t now) {
 }
 static void cancelEdit() {  // 変えずに元の画面へ
   const Item &it = *g_editItem;
-  if (g_set->*(it.field) != g_editOrig) {
-    g_set->*(it.field) = g_editOrig;
-    if (it.field == &Settings::brightnessPct) platSetBrightness(g_editOrig);
-  }
+  const bool changed = g_set->*(it.field) != g_editOrig;
+  if (changed) g_set->*(it.field) = g_editOrig;
   go(g_editFrom);
+  // 明るさの項目は、変更の画面を出てから知らせる(2.9.0: 基板はライトのスイッチで決まる明るさに戻す。出る前だと戻した値を一瞬出す)
+  if (changed && isBrightField(it.field)) platSetBrightness(g_editOrig);
 }
 
 // タップ(離したとき。位置は触れた所)。真ん中の左半分・右半分は前・次(スワイプと同じ。2.4.1 で戻した)
@@ -3209,7 +3269,7 @@ void tap(int x, int y, uint32_t nowMs) {
           g_set->*(it.field) = v;
           g_saveTried = false;
           g_saveFailed = false;
-          if (it.field == &Settings::brightnessPct) platSetBrightness(v);  // 明るさは変えたその場で反映
+          if (isBrightField(it.field)) platSetBrightness(v);  // 明るさは変えたその場で反映(2.9.0: イルミネーションの明るさも)
           drawEditValue();
           drawEditDesc();
         }

@@ -27,7 +27,10 @@
  *   どの画面も、触れてから 0.1 秒(config.h の TOUCH_CONFIRM_MS)押し続けたらタッチと決め、離したときに操作する。短いタッチは何もしない。
  *   サーキット・タコ・データでは、決まったら案内(上に「‹ スワイプ ›」、下に「長押し ▶ 設定」)が出る。指が 80 px 以上動くと
  *   長押しは取り消し(長押しの札が灰)。しきい値は config.h の TOUCH_CONFIRM_MS・HOLD_*・SWIPE_*。
- *   設定の並び(2.4.0): 明るさ・受信の状態・本体の状態・シフトポイント・水温の警告・時間の記録・自動で戻る・デモ。
+ *   設定の並び(2.4.0。2.9.0 で 2 番目にイルミネーションの明るさ): 明るさ・イルミネーションの明るさ・受信の状態・本体の状態・
+ *   シフトポイント・水温の警告・時間の記録・自動で戻る・デモ。
+ *   ライトのスイッチ(B-CAN 06214000 b0 の 0x08)が入の間は、ふだんの明るさを「イルミネーションの明るさ」にする(2.9.0。点滅の消灯と
+ *   最大輝度はそのまま)。明るさの 2 つの項目は、変更の画面を出している間はその値で表示する。
  *   受信の状態は CAN・GPS・IMU・RaceChrono のまとめ(長押しで中へ)、本体の状態は FPS・CPU・メモリーなど。「決定」を押すと
  *   (変えていれば保存して)、押した「決定」の帯が数回点滅し、その間は値が太くなる(2.4.3。2.4.5: 変えていなくても点滅)。
  *   電源を入れた直後はオープニング(覚えた画面ごとに 3 種類。サーキット = 輪が点いて消える、タコ = 針が振り切りまで上がって戻る、
@@ -66,7 +69,7 @@
  *   同じ内容を 60 秒ごとに出し直すので、シリアルモニターはいつ開いてもよい。
  *   5 秒ごとに描画・受信・RaceChrono の状態を 1 行。タッチを離すたびに動きと画面の移り変わりを 1 行。
  *   CAN の生データから値を作っているとき(c6_can_link 2.0.0)は、5 秒ごとに「車の値(CAN から)」の行(作った値、燃料の b5、
- *   ギアの推定に使った比)。
+ *   ギアの推定に使った比、ライトと明るさ)。ライトが切り替わったとき・最初に受けたときも 1 行(2.9.0)。
  *   回転数の点滅(輪が黄になる所(シフト点 − 400)から、近づくほど速く。消灯は 80 ms で一定、点灯を 150 → 50 ms に縮める。
  *   シフト点 + 200 以上は点滅せず明るさ最大。2026-10-21)があった 5 秒は、点灯・消灯の時間と切り替えの遅れを 1 行
  *   (「点滅: 点灯 50 ms / 消灯 80 ms 切り替え 98 回 遅れ 最大 3 ms OK」。遅れが消灯の時間の 2 割を超えた切り替えがあれば NG)。
@@ -196,6 +199,8 @@ static Signals g_sig;              // いまの loop() の値(点滅の時刻の
 static bool g_ready = false;       // setup() が通った(画面とメモリーが使える)
 static bool g_firstFrame = true;   // 最初の絵をまだ送り終えていない(その間は暗いまま)
 static uint8_t g_level = BL_NORMAL;  // 画面全体の明るさの段階(ui::blinkPoll → platBlink で変わる): 設定の値 / 0(点滅の消灯) / 100 %
+static int g_panelPct = -1;        // 最後にパネルへ送った明るさ [%](-1 = まだ。loop() が今あるべき値と比べて送り直す。2.9.0)
+static bool g_lightOn = false;     // 明るさに使っているライトのスイッチ(loop() が veh::lightInfo から入れる。まだ受けていなければ切。2.9.0)
 static bool g_solidShown = false;  // BLINK_BY_BRIGHTNESS 0 のとき: 消灯の一色を画面に送ってある
 
 // 画面メモリーの (x0, y0) から w×h を画面へ送る。x0・y0・w・h は偶数(このパネルの決まり)。
@@ -258,6 +263,7 @@ static void lcdBrightness(int pct) {
   if (pct < 0) pct = 0;
   if (pct > 100) pct = 100;
   lcdCmd1(0x51, (uint8_t)(pct * 255 / 100));
+  g_panelPct = pct;
 }
 
 static bool lcdBegin() {
@@ -457,7 +463,7 @@ static void touchPoll(uint32_t now) {
 // ================================================================ plat(app.h)
 static SemaphoreHandle_t g_mutex = nullptr;
 static Preferences g_prefs;
-static Settings g_set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT };
+static Settings g_set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT };
 static PerfStats g_perf = {};
 
 void platLock() {
@@ -471,19 +477,28 @@ void *platAlloc(size_t bytes) {
   if (!p) Serial.printf("メモリーを取れない: %u バイト\n", (unsigned)bytes);
   return p;
 }
-// 明るさの段階 → パネルに送る明るさ [%]
+// 明るさの段階 → パネルに送る明るさ [%](bright::panelPct。最大 100 % と点滅の消灯 0 はライトに関係ない)
 static int levelPct(uint8_t level, int normalPct) {
-  return level == BL_OFF ? 0 : level == BL_MAX ? 100 : normalPct;
+  return bright::panelPct(level, normalPct);
 }
-void platSetBrightness(int pct) {
-  lcdBrightness(levelPct(g_level, pct));  // 点滅の消灯の間は 0、最大輝度の間は 100 のまま
+// ふだんの明るさ [%](2.9.0): 設定の「明るさ」「イルミネーションの明るさ」の変更の画面ではその値、ほかはライトのスイッチで決める
+static int normalNow() {
+  const int p = ui::previewPct();
+  return p >= 0 ? p : bright::normalPct(g_set, g_lightOn);
+}
+// 今パネルに出しているべき明るさ [%]。一色を送る方式(BLINK_BY_BRIGHTNESS 0)の消灯の間は、明るさはふだんのまま
+static int panelNow() {
+  return levelPct((!BLINK_BY_BRIGHTNESS && g_level == BL_OFF) ? (uint8_t)BL_NORMAL : g_level, normalNow());
+}
+void platSetBrightness(int) {  // 変更の画面で明るさの項目を変えた・戻した: 今あるべき値にする(点滅の消灯の間は 0、最大輝度の間は 100 のまま)
+  if (!g_firstFrame) lcdBrightness(panelNow());
 }
 // ui::blinkPoll から: 画面全体の明るさの段階が変わった(点滅の消灯・点灯、シフト点 + RING_SOLID_OFFSET 以上の最大輝度)
 void platBlink(uint8_t level) {
   g_level = level;
   if (g_firstFrame) return;  // 最初の絵を送り終えるまでは暗いまま(送り終えたときに合わせる)
   if (!BLINK_BY_BRIGHTNESS && level == BL_OFF) return;  // 一色を送る方式の消灯は loop() で扱う(明るさはそのまま)
-  lcdBrightness(levelPct(level, g_set.brightnessPct));
+  lcdBrightness(levelPct(level, normalNow()));
 }
 // ui の長い描画の合間から: 点滅の切り替えの時刻を見る(SPI は送信中でないので、そのままコマンドを送れる)
 void platBlinkTick() {
@@ -509,6 +524,7 @@ static void loadSettings() {
   g_set.warnTempC = clampInt(g_prefs.getInt("warn", SET_WARN_DEFAULT), SET_WARN_MIN, SET_WARN_MAX);
   g_set.demoOn = clampInt(g_prefs.getInt("demo", SET_DEMO_DEFAULT), 0, 1);
   g_set.rcOn = clampInt(g_prefs.getInt("rc", SET_RC_DEFAULT), 0, 1);
+  g_set.illumPct = clampInt(g_prefs.getInt("illum", SET_ILLUM_DEFAULT), SET_ILLUM_MIN, SET_ILLUM_MAX);  // 2.9.0
 }
 // 保存して読み返し、合っていれば true
 bool platSaveSettings(const Settings &s) {
@@ -521,11 +537,14 @@ bool platSaveSettings(const Settings &s) {
   g_prefs.putInt("warn", s.warnTempC);
   g_prefs.putInt("demo", s.demoOn);
   g_prefs.putInt("rc", s.rcOn);
+  g_prefs.putInt("illum", s.illumPct);
   bool ok = g_prefs.getInt("shift", -1) == s.shiftRpm && g_prefs.getInt("autoret", -1) == s.autoReturnMin && g_prefs.getInt("bright", -1) == s.brightnessPct
-            && g_prefs.getInt("warn", -1) == s.warnTempC && g_prefs.getInt("demo", -1) == s.demoOn && g_prefs.getInt("rc", -1) == s.rcOn;
+            && g_prefs.getInt("warn", -1) == s.warnTempC && g_prefs.getInt("demo", -1) == s.demoOn && g_prefs.getInt("rc", -1) == s.rcOn
+            && g_prefs.getInt("illum", -1) == s.illumPct;
   mlink::graceUntil(millis() + 200);
-  Serial.printf("設定の保存: %s(シフト点 %d、自動で戻る %d 分、明るさ %d %%、警告温度 %d ℃、デモ %s、RaceChrono 送信 %s%s)\n", ok ? "OK" : "失敗", s.shiftRpm, s.autoReturnMin,
-                s.brightnessPct, s.warnTempC, s.demoOn ? "入" : "切", s.rcOn ? "入" : "切", s.rcOn != g_sys.rc.enabled ? "(次の起動から)" : "");
+  Serial.printf("設定の保存: %s(シフト点 %d、自動で戻る %d 分、明るさ %d %%、イルミネーションの明るさ %d %%、警告温度 %d ℃、デモ %s、RaceChrono 送信 %s%s)\n", ok ? "OK" : "失敗",
+                s.shiftRpm, s.autoReturnMin, s.brightnessPct, s.illumPct, s.warnTempC, s.demoOn ? "入" : "切", s.rcOn ? "入" : "切",
+                s.rcOn != g_sys.rc.enabled ? "(次の起動から)" : "");
   return ok;
 }
 
@@ -1473,8 +1492,9 @@ static void printSelfCheck() {
     Serial.println("電源 IC(AXP2101): 応答なし");
   }
   Serial.printf("タッチ(CST9217、0x5A): %s\n", g_sys.touchOk ? "応答あり" : "応答なし(タップが効かない)");
-  Serial.printf("設定(%s): シフト点 %d rpm、自動で戻る %d 分、明るさ %d %%、警告温度 %d ℃、デモ %s、RaceChrono 送信 %s\n", g_sys.nvsOk ? "保存領域 OK" : "保存領域を開けない。初期値を使う",
-                g_set.shiftRpm, g_set.autoReturnMin, g_set.brightnessPct, g_set.warnTempC, g_set.demoOn ? "入" : "切", g_set.rcOn ? "入" : "切");
+  Serial.printf("設定(%s): シフト点 %d rpm、自動で戻る %d 分、明るさ %d %%、イルミネーションの明るさ %d %%、警告温度 %d ℃、デモ %s、RaceChrono 送信 %s\n",
+                g_sys.nvsOk ? "保存領域 OK" : "保存領域を開けない。初期値を使う", g_set.shiftRpm, g_set.autoReturnMin, g_set.brightnessPct, g_set.illumPct, g_set.warnTempC,
+                g_set.demoOn ? "入" : "切", g_set.rcOn ? "入" : "切");
   Serial.printf("UART 受信(「IO16」): %s\n", g_linkOk ? "開始。速度は自動で合わせる" : "開始していない");
   Serial.printf("前回のリセットの理由: %s(%d)。落ちた回数 %lu\n", resetReasonName(g_resetReason), (int)g_resetReason, (unsigned long)g_crashCount);
   if (g_rcAutoOff) Serial.printf("RaceChrono の送信: 切にした(落ちる起動が %d 回続いたため。設定 → 受信の状態 → RaceChrono の「送信」で入に戻せる)\n", RC_CRASH_LIMIT);
@@ -1534,6 +1554,25 @@ void setup() {
   g_ready = true;
 }
 
+// ライトのスイッチ(2.9.0。B-CAN 06214000 b0 の 0x08、veh::lightInfo)を明るさに使う値 g_lightOn に入れる。最初に受けたとき(電源を
+// 入れてからの秒。夜にエンジンをかけたとき、オープニングの間に暗くなるかを見る)と、切り替わったときに 1 行出す。
+// 受けなくなっても(受信なし)最後の状態のまま。まだ受けていなければ切(ふだんの明るさは「明るさ」)
+static void lightPoll(uint32_t now) {
+  static bool s_have = false;
+  veh::LightInfo li;
+  veh::lightInfo(&li, now);
+  const bool on = li.have && li.on;
+  if (li.have && !s_have) {
+    s_have = true;
+    g_lightOn = on;
+    Serial.printf("ライト: 最初に受けた(電源を入れて %lu.%lu 秒)。06214000 b0 %02X = %s。ふだんの明るさ %d %%\n", (unsigned long)(li.firstMs / 1000),
+                  (unsigned long)(li.firstMs % 1000 / 100), (unsigned)li.lastB0, on ? "点" : "消", bright::normalPct(g_set, on));
+  } else if (on != g_lightOn) {
+    g_lightOn = on;
+    Serial.printf("ライト: %s(06214000 b0 %02X)。ふだんの明るさ %d %%\n", on ? "点" : "消", (unsigned)li.lastB0, bright::normalPct(g_set, on));
+  }
+}
+
 void loop() {
   static uint32_t statMs = 0, logMs = 0, frames = 0, logFrames = 0;
   static uint32_t renderMax = 0, flushMax = 0, loopMax = 0;
@@ -1554,6 +1593,7 @@ void loop() {
   LinkStats ls;
   mlink::getSignals(&s, now);
   mlink::getStats(&ls);
+  lightPoll(now);  // 2.9.0: ライトのスイッチ → ふだんの明るさ(送り直しは画面を送ったあと)
   trip::update(s, now);
   saveTimes(now, false);
   uint32_t tu = micros();  // サーキット・タコの「1 回描いて送る時間」はここから(タッチ・受信・保存の時間は入れない)
@@ -1595,10 +1635,13 @@ void loop() {
     frames++;
     if (g_firstFrame) {  // 最初の絵を送り終えてから明るくする
       g_firstFrame = false;
-      lcdBrightness(levelPct(g_level, g_set.brightnessPct));
+      lcdBrightness(panelNow());
     }
   }
   ui::blinkPoll(s, millis());  // 送り終えた直後にも見る(次の loop() の描画を待たない)
+  // 2.9.0: ライトのスイッチが変わった・設定の明るさの変更の画面を出た(時間で戻ったときも)ら、今あるべき明るさを送り直す
+  // (点滅の切り替えは platBlink がその場で送るので、ここでは同じ値になっている)
+  if (!g_firstFrame && g_panelPct != panelNow()) lcdBrightness(panelNow());
 
   // 本体の状態の「FPS」(2.3.0。2.0.1〜2.2.0 は「描画」。2.4.0 で受信の状態から移した): サーキット・タコで 1 回描いて送るのにかかった時間を perf に覚えさせる
   // (平均と遅い方の値は 1 秒ごとに perf::pageStats で出す)。シリアルの「最長」は、サーキット・タコに入り直したら測り直す。
@@ -1660,11 +1703,14 @@ void loop() {
         gearText[0] = s.gear;
         gearText[1] = 0;
       }
+      veh::LightInfo li;
+      veh::lightInfo(&li, now);
       Serial.printf("  車の値(CAN から): rpm %s%d 車速 %s%.1f アクセル %s%.0f%% 水温 %s%.0f ブースト %s%.2f 燃料 %s%.0f%% ギア %s(比 %.1f) | 燃料 0A18A000 b5 %u"
-                    "(0 と 100 超を捨てた %lu 回)\n",
+                    "(0 と 100 超を捨てた %lu 回)| ライト %s 06214000 b0 %02X 切り替え %lu 回 明るさ %d %%\n",
                     s.rpmOk ? "" : "×", s.rpm, s.speedOk ? "" : "×", (double)s.speedKmh, s.throttleOk ? "" : "×", (double)s.throttlePct, s.waterOk ? "" : "×",
                     (double)s.waterC, s.boostOk ? "" : "×", (double)s.boostBar, s.fuelOk ? "" : "×", (double)s.fuelPct, gearText, (double)veh::lastRatio(),
-                    (unsigned)fi.lastB5, (unsigned long)fi.ignored);
+                    (unsigned)fi.lastB5, (unsigned long)fi.ignored, !li.have ? "不明" : !li.seen ? "受信なし" : li.on ? "点" : "消", (unsigned)li.lastB0,
+                    (unsigned long)li.changes, normalNow());
     }
     if (g_sys.rc.enabled) rcPrintStatusLine();
   }

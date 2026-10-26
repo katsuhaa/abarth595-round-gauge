@@ -296,6 +296,14 @@ struct State {
   uint8_t fuelLastB5;     // 最後に受けた b5(0 も含む)
   bool fuelHave;          // fuelPct に値がある
   uint32_t fuelIgnored;   // 捨てた b5(0 と 100 超)のフレームの数
+  // ライト(2.9.0: B-CAN 06214000 b0 の 0x08 = ライトのスイッチ)
+  uint32_t lightSeenMs;   // 最後に受けた時刻(0 = まだ)
+  uint32_t lightFirstMs;  // 最初に受けた時刻(電源を入れてからの ms)
+  uint8_t lightLastB0;    // 最後に受けた b0
+  bool lightOn;           // ライトのスイッチ(使っている値)
+  bool lightPend;         // lightOn と違う値を受けて、VEH_LIGHT_SETTLE_MS 待っている
+  uint32_t lightPendMs;   // その値を最初に受けた時刻
+  uint32_t lightChanges;  // 切り替えた回数(最初の値は数えない)
 };
 static State g;              // 受信タスクが書き、loop() が読む(platLock で守る)
 static char g_gear = 0;      // 推定したギア('1'〜'5'、'N'、0 = 分からない)。getSignals だけが使う
@@ -317,8 +325,40 @@ void begin() {
   g_lastRatio = 0;
 }
 
+// ライト: lightOn と違う値を受けてから VEH_LIGHT_SETTLE_MS のあいだに元の値を受けなければ、切り替える(platLock の中で呼ぶ。
+// 次のフレームを待たずに切り替わるよう、lightInfo からも呼ぶ)。受信タスクの時刻が now より新しいとき(差が負)は待つ
+static void lightSettle(uint32_t now) {
+  if (g.lightPend && (int32_t)(now - g.lightPendMs) >= (int32_t)VEH_LIGHT_SETTLE_MS) {
+    g.lightOn = !g.lightOn;
+    g.lightPend = false;
+    g.lightChanges++;
+  }
+}
+
 void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *d, uint32_t now) {
   if (!ext) return;  // 使う値はどれも 29 ビット ID
+  if (bus == 1) {
+    if (id == VEH_ID_LIGHT && dlc >= 1) {  // ライト(2.9.0)。b0 のほかのビットは見ない
+      const bool on = (d[0] & VEH_LIGHT_MASK) != 0;
+      platLock();
+      if (!g.lightSeenMs) {  // 電源を入れてから最初: すぐ使う
+        g.lightOn = on;
+        g.lightFirstMs = stamp(now);
+      } else {
+        lightSettle(now);
+        if (on == g.lightOn) {
+          g.lightPend = false;  // 元の値: 待っていた切り替えはやめる
+        } else if (!g.lightPend) {
+          g.lightPend = true;
+          g.lightPendMs = stamp(now);
+        }
+      }
+      g.lightLastB0 = d[0];
+      g.lightSeenMs = stamp(now);
+      platUnlock();
+    }
+    return;
+  }
   if (bus == 0) {
     if (id == VEH_ID_RPM_ACCEL && dlc >= 8) {
       platLock();
@@ -441,7 +481,32 @@ float lastRatio() {
   return g_lastRatio;
 }
 
+void lightInfo(LightInfo *out, uint32_t now) {
+  platLock();
+  lightSettle(now);
+  out->have = g.lightSeenMs != 0;
+  out->seen = within(g.lightSeenMs, now, VEH_LIGHT_TIMEOUT_MS);
+  out->on = g.lightOn;
+  out->lastB0 = g.lightLastB0;
+  out->firstMs = g.lightFirstMs;
+  out->changes = g.lightChanges;
+  platUnlock();
+}
+
 }  // namespace veh
+
+// ================================================================ bright(画面の明るさ。2.9.0)
+namespace bright {
+
+int normalPct(const Settings &s, bool lightOn) {
+  return lightOn ? s.illumPct : s.brightnessPct;
+}
+
+int panelPct(uint8_t level, int normal) {
+  return level == BL_OFF ? 0 : level == BL_MAX ? 100 : normal;
+}
+
+}  // namespace bright
 
 // ================================================================ cantab
 namespace cantab {

@@ -54,6 +54,9 @@ Screen screen();
 // BLINK_BY_BRIGHTNESS 1 のとき: 切り替わるたびに platBlink が呼ばれるので、呼び出し側はこれを見なくてよい
 bool blankNow();
 uint8_t blinkLevel();  // いまの明るさの段階(BlinkLevel)
+// 設定の「明るさ」「イルミネーションの明るさ」の変更の画面を出している間は、変えている値 [%](その値で表示する。2.9.0)。ほかは -1。
+// 基板はこれと bright::normalPct で、ふだんの明るさを決める
+int previewPct();
 
 // 点滅(回転数が「シフト点 + RING_BLINK_OFFSET」以上「シフト点 + RING_SOLID_OFFSET」未満、走行画面かブースト計)の時刻の管理。
 // 消灯の時間は一定(config.h の BLINK_OFF_MS)、点灯の時間は回転数で決まる(BLINK_ON_SLOW_MS → BLINK_ON_FAST_MS)。

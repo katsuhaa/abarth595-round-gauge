@@ -15,7 +15,7 @@ extern size_t g_hostCanPreN;
 extern int g_hostCanPreSaves;
 static uint16_t fb[gfx::W * gfx::H];
 static float scratch[gfx::W * (gfx::H + 2)];
-static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT };
+static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT };
 static LinkStats ls;
 static PerfStats ps;
 static SysInfo si;
@@ -328,8 +328,8 @@ int main() {
   upd(live, t);
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_BOOST, "設定: 上の帯「‹ 設定」でタコへ");
-  // 設定(長押しで入る。前回見ていた項目から)。並び(2.4.0): 明るさ・受信の状態・本体の状態・シフトポイント・水温の警告・時間の記録・
-  // 自動で戻る・デモ
+  // 設定(長押しで入る。前回見ていた項目から)。並び(2.4.0。2.9.0: 2 番目にイルミネーションの明るさ): 明るさ・イルミネーションの明るさ・
+  // 受信の状態・本体の状態・シフトポイント・水温の警告・時間の記録・自動で戻る・デモ
   longPress(live, t);
   CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "長押しで設定へ");
   // 項目の送り: スワイプ(2.4.0。本人「設定の項目移動もスワイプにしないとオペレーションがあわない」。左へ = 次、右へ = 前)と、
@@ -356,7 +356,7 @@ int main() {
   longPress(live, t);
   CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "設定は前回見ていた項目から(電源を切るまで覚える)");
   prev(t); prev(t); prev(t);
-  CHECK(ui::testSetItem() == 7, "右へスワイプで前へ(最初から最後のデモに回る)");
+  CHECK(ui::testSetItem() == 8, "右へスワイプで前へ(最初から最後のデモに回る)");
   next(t);
   CHECK(ui::testSetItem() == 0, "左へスワイプ(最後の次は最初の明るさ)");
   // 指で押す(2.4.0: 離したときにタップ)。短いタッチと、HOLD_CANCEL_PX 以上動いたタッチは何もしない
@@ -489,10 +489,10 @@ int main() {
   CHECK(ui::screen() == ui::SC_SET_EDIT, "開いたあとに離しても、変更の画面の「決定」にはならない");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "変更: 上「‹ 戻る」で明るさの項目へ");
-  // 受信の状態(2 項目目。2.4.0): CAN・GPS・IMU・RaceChrono の 4 グループ(まとめ。下「開く」で中へ)。中は 1 ページ 1 項目
-  next(t);
+  // 受信の状態(3 項目目。2.4.0。2.9.0 で 2 → 3 項目目): CAN・GPS・IMU・RaceChrono の 4 グループ(まとめ。下「開く」で中へ)。中は 1 ページ 1 項目
+  next(t); next(t);
   holdOpen(live, t);
-  CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 0, "2 項目目の下「長押しで開く」で受信の状態(1 ページ目 = CAN)");
+  CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 0, "3 項目目の下「長押しで開く」で受信の状態(1 ページ目 = CAN)");
   next(t);
   CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 1, "受信の状態: 左へスワイプで次のグループ(GPS)");
   ui::tap(RX, MY, t += 100); upd(live, t);
@@ -513,9 +513,9 @@ int main() {
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 0 && ui::testPage() == 0, "CAN の下「長押しで開く」で中(1 ページ目 = 通信速度)");
   prev(t);
-  CHECK(ui::testPage() == 7, "CAN の中: 最初の前は最後の「前後で比べる」(2.6.0)");
+  CHECK(ui::testPage() == 8, "CAN の中: 最初の前は最後の「前後で比べる」(2.6.0。2.9.0: 9 ページ)");
   prev(t);
-  CHECK(ui::testPage() == 6, "CAN の中: その前が CAN確認(2.4.3)");
+  CHECK(ui::testPage() == 7, "CAN の中: その前が CAN確認(2.4.3)");
   // CAN確認(2.4.0: CAN の「C-CAN・B-CAN」の下「CAN確認」。CAN のメニューは 1 つ)
   {
     uint8_t d[8] = { 0, 0x19, 0x10, 0x68, 7, 0x18, 0x46, 0x77 };
@@ -553,28 +553,28 @@ int main() {
     ui::tap(BOTX, BOTY, t += 100); upd(live, t);
     CHECK(ui::screen() == ui::SC_CAN && cantab::recordCount() == 0, "確認: 下「やり直す」で記録を消す");
     ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-    CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 0 && ui::testPage() == 6, "CAN の画面: 上「‹ 戻る」で CAN の「CAN確認」のページ(2.4.3)");
+    CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 0 && ui::testPage() == 7, "CAN の画面: 上「‹ 戻る」で CAN の「CAN確認」のページ(2.4.3)");
   }
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 0, "CAN の中: 上「‹ CAN」で受信の状態の CAN のページ");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1, "受信の状態: 上「‹ 受信の状態」で設定の受信の状態");
-  // 本体の状態(3 項目目。2.4.0: 受信と関係ない FPS・起動を受信の状態から出した): 下「開く」で中。上の帯で設定へ
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "受信の状態: 上「‹ 受信の状態」で設定の受信の状態");
+  // 本体の状態(4 項目目。2.4.0: 受信と関係ない FPS・起動を受信の状態から出した): 下「開く」で中。上の帯で設定へ
   next(t);
   holdOpen(live, t);
-  CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 4 && ui::testPage() == 0, "3 項目目 = 本体の状態。下「長押しで開く」で中(1 ページ目 = FPS)");
+  CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 4 && ui::testPage() == 0, "4 項目目 = 本体の状態。下「長押しで開く」で中(1 ページ目 = FPS)");
   next(t);
   CHECK(ui::testPage() == 1, "本体の状態: 2 ページ目 = CPU(2.4.3)");
   prev(t); prev(t);
   CHECK(ui::testPage() == 7, "本体の状態: 最初の前は最後の 起動(8 ページ。2.4.3)");
   next(t);
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "本体の状態: 上「‹ 本体の状態」で設定の本体の状態");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 3, "本体の状態: 上「‹ 本体の状態」で設定の本体の状態");
 
   // ---------------- 7. 設定の変更(下「変更」→ 左右の半分で − +、下「決定」で保存して戻り、値が緑で点滅する(2.3.1)。上「‹ 戻る」で変えずに戻る)
   //                  2.4.0: 変更の画面は値を枠で囲み、下の「決定」を水色の帯にした(項目の画面と見た目が同じで、移ったのが分からなかった)
   next(t);
-  CHECK(ui::testSetItem() == 3, "4 項目目 = シフトポイント");
+  CHECK(ui::testSetItem() == 4, "5 項目目 = シフトポイント");
   auto countIn = [&](uint16_t c, int x0, int y0, int x1, int y1) {
     int n = 0;
     for (int y = y0; y < y1; y++)
@@ -585,6 +585,7 @@ int main() {
   CHECK(countIn(ACCENT, 80, 196, 386, 304) == 0 && countIn(ACCENT, 100, 380, 366, 466) < 6000, "項目の画面: 値は水色でなく、下の帯も水色でない");
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT, "設定: 下「長押しで開く」で変更の画面へ");
+  CHECK(ui::previewPct() == -1, "明るさ以外の項目(シフトポイント)の変更の画面では、明るさを変えない(previewPct = -1。2.9.0)");
   CHECK(countIn(ACCENT, 80, 196, 386, 304) > 1000 && countIn(ACCENT, 100, 380, 366, 466) > 10000, "変更の画面: 値は水色、下の「決定」は水色の帯(2.4.1: 2.4.0 の枠はやめた)");
   ui::tap(RX, MY, t += 100); upd(live, t);
   CHECK(set.shiftRpm == SET_SHIFT_DEFAULT + 100, "右半分で 100 上がる");
@@ -641,7 +642,7 @@ int main() {
     ui::update(live, ls, ps, si, t0 + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
     ui::update(live, ls, ps, si, t0 + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 70);
     ui::update(live, ls, ps, si, t0 + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 130);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 3 && !ui::testFlashing(), "点滅が終わったら項目の画面へ");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 4 && !ui::testFlashing(), "点滅が終わったら項目の画面へ");
     CHECK(areaCount(GREEN) == 0 && areaCount(WHITE) > 100 && countIn(ACCENT, 80, 196, 386, 304) == 0 && countIn(ACCENT, 100, 380, 366, 466) < 6000,
           "戻った画面: 値はふだんの白(緑の点滅はやめた)、水色の帯も無い");
     t = t0 + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 100;
@@ -666,9 +667,9 @@ int main() {
   upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS);
   CHECK(ui::screen() == ui::SC_SET_LIST && !ui::testFlashing() && set.shiftRpm == SET_SHIFT_DEFAULT, "点滅が終わって項目の画面");
   next(t);
-  CHECK(ui::testSetItem() == 4, "左へスワイプで次へ");
+  CHECK(ui::testSetItem() == 5, "左へスワイプで次へ");
   prev(t);
-  CHECK(ui::testSetItem() == 3 && !ui::testFlashing(), "戻る");
+  CHECK(ui::testSetItem() == 4 && !ui::testFlashing(), "戻る");
   // 上下限
   holdOpen(live, t);
   for (int i = 0; i < 60; i++) ui::tap(RX, MY, t += 10);
@@ -688,16 +689,48 @@ int main() {
   g_hostSaveOk = true;
   set.shiftRpm = SET_SHIFT_DEFAULT;
   // 明るさ(1 項目目): 変えたその場で反映、「‹ 戻る」で元に戻る
-  prev(t); prev(t); prev(t);
+  prev(t); prev(t); prev(t); prev(t);
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testSetItem() == 0, "1 項目目(明るさ)の変更");
+  CHECK(ui::previewPct() == SET_BRIGHT_DEFAULT, "明るさの変更の画面の間は、その値で表示する(2.9.0)");
   ui::tap(LX, MY, t += 100); upd(live, t);
-  CHECK(set.brightnessPct == SET_BRIGHT_DEFAULT - SET_BRIGHT_STEP && g_hostBrightness == set.brightnessPct, "明るさは左半分でその場で変わる");
+  CHECK(set.brightnessPct == SET_BRIGHT_DEFAULT - SET_BRIGHT_STEP && g_hostBrightness == set.brightnessPct && ui::previewPct() == set.brightnessPct, "明るさは左半分でその場で変わる");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(set.brightnessPct == SET_BRIGHT_DEFAULT && g_hostBrightness == SET_BRIGHT_DEFAULT, "上「‹ 戻る」で明るさも元に戻る");
-  // 時間の記録(6 項目目)
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::previewPct() == -1, "変更の画面を出たら、明るさはライトのスイッチで決まる値に戻る(previewPct = -1。2.9.0)");
+  // イルミネーションの明るさ(2 項目目。2.9.0: ライトのスイッチが入の間の明るさ。初期値 30 %、10〜100 % / 10)。明るさと同じく
+  // 変えたその場で反映し、変更の画面の間はライトに関係なくその値で表示する
+  next(t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1, "2 項目目 = イルミネーションの明るさ(2.9.0)");
+  holdOpen(live, t);
+  CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testSetItem() == 1 && set.illumPct == SET_ILLUM_DEFAULT && ui::previewPct() == SET_ILLUM_DEFAULT,
+        "イルミネーションの明るさの変更: 変更の画面の間はその値(初期値 30 %)で表示する");
+  ui::tap(LX, MY, t += 100); upd(live, t);
+  CHECK(set.illumPct == SET_ILLUM_DEFAULT - SET_ILLUM_STEP && g_hostBrightness == set.illumPct && ui::previewPct() == set.illumPct && set.brightnessPct == SET_BRIGHT_DEFAULT,
+        "イルミネーションの明るさは左半分でその場で変わる(明るさは変えない)");
+  ui::tap(TOPX, TOPY, t += 100); upd(live, t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && set.illumPct == SET_ILLUM_DEFAULT && g_hostBrightness == SET_ILLUM_DEFAULT && ui::previewPct() == -1,
+        "上「‹ 戻る」で元の値に戻し、変更の画面を出る(previewPct = -1)");
+  {
+    const int saves0 = g_hostSaves;
+    holdOpen(live, t);
+    for (int i = 0; i < 12; i++) ui::tap(RX, MY, t += 100);
+    upd(live, t);
+    CHECK(set.illumPct == SET_ILLUM_MAX && ui::previewPct() == SET_ILLUM_MAX, "イルミネーションの明るさ: 上限 100 % で止まる");
+    for (int i = 0; i < 12; i++) ui::tap(LX, MY, t += 100);
+    upd(live, t);
+    CHECK(set.illumPct == SET_ILLUM_MIN && ui::previewPct() == SET_ILLUM_MIN, "イルミネーションの明るさ: 下限 10 % で止まる");
+    ui::tap(RX, MY, t += 100);
+    ui::tap(BOTX, BOTY, t += 100);
+    upd(live, t);
+    CHECK(ui::screen() == ui::SC_SET_EDIT && g_hostSaves == saves0 + 1 && ui::testFlashing() && ui::previewPct() == 20, "下「決定」で保存(点滅の間はまだ変更の画面で、その値のまま)");
+    upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1 && set.illumPct == 20 && ui::previewPct() == -1, "点滅が終わったら項目の画面へ(20 % を保存。previewPct = -1)");
+    set.illumPct = SET_ILLUM_DEFAULT;
+  }
+  // 時間の記録(7 項目目。2.9.0 で 6 → 7 項目目)
   for (int i = 0; i < 5; i++) next(t);
-  CHECK(ui::testSetItem() == 5, "6 項目目 = 時間の記録");
+  CHECK(ui::testSetItem() == 6, "7 項目目 = 時間の記録");
   trip::setTimes(5000, 7000);
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_RESET, "下「長押しで開く」で確認の画面(2.4.4)");
@@ -727,7 +760,7 @@ int main() {
   t += 3 * 60000 + 1000;
   set.autoReturnMin = 1;
   longPress(live, t);
-  ui::testShow(ui::SC_SET_LIST, 3);
+  ui::testShow(ui::SC_SET_LIST, 4);
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT, "設定の変更画面へ(シフトポイント)");
   ui::tap(RX, MY, t += 100); upd(live, t);
@@ -1218,15 +1251,15 @@ int main() {
     gfx::dirtyClear();
   }
 
-  // ---------------- 13. 設定の「デモ」(2.4.0: 最後の 8 項目目)
+  // ---------------- 13. 設定の「デモ」(2.4.0: 最後の 8 項目目。2.9.0: 9 項目目)
   {
     Signals d;
     memset(&d, 0, sizeof(d));
     uint32_t td = 50000000;
     set.demoOn = 0;
-    ui::testShow(ui::SC_SET_LIST, 7);
+    ui::testShow(ui::SC_SET_LIST, 8);
     holdOpen(d, td);  // 触れた時刻を操作した時刻にする(先に update すると、前の操作から時間がたっていて自動で戻る)
-    CHECK(ui::screen() == ui::SC_SET_EDIT, "設定 8 項目目で「デモ」の変更画面へ");
+    CHECK(ui::screen() == ui::SC_SET_EDIT, "設定 9 項目目で「デモ」の変更画面へ");
     ui::tap(366, 233, td += 100);
     CHECK(set.demoOn == 1, "右半分(入)でデモが入");
     ui::tap(366, 233, td += 100);
@@ -1236,7 +1269,7 @@ int main() {
     ui::update(d, ls, ps, si, td);
     CHECK(ui::screen() == ui::SC_SET_EDIT && g_hostSaves == sv + 1 && ui::testFlashing(), "「決定」で保存し、下の帯が点滅(2.4.3)");
     ui::update(d, ls, ps, si, td + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 7 && !ui::testFlashing(), "点滅が終わったらデモの項目へ");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 8 && !ui::testFlashing(), "点滅が終わったらデモの項目へ");
     set.demoOn = 0;
     gfx::dirtyClear();
   }
@@ -2053,6 +2086,77 @@ int main() {
     mlink::getSignals(&s, t2 + 5002 + 2 * LINK_TIMEOUT_MS);
     CHECK(!s.linkUp && !s.rpmOk, "どのフレームも LINK_TIMEOUT_MS 来なければ受信なし");
 
+    // ライト(2.9.0: B-CAN 06214000 b0 の 0x08 = ライトのスイッチ。本人 10/26 の写真: 切 20 → 入 28 → 切 20)。
+    // 電源を入れてから最初に受けた値はすぐ使い、そのあとは違う値が VEH_LIGHT_SETTLE_MS 続いたら切り替える。b0 のほかのビットは見ない
+    {
+      veh::begin();
+      veh::LightInfo li;
+      uint32_t tl = t2 + 50000;
+      veh::lightInfo(&li, tl);
+      CHECK(!li.have && !li.seen && !li.on && li.changes == 0, "ライト: 電源を入れてからまだ受けていなければ不明(切として扱う)");
+      uint8_t lt[8] = { 0x20, 0x00, 0x40, 0x00, 0x00, 0x55, 0x0B, 0x00 };  // 写真 1 枚目(切)
+      canFrame(0, 0x06214000, lt, 8, tl);  // C-CAN の同じ ID は使わない
+      veh::lightInfo(&li, tl);
+      CHECK(!li.have, "ライト: C-CAN の同じ ID は使わない");
+      canFrame(1, 0x06214000, lt, 8, tl);  // B-CAN(UART の生データの bus = 1)
+      veh::lightInfo(&li, tl);
+      CHECK(li.have && li.seen && !li.on && li.lastB0 == 0x20 && li.firstMs == tl && li.changes == 0, "ライト: 最初の値(b0 20 → 切)はすぐ使い、最初に受けた時刻を覚える");
+      lt[0] = 0x28;  // 写真 2 枚目(入)
+      canFrame(1, 0x06214000, lt, 8, tl += 1000);
+      veh::lightInfo(&li, tl + VEH_LIGHT_SETTLE_MS - 1);
+      CHECK(!li.on && li.lastB0 == 0x28, "ライト: 違う値(28)を受けても VEH_LIGHT_SETTLE_MS の手前まではそのまま");
+      veh::lightInfo(&li, tl + VEH_LIGHT_SETTLE_MS);
+      CHECK(li.on && li.changes == 1, "ライト: VEH_LIGHT_SETTLE_MS 続いたら入(次のフレームを待たない)");
+      lt[0] = 0x08;  // 10/22 のログ: 走っている間は 0x20 が 0 のまま入
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, lt, tl += 1000);
+      veh::lightInfo(&li, tl + 1000);
+      CHECK(li.on && li.changes == 1, "ライト: b0 08(0x20 が 0)も入のまま。0x08 だけを見る");
+      lt[0] = 0xF7;  // 0x08 のほかが全部 1 = 切
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, lt, tl += 1000);
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, lt, tl + 100);
+      lt[0] = 0x08;
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, lt, tl + 200);  // 0.2 秒で元に戻る
+      veh::lightInfo(&li, tl + 1000);
+      CHECK(li.on && li.changes == 1, "ライト: 切(F7)が VEH_LIGHT_SETTLE_MS より前に元(08)に戻ったら切り替えない");
+      lt[0] = 0x20;
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, lt, tl += 2000);
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, lt, tl + 150);
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, lt, tl + VEH_LIGHT_SETTLE_MS + 50);
+      veh::lightInfo(&li, tl + VEH_LIGHT_SETTLE_MS + 50);
+      CHECK(!li.on && li.changes == 2, "ライト: 切(20)が VEH_LIGHT_SETTLE_MS 続いたら切");
+      tl += VEH_LIGHT_SETTLE_MS + 50;
+      veh::lightInfo(&li, tl + VEH_LIGHT_TIMEOUT_MS);
+      CHECK(li.have && li.seen && !li.on, "ライト: VEH_LIGHT_TIMEOUT_MS ちょうどまでは受けている");
+      lt[0] = 0x28;
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, lt, tl += 1000);
+      veh::lightInfo(&li, tl + VEH_LIGHT_TIMEOUT_MS + 1);
+      CHECK(li.have && !li.seen && li.on && li.lastB0 == 0x28 && li.changes == 3, "ライト: 受けなくなったら受信なし。状態は最後のまま(入。待っていた切り替えも済ませる)");
+      veh::lightInfo(&li, tl - 100);  // 受信タスクの時刻が now より新しいとき(差が負)は、待っている切り替えを進めない・受けていることにする
+      CHECK(li.seen, "ライト: 受けた時刻が now より新しくても受けていることにする");
+      veh::onFrame(1, 0, VEH_ID_LIGHT, 8, lt, tl + 20000);
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 0, lt, tl + 20000);
+      veh::onFrame(1, 1, VEH_ID_LIGHT + 1, 8, lt, tl + 20000);
+      veh::lightInfo(&li, tl + 20000);
+      CHECK(!li.seen && li.changes == 3, "ライト: 11 ビット ID・長さ 0・ほかの ID は使わない");
+      const uint8_t one[1] = { 0x00 };
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 1, one, tl + 21000);
+      veh::lightInfo(&li, tl + 21000 + VEH_LIGHT_SETTLE_MS);
+      CHECK(li.seen && !li.on && li.changes == 4, "ライト: 長さ 1 のフレームでも b0 を読む");
+      veh::begin();
+      veh::lightInfo(&li, tl + 22000);
+      CHECK(!li.have && !li.on && li.changes == 0, "ライト: 電源を入れ直したら不明に戻る(保存しない)");
+    }
+    // 画面の明るさ(2.9.0): ふだんの明るさはライトのスイッチで選ぶ。点滅の消灯 0 と最大 100 はライトに関係ない(本人 10/26「A」)
+    {
+      Settings b = set;
+      b.brightnessPct = 80;
+      b.illumPct = 30;
+      CHECK(bright::normalPct(b, false) == 80 && bright::normalPct(b, true) == 30, "明るさ: ライト 切(不明も)= 明るさ 80、入 = イルミネーションの明るさ 30");
+      CHECK(bright::panelPct(BL_NORMAL, 80) == 80 && bright::panelPct(BL_NORMAL, 30) == 30 && bright::panelPct(BL_OFF, 80) == 0 && bright::panelPct(BL_OFF, 30) == 0 &&
+                bright::panelPct(BL_MAX, 80) == 100 && bright::panelPct(BL_MAX, 30) == 100,
+            "明るさ: ふだん 80 / 30、点滅の消灯 0 / 0、最大 100 / 100(ライトに関係なく)");
+    }
+
     // 壊れた・短いフレームで落ちない(値は範囲の端)
     veh::begin();
     uint8_t rnd[8];
@@ -2138,6 +2242,66 @@ int main() {
       CHECK(lr.ignored >= 1 && lr.fuelMin[0] == 31.0f && lr.fuelMax[0] == 33.0f, "実車ログ(給油): 給油の前は 33 → 31 %(残り 30 % ほど)。エンジンを止めた間の b5 = 0 は捨てる");
       CHECK(lr.fuelMin[1] == 100.0f && lr.fuelMax[1] == 100.0f, "実車ログ(給油): 給油してエンジンをかけたら 100 % を出し続ける(満タン)");
       CHECK(fabsf(lr.boostMax - 0.52f) < 0.001f, "実車ログ(給油): ブーストの最大 26 → 0.52 bar(アクセル 49 % が最大の走り。2.8.0)");
+    }
+  }
+
+  // ---------------- 22b. ライト(2.9.0)を 10/22 の実車ログ(夕方)で: B-CAN 06214000 b0 の 0x08。走っている間は b0 = 08、停車中は 28
+  //                     (0x20 は停車中に 1)で、どちらも入。スイッチを切ったとき・エンジンを止める前後は 00 か 20 で切
+  {
+    struct LightRun {
+      int frames;        // 06214000 の行の数
+      uint32_t changes;  // 切り替えた回数
+      uint32_t firstMs;  // 最初に受けた時刻
+      bool endOn;        // 終わりの状態
+      int probe[4];      // probes の時刻での状態(1 = 入、0 = 切、2 = 不明、-1 = その時刻の行が無い)
+    };
+    auto runLight = [&](const char *path, const uint32_t *probes, int np, LightRun *out) -> bool {
+      FILE *fp = fopen(path, "r");
+      if (!fp) return false;
+      veh::begin();
+      memset(out, 0, sizeof(*out));
+      for (int i = 0; i < 4; i++) out->probe[i] = -1;
+      veh::LightInfo li;
+      memset(&li, 0, sizeof(li));
+      char line[256];
+      while (fgets(line, sizeof(line), fp)) {
+        char bus;
+        unsigned long tm;
+        unsigned id, len, b[8];
+        if (sscanf(line, "L %c %lu %x %u %x %x %x %x %x %x %x %x", &bus, &tm, &id, &len, &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &b[6], &b[7]) < 4 || len > 8) continue;
+        uint8_t d[8] = { 0 };
+        for (unsigned k = 0; k < len; k++) d[k] = (uint8_t)b[k];
+        veh::onFrame(bus == 'B' ? 1 : 0, 1, id, (uint8_t)len, d, (uint32_t)tm);
+        if (bus == 'B' && id == VEH_ID_LIGHT) out->frames++;
+        veh::lightInfo(&li, (uint32_t)tm);
+        for (int i = 0; i < np && i < 4; i++)
+          if (out->probe[i] < 0 && tm >= probes[i]) out->probe[i] = li.have ? (li.on ? 1 : 0) : 2;
+      }
+      fclose(fp);
+      out->changes = li.changes;
+      out->firstMs = li.firstMs;
+      out->endOn = li.on;
+      veh::begin();
+      return true;
+    };
+    LightRun lt;
+    const uint32_t pRev[2] = { 117500, 150000 };
+    if (runLight("../logs/can_reverse.txt", pRev, 2, &lt)) {
+      printf("  ライト %s: 06214000 %d 行、最初 %.1f 秒、切り替え %u 回、終わり %s\n", "../logs/can_reverse.txt", lt.frames, lt.firstMs / 1000.0, (unsigned)lt.changes, lt.endOn ? "入" : "切");
+      CHECK(lt.firstMs == 116981 && lt.probe[0] == 0 && lt.probe[1] == 1 && lt.changes == 1 && lt.endOn,
+            "実車ログ(リバース): IG ON の 20 で切、118.1 秒の 28(停車中・入)から入のまま");
+    }
+    const uint32_t pBoost[3] = { 900000, 1100000, 1320000 };
+    if (runLight("../logs/can_boost.txt", pBoost, 3, &lt)) {
+      printf("  ライト %s: 06214000 %d 行、最初 %.1f 秒、切り替え %u 回、終わり %s\n", "../logs/can_boost.txt", lt.frames, lt.firstMs / 1000.0, (unsigned)lt.changes, lt.endOn ? "入" : "切");
+      CHECK(lt.probe[0] == 0 && lt.probe[1] == 1 && lt.probe[2] == 0 && lt.changes == 2 && !lt.endOn,
+            "実車ログ(ブースト): 974.5 秒の 28 で入、走っている間(08)も入、1311.2 秒の 00 で切");
+    }
+    const uint32_t pFuel[4] = { 400000, 800000, 1000000, 1125000 };
+    if (runLight("../logs/can_fuel.txt", pFuel, 4, &lt)) {
+      printf("  ライト %s: 06214000 %d 行、最初 %.1f 秒、切り替え %u 回、終わり %s\n", "../logs/can_fuel.txt", lt.frames, lt.firstMs / 1000.0, (unsigned)lt.changes, lt.endOn ? "入" : "切");
+      CHECK(lt.firstMs == 32576 && lt.probe[0] == 1 && lt.probe[1] == 0 && lt.probe[2] == 1 && lt.probe[3] == 0 && lt.changes == 5 && !lt.endOn,
+            "実車ログ(給油): 走っている間は入、給油所でエンジンを止めて切、給油後に走り出して入、終わりに切(切り替え 5 回)");
     }
   }
 
@@ -2317,9 +2481,9 @@ int main() {
     CHECK(ui::testInfoItem(0, 4, l1, p0, s0, far, v, sizeof(v)) == 2 && strcmp(v, "C 0 B 140") == 0, "CAN の 5 ページ目 = C-CAN・B-CAN(C-CAN が 0 なら赤)");
     l1.info.can_fps[0] = 900;
     CHECK(ui::testInfoItem(0, 3, l1, p0, s0, far, v, sizeof(v)) == 1, "CAN の 4 ページ目 = CANリーダー");
-    CHECK(ui::testInfoItem(0, 6, l1, p0, s0, far, v, sizeof(v)) == 0 && strcmp(v, "記録 0 回") == 0, "CAN の 7 ページ目 = CAN確認(判定なし。2.4.3)");
-    CHECK(ui::testInfoItem(0, 7, l1, p0, s0, far, v, sizeof(v)) == 0, "CAN の 8 ページ目 = 前後で比べる(判定なし。2.6.0)");
-    CHECK(ui::testInfoItem(0, 8, l1, p0, s0, far, v, sizeof(v)) == -1 && ui::testInfoItem(5, 0, l1, p0, s0, far, v, sizeof(v)) == -1, "無いページ・グループは -1");
+    CHECK(ui::testInfoItem(0, 7, l1, p0, s0, far, v, sizeof(v)) == 0 && strcmp(v, "記録 0 回") == 0, "CAN の 8 ページ目 = CAN確認(判定なし。2.4.3。2.9.0 で 7 → 8)");
+    CHECK(ui::testInfoItem(0, 8, l1, p0, s0, far, v, sizeof(v)) == 0, "CAN の 9 ページ目 = 前後で比べる(判定なし。2.6.0)");
+    CHECK(ui::testInfoItem(0, 9, l1, p0, s0, far, v, sizeof(v)) == -1 && ui::testInfoItem(5, 0, l1, p0, s0, far, v, sizeof(v)) == -1, "無いページ・グループは -1");
     // 本体の状態の CPU など(2.4.3): 基板が入れる前は「– –」、入れたら型式・クロック・温度・空き
     CHECK(ui::testInfoItem(4, 1, l1, p0, s0, far, v, sizeof(v)) == 0 && strcmp(v, "– –") == 0, "CPU: まだ入っていなければ「– –」");
     {
@@ -2387,6 +2551,23 @@ int main() {
     veh::onFrame(0, 1, VEH_ID_FUEL, 8, fd, tf += 1000);
     CHECK(ui::testInfoItem(0, 5, l1, p0, s0, tf, v, sizeof(v)) == 1 && strcmp(v, "31 %") == 0, "燃料: 使える値で「31 %」(緑)");
     CHECK(ui::testInfoItem(0, 5, l1, p0, s0, tf + VEH_FUEL_TIMEOUT_MS + 1, v, sizeof(v)) == 0 && strcmp(v, "– –") == 0, "燃料: 来なくなったら「– –」");
+    // CAN の「ライト」(2.9.0。7 ページ目): ライトのスイッチ(B-CAN 06214000 b0 の 0x08)の点・消と、いま使っているふだんの明るさ
+    // (明るさ 80 %、イルミネーションの明るさ 30 %)。判定に使わない(緑 = 受けている、灰 = 不明・受信なし)
+    {
+      uint32_t tl = tf + 10000;
+      CHECK(ui::testInfoItem(0, 6, l1, p0, s0, tl, v, sizeof(v)) == 0 && strcmp(v, "不明") == 0, "ライト: 電源を入れてから受けていなければ「不明」(灰)");
+      uint8_t ld[8] = { 0x20, 0x00, 0x40, 0x00, 0x00, 0x55, 0x0B, 0x00 };  // 10/26 の写真(スイッチ 切)
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, ld, tl += 1000);
+      CHECK(ui::testInfoItem(0, 6, l1, p0, s0, tl, v, sizeof(v)) == 1 && strcmp(v, "消 80 %") == 0, "ライト: 切なら「消 80 %」(緑。ふだんの明るさ = 明るさ)");
+      ld[0] = 0x28;  // 写真(スイッチ 入)
+      veh::onFrame(1, 1, VEH_ID_LIGHT, 8, ld, tl += 1000);
+      CHECK(ui::testInfoItem(0, 6, l1, p0, s0, tl + VEH_LIGHT_SETTLE_MS, v, sizeof(v)) == 1 && strcmp(v, "点 30 %") == 0, "ライト: 入なら「点 30 %」(イルミネーションの明るさ)");
+      CHECK(ui::testInfoItem(0, 6, l1, p0, s0, tl + VEH_LIGHT_TIMEOUT_MS + 1, v, sizeof(v)) == 0 && strcmp(v, "受信なし") == 0, "ライト: 来なくなったら「受信なし」(灰)");
+      CHECK(ui::testInfoSummary(0, l1, p0, s0, tl + VEH_LIGHT_TIMEOUT_MS + 1, v, sizeof(v)) == 1 && strcmp(v, "正常") == 0, "CAN のまとめ: ライトの受信なしは数えない(「正常」のまま)");
+      set.illumPct = 50;
+      CHECK(ui::testInfoItem(0, 6, l1, p0, s0, tl, v, sizeof(v)) == 1 && strcmp(v, "点 50 %") == 0, "ライト: 明るさの % は設定の値");
+      set.illumPct = SET_ILLUM_DEFAULT;
+    }
     {
       // 画面に描いて、字が全部あること(受信の状態・全グループの全ページと、本体の状態)
       Signals dz;
@@ -2406,7 +2587,7 @@ int main() {
           ui::update(dz, l1, p0, sx, tf);
           shown = shown && ui::screen() == ui::SC_SET_INFO;
         }
-        const int pages[5] = { 7, 3, 2, 3, 8 };
+        const int pages[5] = { 8, 3, 2, 3, 8 };  // CAN は前後で比べるの手前まで(2.9.0: ライトで 8 ページ)
         for (int g = 0; g < 5; g++)
           for (int i = 0; i < pages[g]; i++) {
             ui::testShow(ui::SC_SET_GRP, i, g);
@@ -2704,12 +2885,12 @@ int main() {
     g_hostCanPreN = 0;
     cantab::begin();  // 電源を入れたところ(表も前の記録も空)
     CHECK(cantab::ppWaitMs(tp) == -1 && !cantab::ppHasPre() && !cantab::ppHasResult(), "前後で比べる: 何も受けていない間は -1(帯に「受信なし」)");
-    ui::testShow(ui::SC_SET_GRP, 7, 0);
+    ui::testShow(ui::SC_SET_GRP, 8, 0);  // 2.9.0: ライトを足して 9 ページ目
     ui::testTouch(tp);
     ui::update(d, ls, ps, si, tp);
     holdOpen(d, tp);
     CHECK(ui::screen() == ui::SC_CAN_PP, "CAN の最後のページ「前後で比べる」の下「長押しで開く」で前後で比べるの画面");
-    CHECK(ui::testInfoItem(0, 7, ls, ps, si, tp, val, sizeof(val)) == 0 && strcmp(val, "記録なし") == 0, "ページの値: 前の記録が無ければ「記録なし」");
+    CHECK(ui::testInfoItem(0, 8, ls, ps, si, tp, val, sizeof(val)) == 0 && strcmp(val, "記録なし") == 0, "ページの値: 前の記録が無ければ「記録なし」");
     const uint32_t t0 = tp;
     feed(t0, t0 + 5000, 31, 50, 43);
     tp = t0 + 5000;
@@ -2724,7 +2905,7 @@ int main() {
     const int saves0 = g_hostCanPreSaves;
     ui::tap(BOTX, BOTY, tp); upd(d, tp);
     CHECK(cantab::ppHasPre() && !cantab::ppHasResult() && g_hostCanPreSaves == saves0 + 1 && g_hostCanPreN > 0, "下「前を記録」で前を記録して保存する");
-    CHECK(ui::testInfoItem(0, 7, ls, ps, si, tp, val, sizeof(val)) == 0 && strcmp(val, "前を記録した") == 0, "ページの値: 「前を記録した」");
+    CHECK(ui::testInfoItem(0, 8, ls, ps, si, tp, val, sizeof(val)) == 0 && strcmp(val, "前を記録した") == 0, "ページの値: 「前を記録した」");
     // 電源を切って給油(燃料 31 → 100 %)。入れ直すと表は空になり、前の記録は保存から戻る
     g_hostCanPreSaves = 0;
     cantab::begin();
@@ -2749,7 +2930,7 @@ int main() {
     CHECK(m == 2 && cantab::getView(r[0].entry, &v0) && v0.id == 0x0A18A000 && r[0].byte == 5 && r[0].pre == 31 && r[0].post == 100,
           "増えたものが先: 0A18A000 b5 31 → 100(+69)");
     CHECK(m == 2 && cantab::getView(r[1].entry, &v1) && v1.id == 0x123 && r[1].byte == 3 && r[1].pre == 43 && r[1].post == 0, "減ったものがあと: 123 b3 43 → 0");
-    CHECK(ui::testInfoItem(0, 7, ls, ps, si, tp, val, sizeof(val)) == 0 && strcmp(val, "候補 2 件") == 0, "ページの値: 「候補 2 件」");
+    CHECK(ui::testInfoItem(0, 8, ls, ps, si, tp, val, sizeof(val)) == 0 && strcmp(val, "候補 2 件") == 0, "ページの値: 「候補 2 件」");
     ui::tap(RX, MY, tp += 100); upd(d, tp);
     CHECK(ui::screen() == ui::SC_CAN_ID && countIn(ACC, 60, 210, 406, 310) > 100, "右半分「一覧」で 1 バイトずつ(候補のバイトは水色)");
     next(tp);
@@ -2768,7 +2949,7 @@ int main() {
     CHECK(ui::screen() == ui::SC_CAN_PP && !cantab::ppHasPre() && !cantab::ppHasResult() && g_hostCanPreN == 0, "確認: 下「やり直す」で前の記録(保存も)と候補を消す");
     CHECK(cantab::recordCount() == 0, "前後で比べるのやり直しは、変化を記録の記録には触らない");
     ui::tap(TOPX, TOPY, tp += 100); upd(d, tp);
-    CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 0 && ui::testPage() == 7, "上「‹ 戻る」で CAN の「前後で比べる」のページ");
+    CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 0 && ui::testPage() == 8, "上「‹ 戻る」で CAN の「前後で比べる」のページ");
     // 10/22 の給油の実車ログ(../logs/can_fuel.txt があれば): 給油所で止まって、エンジンを切る前(712.0 秒に切った)の 711 秒に前を記録 →
     // 電源を切って給油 → 846.9 秒に入れ直し(すぐエンジンをかけた)、862 秒(15 秒後)に後を記録。燃料(0A18A000 b5)が増えた側の
     // 1 番目に入ること(B-CAN 06214000 b5 にも同じ値が流れていて、差が同じなので 2 番目までのどちらか)。2.6.0 の試験は 715 秒に前を

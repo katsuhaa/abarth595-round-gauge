@@ -1,7 +1,9 @@
 // app.h - 表示器の中で受け渡すデータと、各部の入口
 //
 // mlink  : UART で届いたバイト列をフレームに分け、最新の値と受信の状態を持つ
-// veh    : 車の CAN の生データから表示に使う値(回転数・車速・水温・ブースト・燃料・ギアなど)を作る(2026-10-23 に c6_can_link から移した)
+// veh    : 車の CAN の生データから表示に使う値(回転数・車速・水温・ブースト・燃料・ギアなど)を作る(2026-10-23 に c6_can_link から移した)。
+//          2.9.0: ライトのスイッチ(lightInfo)
+// bright : 画面の明るさ(ライトのスイッチで「明るさ」と「イルミネーションの明るさ」を選ぶ。2.9.0)
 // cantab : CAN の生データの表(CAN確認画面用)。変化を記録するたびに候補を絞り込む、値の履歴
 // trip   : 全開の時間と走行時間(電源 ON からの累計)、3000rpm 超・以下の累計時間(NVS に保存)
 // ui     : 画面(ui.h)
@@ -34,6 +36,7 @@ struct Settings {
   int warnTempC;      // 水温の警告温度 [℃]
   int demoOn;         // デモ表示(1 = 入)
   int rcOn;           // RaceChrono への送信(1 = 入)。次の起動から効く
+  int illumPct;       // イルミネーションの明るさ [%](ライトのスイッチが入の間のふだんの明るさ。2.9.0。初期化の並びを変えないよう最後に置く)
 };
 
 struct LinkStats {
@@ -116,7 +119,9 @@ struct SysInfo {
 void platLock();      // mlink と cantab のデータを守る
 void platUnlock();
 void *platAlloc(size_t bytes);         // 大きなメモリ(PSRAM)
-void platSetBrightness(int pct);       // 画面の明るさ
+// 設定の明るさの項目(「明るさ」「イルミネーションの明るさ」)を変更の画面で変えた・戻した。pct はその値。基板は画面の明るさを
+// 決め直す(変更の画面を出している間は ui::previewPct() の値、それ以外はライトのスイッチで bright::normalPct。2.9.0)
+void platSetBrightness(int pct);
 // 画面全体の明るさの段階(走行画面・ブースト計の点滅と、シフト点 + RING_SOLID_OFFSET 以上の最大輝度)。ui::blinkPoll が
 // 変わるたびに platBlink を呼ぶ。基板ではパネルの明るさを 0 / 設定の値 / 100 % にする(PC 上の試験では記録するだけ)
 enum BlinkLevel : uint8_t {
@@ -179,6 +184,25 @@ struct FuelInfo {
 };
 void fuelInfo(FuelInfo *out, uint32_t nowMs);
 float lastRatio();  // ギアの推定に使った最後の比 [rpm per km/h](シリアル用)
+// ライト(2.9.0: B-CAN 06214000 b0 の 0x08 = ライトのスイッチ。config.h の ライト)。明るさの切り替え・受信の状態 → CAN の「ライト」・
+// シリアルに使う
+struct LightInfo {
+  bool have;         // 電源を入れてから受けたことがある(false = 不明)
+  bool seen;         // VEH_LIGHT_TIMEOUT_MS 以内に受けている(have で seen でなければ「受信なし」。on は最後の状態)
+  bool on;           // ライトのスイッチが入(最初に受けた値はすぐ、そのあとは VEH_LIGHT_SETTLE_MS 続いた値)
+  uint8_t lastB0;    // 最後に受けた b0
+  uint32_t firstMs;  // 最初に受けた時刻 = 電源を入れてからの ms(have のときだけ)
+  uint32_t changes;  // 切り替えた回数(最初の値は数えない)
+};
+void lightInfo(LightInfo *out, uint32_t nowMs);
+}
+
+// ---------------------------------------------------------------- bright(画面の明るさ。2.9.0)
+namespace bright {
+// ふだんの明るさ [%]: ライトのスイッチが入なら「イルミネーションの明るさ」、切・まだ受けていないなら「明るさ」
+int normalPct(const Settings &s, bool lightOn);
+// 明るさの段階(BlinkLevel)→ パネルに送る明るさ [%]: 点滅の消灯 0、最大 100(ライトに関係なく。本人 10/26「A」)、ふだん normal
+int panelPct(uint8_t level, int normal);
 }
 
 // ---------------------------------------------------------------- cantab
