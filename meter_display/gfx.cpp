@@ -5,18 +5,23 @@
 
 namespace gfx {
 
-static uint16_t *g_fb = nullptr;
+static uint16_t *g_fb = nullptr;      // 今の描く先
+static uint16_t *g_screen = nullptr;  // begin で渡された画面メモリー(2.10.0)
 static float *g_acc = nullptr;
 static bool g_tabular = true;
 static uint32_t g_missing = 0;
 
 void begin(uint16_t *framebuffer, float *scratch) {
   g_fb = framebuffer;
+  g_screen = framebuffer;
   g_acc = scratch;
   dirtyClear();
 }
 uint16_t *frame() {
   return g_fb;
+}
+void setTarget(uint16_t *fb) {
+  g_fb = fb ? fb : g_screen;
 }
 
 // ------------------------------------------------------------ 書き換えた範囲
@@ -38,6 +43,7 @@ static inline Rect rectUnion(const Rect &a, const Rect &b) {
 }
 
 void addDirty(int x0, int y0, int x1, int y1) {
+  if (g_fb != g_screen) return;  // 画面メモリー以外に描いている(2.10.0)
   if (x0 < 0) x0 = 0;
   if (y0 < 0) y0 = 0;
   if (x1 > W) x1 = W;
@@ -130,6 +136,26 @@ void copyRectFrom(const uint16_t *src, int x0, int y0, int x1, int y1) {
   if (y1 > H) y1 = H;
   if (x1 <= x0 || y1 <= y0) return;
   for (int y = y0; y < y1; y++) memcpy(g_fb + y * W + x0, src + y * W + x0, (size_t)(x1 - x0) * sizeof(uint16_t));
+  addDirty(x0, y0, x1, y1);
+}
+
+void copyDiscFrom(const uint16_t *src, int x0, int y0, int x1, int y1, float cx, float cy, float r) {
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 > W) x1 = W;
+  if (y1 > H) y1 = H;
+  if (x1 <= x0 || y1 <= y0) return;
+  const float r2 = r * r;
+  for (int y = y0; y < y1; y++) {
+    const float dy = (float)y + 0.5f - cy;
+    const float q = r2 - dy * dy;
+    if (q < 0) continue;
+    const float hw = sqrtf(q);
+    int xa = (int)ceilf(cx - hw - 0.5f), xb = (int)floorf(cx + hw - 0.5f) + 1;  // 画素の中心が円の中
+    if (xa < x0) xa = x0;
+    if (xb > x1) xb = x1;
+    if (xb > xa) memcpy(g_fb + y * W + xa, src + y * W + xa, (size_t)(xb - xa) * sizeof(uint16_t));
+  }
   addDirty(x0, y0, x1, y1);
 }
 

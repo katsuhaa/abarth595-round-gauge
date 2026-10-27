@@ -21,6 +21,9 @@ struct Pt {
 // framebuffer: W*H 個の uint16_t。scratch: W*(H+2) 個の float(多角形の計算用)
 void begin(uint16_t *framebuffer, float *scratch);
 uint16_t *frame();
+// 描く先の画面メモリー(W×H、同じ並び)を替える(2.10.0。サーキットの、時計の針を除いた絵に描くのに使う)。nullptr で begin の
+// 画面メモリーへ戻す。画面メモリー以外に描いている間は「書き換えた範囲」を覚えない。frame() は今の描く先を返す
+void setTarget(uint16_t *fb);
 
 // 0xRRGGBB → RGB565(四捨五入)
 static constexpr uint16_t rgb(uint32_t c) {
@@ -39,6 +42,9 @@ static inline uint16_t blend(uint16_t bg, uint16_t fg, uint32_t a) {
 void fillAll(uint16_t c);
 // 別の画面メモリー(W×H、同じ並び)の [x0, x1) × [y0, y1) を写す(ブースト計の針を消すのに使う)
 void copyRectFrom(const uint16_t *src, int x0, int y0, int x1, int y1);
+// [x0, x1) × [y0, y1) のうち、画素の中心が中心 (cx, cy) から半径 r 以内の画素だけを写す(2.10.0。サーキットの時計の針を消すのに使う。
+// 輪のマスには掛からない)
+void copyDiscFrom(const uint16_t *src, int x0, int y0, int x1, int y1, float cx, float cy, float r);
 void fillRect(int x, int y, int w, int h, uint16_t c);
 void fillRectF(float x0, float y0, float x1, float y1, uint16_t c);  // 端が画素の途中でもなめらかに塗る
 

@@ -27,8 +27,9 @@
  *   どの画面も、触れてから 0.1 秒(config.h の TOUCH_CONFIRM_MS)押し続けたらタッチと決め、離したときに操作する。短いタッチは何もしない。
  *   サーキット・タコ・データでは、決まったら案内(上に「‹ スワイプ ›」、下に「長押し ▶ 設定」)が出る。指が 80 px 以上動くと
  *   長押しは取り消し(長押しの札が灰)。しきい値は config.h の TOUCH_CONFIRM_MS・HOLD_*・SWIPE_*。
- *   設定の並び(2.4.0。2.9.0 で 2 番目にイルミネーションの明るさ): 明るさ・イルミネーションの明るさ・受信の状態・本体の状態・
- *   シフトポイント・水温の警告・時間の記録・自動で戻る・デモ。
+ *   設定の並び(2.4.0。2.9.0 で 2 番目にイルミネーションの明るさ。2.10.0 で高負荷時間の 4 つと最後に「デフォルトに戻す」): 明るさ・
+ *   イルミネーションの明るさ・受信の状態・本体の状態・シフトポイント・水温の警告・高負荷時間 黄・高負荷時間 赤・クールダウン時間・
+ *   高負荷時間 リセット・時間の記録・自動で戻る・デモ・デフォルトに戻す。
  *   ライトのスイッチ(B-CAN 06214000 b0 の 0x08)が入の間は、ふだんの明るさを「イルミネーションの明るさ」にする(2.9.0。点滅の消灯と
  *   最大輝度はそのまま)。明るさの 2 つの項目は、変更の画面を出している間はその値で表示する。
  *   受信の状態は CAN・GPS・IMU・RaceChrono のまとめ(長押しで中へ)、本体の状態は FPS・CPU・メモリーなど。「決定」を押すと
@@ -55,12 +56,15 @@
  *   覚える前は「画面を立てて運転者に向け、背面が車の前」(config.h の IMU_DEF_UP / IMU_DEF_FWD)として扱う。
  *   車速が無い机の上でも、立てた向き(45° 以内)で動かさずに 3 秒置けば、その向きを「上」にする(置き直すたびに更新)。
  *   「前」は車で発進したときに覚える。停車中の重力の大きさ(倍率のずれ)も覚え、1 g になるように割る。
- *   設定 → 受信の状態 → RaceChrono の 1 ページ目「送信」を切にすると、次の起動から BLE・GPS・IMU を使わない(切り分け用)。
- *   落ちる起動(パニック・ウォッチドッグによるリセット)が 2 回続いたら、表示器が自分でこれを切にして動き続ける(シリアルに理由)。
- *   config.h の RC_ENABLE 0 にすると、この機能をコンパイルから外せる(NimBLE-Arduino が無くてもビルドできる)。
+ *   設定 → 受信の状態 → RaceChrono の 1 ページ目「送信」を切にすると、次の起動から BLE・IMU を使わない(切り分け用)。
+ *   GPS は送信の入・切に関係なく動かす(2.10.0。サーキットの時計と高負荷時間に GPS の時刻を使う)。
+ *   落ちる起動(パニック・ウォッチドッグによるリセット)が 2 回続いたら、表示器が自分で送信と GPS を切にして動き続ける(シリアルに理由。
+ *   送信を入に戻すと、次の起動から GPS も動く)。
+ *   config.h の RC_ENABLE 0 にすると、この機能をコンパイルから外せる(NimBLE-Arduino が無くてもビルドできる。GPS も外れ、時計の針は出ない)。
  *
  * 書き込んだ直後の見え方(XIAO をつながなくても確かめられる):
- *   走行画面が出て、輪は全部消え、ギアは「–」、水温と燃料は「– –」(信号がないときの表示)。
+ *   走行画面が出て、輪は全部消え、水温と燃料は「– –」(信号がないときの表示)、真ん中は接続の状態(2.10.0。時計の針は GPS の
+ *   時刻が分かってから出る)。
  *   左右のスワイプで画面が切り替わる。長押しで設定 →「受信の状態」で受信、「本体の状態」で FPS・起動のきっかけが見られる。
  *   画面が真っ赤 = 画面用のメモリー(PSRAM)を取れなかった。真っ暗のまま = 画面の初期化まで進んでいない(シリアルを見る)。
  *
@@ -75,6 +79,8 @@
  *   (「点滅: 点灯 50 ms / 消灯 80 ms 切り替え 98 回 遅れ 最大 3 ms OK」。遅れが消灯の時間の 2 割を超えた切り替えがあれば NG)。
  *   BLE の接続(間隔などの条件)・切断(理由)・読み出し・購読、RaceChrono が書いたフィルタ、GPS の受信ピンの判定と設定のやり直し、
  *   IMU の向きを覚えたときも 1 行ずつ出す。
+ *   2.10.0: 5 秒ごとに時計(日本時間)と高負荷時間の 1 行。GPS の時刻が起動して最初に分かったときに、電源が切れていた時間と
+ *   高負荷時間の引き算の結果を 1 行。
  *
  * ファイル:
  *   config.h       仮の値と基板のピン(仕様書の【仮】【未定】はここ)
@@ -134,7 +140,7 @@
 #error "「ツール」→「PSRAM」を「OPI PSRAM」にしてください。この基板の PSRAM(8MB)は OPI 接続で、画面用のメモリーに使います。"
 #endif
 
-static SysInfo g_sys = { false, 0, false, false };  // 起動時に確かめた結果(「本体の状態」とシリアルに出す)
+static SysInfo g_sys = {};  // 起動時に確かめた結果(「本体の状態」とシリアルに出す。全部 false・0 から)
 
 // ================================================================ 画面(CO5300、QSPI)
 // コマンド: 0x02 + 24 ビット(コマンド << 8)+ データ。全部 1 本の線で送る。
@@ -330,7 +336,7 @@ static bool lcdBegin() {
 
 static const char *screenName(int sc) {
   static const char *const NAMES[] = { "サーキット", "タコ", "データ", "CAN確認", "CAN確認の詳細", "設定", "設定の変更", "受信の状態", "グループの中", "オープニング",
-                                       "CAN確認の一覧", "CAN確認のやり直す", "時間の記録のリセット", "CAN確認の前後で比べる" };
+                                       "CAN確認の一覧", "CAN確認のやり直す", "リセットの確認", "CAN確認の前後で比べる" };
   return (sc >= 0 && sc < (int)(sizeof(NAMES) / sizeof(NAMES[0]))) ? NAMES[sc] : "?";
 }
 
@@ -463,7 +469,8 @@ static void touchPoll(uint32_t now) {
 // ================================================================ plat(app.h)
 static SemaphoreHandle_t g_mutex = nullptr;
 static Preferences g_prefs;
-static Settings g_set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT };
+static Settings g_set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT,
+                          SET_LOADY_DEFAULT, SET_LOADR_DEFAULT, SET_LOADC_DEFAULT, SET_LOADRS_DEFAULT };  // 初期値(app.cpp の settingsDefaults と同じ)
 static PerfStats g_perf = {};
 
 void platLock() {
@@ -510,6 +517,22 @@ static int clampInt(int v, int lo, int hi) {
 }
 static uint8_t g_homeLoaded = ui::SC_DRIVE;  // NVS の覚えた画面
 static uint32_t g_timesSavedA = 0, g_timesSavedB = 0, g_timesSaveMs = 0;
+// 2.10.0: 高負荷時間の NVS に書いてある値(値 [ms]・時刻・3000rpm 以下の経過 [ms])と、起動時に読んだ時刻(シリアルに出す)
+static uint32_t g_loadSavedV = 0, g_loadSavedT = 0, g_loadSavedL = 0, g_loadBootT = 0;
+// 2.10.0: 落ちる起動が続いて GPS を止めてある(NVS の "gpsoff"。設定で送信を入に戻したら消す。rcCrashCheck)
+static bool g_gpsOffSaved = false;
+// 分の設定を文字に(0 は「切」。2.10.0)
+static const char *minText(int m, char *buf, size_t n) {
+  if (m <= 0) return "切";
+  snprintf(buf, n, "%d 分", m);
+  return buf;
+}
+// ms を「分:秒」(1 時間以上は「時:分:秒」)に(2.10.0。シリアル用)
+static void msText(uint32_t ms, char *buf, size_t n) {
+  const uint32_t s = ms / 1000;
+  if (s >= 3600) snprintf(buf, n, "%lu:%02lu:%02lu", (unsigned long)(s / 3600), (unsigned long)(s / 60 % 60), (unsigned long)(s % 60));
+  else snprintf(buf, n, "%lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+}
 static void loadSettings() {
   g_sys.nvsOk = g_prefs.begin("meter", false);
   if (!g_sys.nvsOk) return;
@@ -525,6 +548,16 @@ static void loadSettings() {
   g_set.demoOn = clampInt(g_prefs.getInt("demo", SET_DEMO_DEFAULT), 0, 1);
   g_set.rcOn = clampInt(g_prefs.getInt("rc", SET_RC_DEFAULT), 0, 1);
   g_set.illumPct = clampInt(g_prefs.getInt("illum", SET_ILLUM_DEFAULT), SET_ILLUM_MIN, SET_ILLUM_MAX);  // 2.9.0
+  g_set.loadYellowMin = clampInt(g_prefs.getInt("loady", SET_LOADY_DEFAULT), SET_LOAD_MIN, SET_LOAD_MAX);  // 2.10.0
+  g_set.loadRedMin = clampInt(g_prefs.getInt("loadr", SET_LOADR_DEFAULT), SET_LOAD_MIN, SET_LOAD_MAX);
+  g_set.coolMin = clampInt(g_prefs.getInt("loadcd", SET_LOADC_DEFAULT), SET_LOAD_MIN, SET_LOAD_MAX);
+  g_set.loadResetMin = clampInt(g_prefs.getInt("loadrs", SET_LOADRS_DEFAULT), SET_LOADRS_MIN, SET_LOADRS_MAX);
+  // 2.10.0: 高負荷時間を前の起動の続きから。時刻(0 = その起動では時刻が分からなかった)は、GPS の時刻が分かったときに電源が
+  // 切れていた時間を求めるのに使う(load::onTime)
+  g_loadSavedV = g_prefs.getULong("loadms", 0);
+  g_loadSavedT = g_loadBootT = g_prefs.getULong("loadt", 0);
+  g_loadSavedL = g_prefs.getULong("loadlow", 0);
+  load::restore(g_loadSavedV, g_loadSavedT, g_loadSavedL);
 }
 // 保存して読み返し、合っていれば true
 bool platSaveSettings(const Settings &s) {
@@ -538,31 +571,57 @@ bool platSaveSettings(const Settings &s) {
   g_prefs.putInt("demo", s.demoOn);
   g_prefs.putInt("rc", s.rcOn);
   g_prefs.putInt("illum", s.illumPct);
+  g_prefs.putInt("loady", s.loadYellowMin);  // 2.10.0
+  g_prefs.putInt("loadr", s.loadRedMin);
+  g_prefs.putInt("loadcd", s.coolMin);
+  g_prefs.putInt("loadrs", s.loadResetMin);
+  // 2.10.0: 送信を入に戻したら、落ちる起動が続いて止めた GPS も次の起動から動かす
+  const bool gpsBack = s.rcOn && g_gpsOffSaved;
+  if (gpsBack) {
+    g_prefs.remove("gpsoff");
+    g_gpsOffSaved = false;
+  }
   bool ok = g_prefs.getInt("shift", -1) == s.shiftRpm && g_prefs.getInt("autoret", -1) == s.autoReturnMin && g_prefs.getInt("bright", -1) == s.brightnessPct
             && g_prefs.getInt("warn", -1) == s.warnTempC && g_prefs.getInt("demo", -1) == s.demoOn && g_prefs.getInt("rc", -1) == s.rcOn
-            && g_prefs.getInt("illum", -1) == s.illumPct;
+            && g_prefs.getInt("illum", -1) == s.illumPct && g_prefs.getInt("loady", -1) == s.loadYellowMin && g_prefs.getInt("loadr", -1) == s.loadRedMin
+            && g_prefs.getInt("loadcd", -1) == s.coolMin && g_prefs.getInt("loadrs", -1) == s.loadResetMin;
   mlink::graceUntil(millis() + 200);
-  Serial.printf("設定の保存: %s(シフト点 %d、自動で戻る %d 分、明るさ %d %%、イルミネーションの明るさ %d %%、警告温度 %d ℃、デモ %s、RaceChrono 送信 %s%s)\n", ok ? "OK" : "失敗",
-                s.shiftRpm, s.autoReturnMin, s.brightnessPct, s.illumPct, s.warnTempC, s.demoOn ? "入" : "切", s.rcOn ? "入" : "切",
-                s.rcOn != g_sys.rc.enabled ? "(次の起動から)" : "");
+  char y[16], r[16], c[16];
+  Serial.printf("設定の保存: %s(シフト点 %d、自動で戻る %d 分、明るさ %d %%、イルミネーションの明るさ %d %%、警告温度 %d ℃、高負荷時間 黄 %s・赤 %s・"
+                "クールダウン時間 %s・リセット %d 分、デモ %s、RaceChrono 送信 %s%s%s)\n", ok ? "OK" : "失敗",
+                s.shiftRpm, s.autoReturnMin, s.brightnessPct, s.illumPct, s.warnTempC, minText(s.loadYellowMin, y, sizeof(y)), minText(s.loadRedMin, r, sizeof(r)),
+                minText(s.coolMin, c, sizeof(c)), s.loadResetMin, s.demoOn ? "入" : "切", s.rcOn ? "入" : "切",
+                s.rcOn != g_sys.rc.enabled ? "(次の起動から)" : "", gpsBack ? "。GPS も次の起動から動かす" : "");
   return ok;
 }
 
-// 3000rpm 超・以下の累計時間と覚えた画面を NVS に書く(変わったものだけ)。force = 時間を待たずに今すぐ
+// 3000rpm 超・以下の累計時間・覚えた画面・高負荷時間を NVS に書く(変わったものだけ)。force = 時間を待たずに今すぐ
 static void saveTimes(uint32_t now, bool force) {
   if (!g_sys.nvsOk) return;
   if (!force && (uint32_t)(now - g_timesSaveMs) < TIME_SAVE_MS) return;
   g_timesSaveMs = now;
   uint32_t a = trip::aboveMs(), b = trip::belowMs();
   uint8_t home = ui::homeScreen();
+  // 2.10.0: 高負荷時間。0 のままなら書かない。0 でない間は、時刻(時刻が分からなければ 0)を書くため毎回書く
+  // (次の起動で、電源が切れていた時間 = その時刻からの時間を引く。ずれは最大 TIME_SAVE_MS)
+  const uint32_t lv = load::valueMs(), lt = g_sys.timeOk ? g_sys.utc : 0, ll = load::lowMs(now);
   bool wt = a != g_timesSavedA || b != g_timesSavedB, wh = home != g_homeLoaded;
-  if (!wt && !wh) return;
+  bool wl = lv != g_loadSavedV || (lv > 0 && (lt != g_loadSavedT || ll != g_loadSavedL));
+  if (!wt && !wh && !wl) return;
   mlink::graceUntil(millis() + 5000);  // フラッシュへ書く間の UART の取りこぼしを線の品質に入れない
   if (wt) {
     g_prefs.putULong("tabove", a);
     g_prefs.putULong("tbelow", b);
     g_timesSavedA = a;
     g_timesSavedB = b;
+  }
+  if (wl) {
+    g_prefs.putULong("loadms", lv);
+    g_prefs.putULong("loadt", lt);
+    g_prefs.putULong("loadlow", ll);
+    g_loadSavedV = lv;
+    g_loadSavedT = lt;
+    g_loadSavedL = ll;
   }
   if (wh) {
     g_prefs.putUChar("home", home);
@@ -699,8 +758,9 @@ static bool linkBegin() {
 }
 
 // ================================================================ RaceChrono へ送る(BLE・GPS・IMU)
-// config.h の RC_ENABLE 0 でこの部分ごと外せる。設定「RaceChrono 送信」が切のときは、コンパイルはするが動かさない。
-// 落ちる起動が RC_CRASH_LIMIT 回続いたら、表示器が自分で設定を切にする(rcCrashCheck)。
+// config.h の RC_ENABLE 0 でこの部分ごと外せる。設定「RaceChrono 送信」が切のときは、BLE・IMU は動かさない。
+// 2.10.0: GPS は送信の入・切に関係なく動かす(サーキットの時計と高負荷時間に GPS の時刻を使う)。
+// 落ちる起動が RC_CRASH_LIMIT 回続いたら、表示器が自分で送信を切にし、GPS も止める(rcCrashCheck)。
 static bool g_rcOk = false, g_rcAutoOff = false;
 static uint32_t g_crashCount = 0;
 static bool g_crashCleared = false;
@@ -723,17 +783,21 @@ static bool resetWasCrash(esp_reset_reason_t r) {
   return r == ESP_RST_PANIC || r == ESP_RST_INT_WDT || r == ESP_RST_TASK_WDT || r == ESP_RST_WDT;
 }
 
-// 起動時: 前回のリセットが「落ちた」ものなら数える。RC_CRASH_LIMIT 回続いたら RaceChrono の送信を切にする
+// 起動時: 前回のリセットが「落ちた」ものなら数える。RC_CRASH_LIMIT 回続いたら RaceChrono の送信を切にし、GPS も止める
+// (2.10.0: GPS は送信が切でも動くので、GPS が原因で落ち続けるのも止める。止めたことは "gpsoff" に残し、設定で送信を入に戻したら消す)
 static void rcCrashCheck() {
   g_resetReason = esp_reset_reason();
   if (!g_sys.nvsOk) return;
+  g_gpsOffSaved = g_prefs.getUChar("gpsoff", 0) != 0;
   g_crashCount = (uint32_t)g_prefs.getInt("rccrash", 0);
-  if (!resetWasCrash(g_resetReason) || !g_set.rcOn) return;
+  if (!resetWasCrash(g_resetReason) || (!g_set.rcOn && g_gpsOffSaved)) return;  // 送信も GPS も動かしていない起動は数えない
   g_crashCount++;
   g_prefs.putInt("rccrash", (int)g_crashCount);
   if (g_crashCount >= RC_CRASH_LIMIT) {
     g_set.rcOn = 0;
     g_prefs.putInt("rc", 0);
+    g_gpsOffSaved = true;
+    g_prefs.putUChar("gpsoff", 1);
     g_rcAutoOff = true;
   }
 }
@@ -774,6 +838,7 @@ static volatile bool g_bleOk = false, g_bleConnected = false;
 static uint32_t g_canSent = 0, g_gpsSent = 0, g_dropped = 0;  // 数えるだけ(別のタスクから読む。多少の取りこぼしは構わない)
 static uint32_t g_bleConnMs = 0;
 static bool g_gpsUartOk = false, g_imuOk = false;
+static bool g_rcSend = false;  // 2.10.0: 送信(BLE・IMU)を動かしている。切でも GPS だけは動かす(rcBegin)
 // GPS: 0 = 設定を送って NAV-PVT を待っている、1 = 届いている
 static int g_gpsState = 0;
 static uint32_t g_gpsCfgMs = 0, g_gpsLastPvtMs = 0, g_gpsAttempts = 0, g_gpsTimeMs = 0;
@@ -1117,6 +1182,9 @@ static void gpsOnPvt(uint32_t now) {
                   (unsigned long)gnss::nakCount(), f.numSV);
   }
   g_gpsLastPvtMs = now;
+  platLock();  // 2.10.0: 時計(gtime)を合わせる。loop() が読むので守る
+  gtime::onFix(f);
+  platUnlock();
   uint32_t code = rcdiy::dateHourCode(f);
   bool changed = code != g_gpsPrevCode;
   if (changed) {
@@ -1367,7 +1435,7 @@ static void rcTask(void *) {
       if (gnss::pvtCount() != pvt0) gpsOnPvt(now);
       gpsManage(now);
     }
-    if ((int32_t)(now - nextImu) >= 0) {
+    if (g_rcSend && (int32_t)(now - nextImu) >= 0) {  // IMU は送信が入のときだけ
       nextImu += 1000 / IMU_SAMPLE_HZ;
       if ((int32_t)(now - nextImu) > 200) nextImu = now;  // 大きく遅れたら追いつかせない
       imuPoll(now);
@@ -1377,44 +1445,63 @@ static void rcTask(void *) {
   }
 }
 
-static bool rcBegin() {
-  g_rcQueue = xQueueCreate(RC_QUEUE_LEN, sizeof(RcMsg));
+// send = RaceChrono の送信(BLE・IMU)、gps = GPS(2.10.0: 送信の入・切に関係なく動かす。落ちる起動が続いて止めたときだけ false)
+static bool rcBegin(bool send, bool gps) {
+  g_rcSend = send;
   g_rcMutex = xSemaphoreCreateMutex();
   rcdiy::filterReset();
-  gnss::begin();
-  g_gpsUartOk = gpsUartBegin();
-  if (g_gpsUartOk && !RC_GPS_PIN_DETECT) gpsSendConfig();  // 判定が入のときは、判定のあとで送る
-  g_imuOk = imuBegin();
-  g_bleOk = bleBegin();
+  if (gps) {
+    gnss::begin();
+    g_gpsUartOk = gpsUartBegin();
+    if (g_gpsUartOk && !RC_GPS_PIN_DETECT) gpsSendConfig();  // 判定が入のときは、判定のあとで送る
+  }
+  bool t2 = true;
+  if (send) {  // 切のときはキューを作らない(rcPush は何もしない)
+    g_rcQueue = xQueueCreate(RC_QUEUE_LEN, sizeof(RcMsg));
+    g_imuOk = imuBegin();
+    g_bleOk = bleBegin();
+    t2 = g_rcQueue && xTaskCreatePinnedToCore(bleTask, "ble", 4096, nullptr, 3, nullptr, 0) == pdPASS;
+  }
   bool t1 = xTaskCreatePinnedToCore(rcTask, "rc", 6144, nullptr, 4, nullptr, 0) == pdPASS;
-  bool t2 = xTaskCreatePinnedToCore(bleTask, "ble", 4096, nullptr, 3, nullptr, 0) == pdPASS;
-  return g_rcQueue && g_rcMutex && t1 && t2;
+  return g_rcMutex && t1 && t2;
 }
 
 static void rcPrintSelfCheck() {
-  Serial.printf("BLE(RaceChrono DIY「%s」): %s\n", RC_BLE_NAME, !g_bleOk ? "開始できない" : g_bleConnected ? "接続中" : "接続待ち(未接続)");
-  Serial.printf("GPS(受信「IO%d」← M100 TX、送信「IO%d」→ M100 RX、%d bps、%d 回/秒): %s(設定の ACK %lu、NAK %lu、UBX の誤り %lu)\n", g_gpsRxPin, g_gpsTxPin, RC_GPS_BAUD,
-                RC_GPS_RATE_HZ, !g_gpsUartOk ? "UART を開けない" : g_gpsState == 1 ? "位置(NAV-PVT)が届いている" : "UBX が届いていない(起動直後は数秒かかる。続くなら M100 の電源と配線を見る)",
-                (unsigned long)gnss::ackCount(), (unsigned long)gnss::nakCount(), (unsigned long)gnss::badCount());
-  Serial.printf("IMU(QMI8658、0x6B): %s。向きの補正: 上 %s、前 %s\n", g_imuOk ? "応答あり" : "応答なし", imu::levelOk() ? "済" : "未", imu::forwardOk() ? "済" : "未");
-  Serial.printf("RaceChrono の送信: %s\n", g_rcOk ? "準備できた" : "準備できない(タスクかキューを作れない)");
+  if (g_sys.rc.enabled) Serial.printf("BLE(RaceChrono DIY「%s」): %s\n", RC_BLE_NAME, !g_bleOk ? "開始できない" : g_bleConnected ? "接続中" : "接続待ち(未接続)");
+  else Serial.println("RaceChrono の送信: 切(設定。BLE・IMU は動かしていない)");
+  if (g_sys.rc.gpsOn)
+    Serial.printf("GPS(受信「IO%d」← M100 TX、送信「IO%d」→ M100 RX、%d bps、%d 回/秒): %s(設定の ACK %lu、NAK %lu、UBX の誤り %lu)\n", g_gpsRxPin, g_gpsTxPin, RC_GPS_BAUD,
+                  RC_GPS_RATE_HZ, !g_gpsUartOk ? "UART を開けない" : g_gpsState == 1 ? "位置(NAV-PVT)が届いている" : "UBX が届いていない(起動直後は数秒かかる。続くなら M100 の電源と配線を見る)",
+                  (unsigned long)gnss::ackCount(), (unsigned long)gnss::nakCount(), (unsigned long)gnss::badCount());
+  else Serial.println("GPS: 切(落ちる起動が続いたため止めてある。設定 → 受信の状態 → RaceChrono の「送信」を入に戻すと、次の起動から動く)");
+  if (g_sys.rc.enabled)
+    Serial.printf("IMU(QMI8658、0x6B): %s。向きの補正: 上 %s、前 %s\n", g_imuOk ? "応答あり" : "応答なし", imu::levelOk() ? "済" : "未", imu::forwardOk() ? "済" : "未");
+  if (g_sys.rc.enabled || g_sys.rc.gpsOn) Serial.printf("RaceChrono・GPS の準備: %s\n", g_rcOk ? "できた" : "できない(タスクかキューを作れない)");
 }
 static bool rcSelfCheckOk() {
-  return g_rcOk && g_bleOk && g_gpsUartOk && g_imuOk;
+  const bool send = g_sys.rc.enabled, gps = g_sys.rc.gpsOn;
+  if (!send && !gps) return true;
+  return g_rcOk && (!gps || g_gpsUartOk) && (!send || (g_bleOk && g_imuOk));
 }
 static void rcPrintStatusLine() {
   const RcStats &rc = g_sys.rc;
-  Serial.printf("  RaceChrono: BLE %s 送った CAN %lu/秒 GPS %lu/秒 捨てた %lu | GPS %s 衛星 %u 位置 %lu 回/秒 %.1f km/h(UBX 誤り %lu) | IMU %s 前後 %+.2f 横 %+.2f g 上 %s 前 %s\n",
-                !rc.bleOk ? "なし" : rc.connected ? "接続中" : "未接続", (unsigned long)rc.canPerSec, (unsigned long)rc.gpsPerSec, (unsigned long)rc.dropped,
-                !rc.gpsOk ? "受信なし" : rc.fixType == 3 || rc.fixType == 4 ? "3D" : rc.fixType == 2 ? "2D" : "測位なし", rc.numSV, (unsigned long)rc.pvtPerSec, rc.gpsKmh,
-                (unsigned long)gnss::badCount(), rc.imuOk ? "OK" : "なし", rc.gLon, rc.gLat, rc.imuLevel ? "済" : "未", rc.imuForward ? "済" : "未");
+  char ble[128] = "送信 切", gps[128] = "切", imu[128] = "切";
+  if (rc.enabled) {
+    snprintf(ble, sizeof(ble), "BLE %s 送った CAN %lu/秒 GPS %lu/秒 捨てた %lu", !rc.bleOk ? "なし" : rc.connected ? "接続中" : "未接続", (unsigned long)rc.canPerSec,
+             (unsigned long)rc.gpsPerSec, (unsigned long)rc.dropped);
+    snprintf(imu, sizeof(imu), "%s 前後 %+.2f 横 %+.2f g 上 %s 前 %s", rc.imuOk ? "OK" : "なし", rc.gLon, rc.gLat, rc.imuLevel ? "済" : "未", rc.imuForward ? "済" : "未");
+  }
+  if (rc.gpsOn)
+    snprintf(gps, sizeof(gps), "%s 衛星 %u 位置 %lu 回/秒 %.1f km/h(UBX 誤り %lu)", !rc.gpsOk ? "受信なし" : rc.fixType == 3 || rc.fixType == 4 ? "3D" : rc.fixType == 2 ? "2D" : "測位なし",
+             rc.numSV, (unsigned long)rc.pvtPerSec, rc.gpsKmh, (unsigned long)gnss::badCount());
+  Serial.printf("  RaceChrono: %s | GPS %s | IMU %s\n", ble, gps, imu);
 }
 #else
 void platCanFrame(uint8_t, uint8_t, uint32_t, uint8_t, const uint8_t *, uint32_t) {}
 void platResetImuCal() {
   imu::reset();
 }
-static bool rcBegin() {
+static bool rcBegin(bool, bool) {
   return false;
 }
 static void rcPrintSelfCheck() {
@@ -1467,7 +1554,7 @@ static void cpuInfoUpdate(bool all) {
 }
 
 static bool selfCheckOk() {
-  return g_lcdOk && g_spiErr == ESP_OK && g_memOk && g_sys.touchOk && g_sys.nvsOk && g_linkOk && (!g_sys.rc.enabled || rcSelfCheckOk());
+  return g_lcdOk && g_spiErr == ESP_OK && g_memOk && g_sys.touchOk && g_sys.nvsOk && g_linkOk && rcSelfCheckOk();
 }
 
 // 起動時に確かめた結果をまとめて出す。setup() の最後と、そのあと 60 秒ごとに呼ぶ
@@ -1492,13 +1579,17 @@ static void printSelfCheck() {
     Serial.println("電源 IC(AXP2101): 応答なし");
   }
   Serial.printf("タッチ(CST9217、0x5A): %s\n", g_sys.touchOk ? "応答あり" : "応答なし(タップが効かない)");
-  Serial.printf("設定(%s): シフト点 %d rpm、自動で戻る %d 分、明るさ %d %%、イルミネーションの明るさ %d %%、警告温度 %d ℃、デモ %s、RaceChrono 送信 %s\n",
+  char y[16], r[16], c[16];
+  Serial.printf("設定(%s): シフト点 %d rpm、自動で戻る %d 分、明るさ %d %%、イルミネーションの明るさ %d %%、警告温度 %d ℃、高負荷時間 黄 %s・赤 %s・"
+                "クールダウン時間 %s・リセット %d 分、デモ %s、RaceChrono 送信 %s\n",
                 g_sys.nvsOk ? "保存領域 OK" : "保存領域を開けない。初期値を使う", g_set.shiftRpm, g_set.autoReturnMin, g_set.brightnessPct, g_set.illumPct, g_set.warnTempC,
+                minText(g_set.loadYellowMin, y, sizeof(y)), minText(g_set.loadRedMin, r, sizeof(r)), minText(g_set.coolMin, c, sizeof(c)), g_set.loadResetMin,
                 g_set.demoOn ? "入" : "切", g_set.rcOn ? "入" : "切");
   Serial.printf("UART 受信(「IO16」): %s\n", g_linkOk ? "開始。速度は自動で合わせる" : "開始していない");
   Serial.printf("前回のリセットの理由: %s(%d)。落ちた回数 %lu\n", resetReasonName(g_resetReason), (int)g_resetReason, (unsigned long)g_crashCount);
-  if (g_rcAutoOff) Serial.printf("RaceChrono の送信: 切にした(落ちる起動が %d 回続いたため。設定 → 受信の状態 → RaceChrono の「送信」で入に戻せる)\n", RC_CRASH_LIMIT);
-  else if (!g_sys.rc.enabled) Serial.println("RaceChrono の送信: 切(設定)");
+  if (g_rcAutoOff)
+    Serial.printf("RaceChrono の送信と GPS: 切にした(落ちる起動が %d 回続いたため。設定 → 受信の状態 → RaceChrono の「送信」を入に戻すと、次の起動から両方動く)\n",
+                  RC_CRASH_LIMIT);
   else rcPrintSelfCheck();
   Serial.printf("自己診断: %s\n", selfCheckOk() ? "OK" : "NG(上の行を見る)");
   Serial.println();
@@ -1544,14 +1635,44 @@ void setup() {
   g_linkOk = linkBegin();
   cpuInfoUpdate(true);
   g_sys.rc.enabled = g_set.rcOn != 0;
-  if (g_sys.rc.enabled) {
+  g_sys.rc.gpsOn = RC_ENABLE && !g_gpsOffSaved;  // 2.10.0: GPS は送信の入・切に関係なく動かす(落ちる起動が続いて止めたときだけ切)
+  if (g_sys.rc.enabled || g_sys.rc.gpsOn) {
 #if RC_ENABLE
-    imuCalLoad();
+    if (g_sys.rc.enabled) imuCalLoad();
 #endif
-    g_rcOk = rcBegin();
+    g_rcOk = rcBegin(g_sys.rc.enabled, g_sys.rc.gpsOn);
   }
   printSelfCheck();
   g_ready = true;
+}
+
+// 2.10.0: GPS の時刻(gtime。rc タスクが NAV-PVT のたびに合わせる)→ g_sys.timeOk・utc(サーキットの時計と高負荷時間)。
+// 起動して最初に分かったときに、電源が切れていた時間を高負荷時間から引き(load::onTime。2 回目からは何もしない)、結果を 1 行出す
+static void timePoll(uint32_t now) {
+  static bool s_printed = false;
+  uint32_t utc = 0;
+  platLock();
+  const bool ok = gtime::now(now, &utc);
+  platUnlock();
+  g_sys.timeOk = ok;
+  if (!ok) return;
+  g_sys.utc = utc;
+  const uint32_t v0 = load::valueMs();
+  load::onTime(utc, g_set, now);
+  if (s_printed) return;
+  s_printed = true;
+  const uint32_t l = (utc + CLOCK_TZ_SEC) % 86400u;
+  char a[16], b[16];
+  msText(v0, a, sizeof(a));
+  msText(load::valueMs(), b, sizeof(b));
+  Serial.printf("時刻: GPS の時刻が分かった %02lu:%02lu:%02lu(日本時間。電源を入れて %lu 秒)。", (unsigned long)(l / 3600), (unsigned long)(l / 60 % 60),
+                (unsigned long)(l % 60), (unsigned long)(now / 1000));
+  const int64_t offS = ((int64_t)utc - (int64_t)(now / 1000)) - (int64_t)g_loadBootT;  // 電源が切れていた時間(最後に書いてから起動まで)
+  if (!load::enabled(g_set)) Serial.println("高負荷時間は切");
+  else if (g_loadBootT == 0) Serial.printf("前の起動で書いた時刻が無い(その起動では時刻が分からなかった)ので、高負荷時間は引かない(%s)\n", b);
+  else if (offS <= 0) Serial.printf("電源が切れていた時間が 0 以下(%ld 秒)なので、高負荷時間は引かない(%s)\n", (long)offS, b);
+  else
+    Serial.printf("電源が切れていた時間 約 %ld 分 %ld 秒(前の起動で最後に書いてから)→ 高負荷時間 %s → %s\n", (long)(offS / 60), (long)(offS % 60), a, b);
 }
 
 // ライトのスイッチ(2.9.0。B-CAN 06214000 b0 の 0x08、veh::lightInfo)を明るさに使う値 g_lightOn に入れる。最初に受けたとき(電源を
@@ -1595,6 +1716,8 @@ void loop() {
   mlink::getStats(&ls);
   lightPoll(now);  // 2.9.0: ライトのスイッチ → ふだんの明るさ(送り直しは画面を送ったあと)
   trip::update(s, now);
+  load::update(s, g_set, now);  // 2.10.0: 高負荷時間
+  timePoll(now);                // 2.10.0: 時計の時刻と、電源が切れていた時間の引き算
   saveTimes(now, false);
   uint32_t tu = micros();  // サーキット・タコの「1 回描いて送る時間」はここから(タッチ・受信・保存の時間は入れない)
   ui::update(s, ls, g_perf, g_sys, now);  // この中で ui::blinkPoll も呼ばれる(切り替わると platBlink)
@@ -1712,7 +1835,21 @@ void loop() {
                     (unsigned)fi.lastB5, (unsigned long)fi.ignored, !li.have ? "不明" : !li.seen ? "受信なし" : li.on ? "点" : "消", (unsigned)li.lastB0,
                     (unsigned long)li.changes, normalNow());
     }
-    if (g_sys.rc.enabled) rcPrintStatusLine();
+    if (g_sys.rc.enabled || g_sys.rc.gpsOn) rcPrintStatusLine();
+    // 2.10.0: 時計と高負荷時間
+    char clk[16] = "待ち", lv[16], lo[16] = "–", y[16], r[16], c[16];
+    if (g_sys.timeOk) {
+      const uint32_t l = (g_sys.utc + CLOCK_TZ_SEC) % 86400u;
+      snprintf(clk, sizeof(clk), "%02lu:%02lu:%02lu", (unsigned long)(l / 3600), (unsigned long)(l / 60 % 60), (unsigned long)(l % 60));
+    }
+    msText(load::valueMs(), lv, sizeof(lv));
+    if (load::lowMs(now)) msText(load::lowMs(now), lo, sizeof(lo));
+    static const char *const LEVEL[] = { "白", "黄", "赤" };
+    if (load::enabled(g_set))
+      Serial.printf("  時計 %s(日本時間)| 高負荷時間 %s %s%s 3000rpm 以下 %s(黄 %s・赤 %s・クールダウン時間 %s・リセット %d 分)\n", clk, lv, LEVEL[load::level(g_set) % 3],
+                    load::coolDown() ? " クールダウン" : "", lo, minText(g_set.loadYellowMin, y, sizeof(y)), minText(g_set.loadRedMin, r, sizeof(r)),
+                    minText(g_set.coolMin, c, sizeof(c)), g_set.loadResetMin);
+    else Serial.printf("  時計 %s(日本時間)| 高負荷時間 切\n", clk);
   }
   delay(1);
 }

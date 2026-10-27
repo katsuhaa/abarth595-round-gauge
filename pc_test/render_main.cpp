@@ -11,7 +11,7 @@
 
 static uint16_t fb[gfx::W * gfx::H];
 static float scratch[gfx::W * (gfx::H + 2)];
-static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT };
+static Settings set;  // main で settingsDefaults(2.10.0)
 static LinkStats ls;
 static PerfStats ps;
 static SysInfo si;
@@ -57,6 +57,7 @@ static void canFrame(uint32_t id, const uint8_t d[8], uint8_t dlc, uint32_t t, u
 int main(int argc, char **argv) {
   outdir = argc > 1 ? argv[1] : ".";
   bool tabular = !(argc > 2 && !strcmp(argv[2], "prop"));
+  settingsDefaults(&set);
   gfx::begin(fb, scratch);
   mlink::begin();
   cantab::begin();
@@ -116,14 +117,142 @@ int main(int argc, char **argv) {
     }
     now = t0 + 155000;
     shot("DriveIdleTime", n, ui::SC_DRIVE);
+    // 2.10.0: 高負荷時間 31:10(クールダウン時間を超えたのでタイトルが「クールダウン」、赤)と、その下に ▼ 3000rpm 2:35(キャンバス C3)
+    si.timeOk = true; si.utc = 1793065338u;  // 2026-10-27 10:42:18(日本時間)
+    load::testSet(1870000, true);
+    shot("DriveLoadCool", n, ui::SC_DRIVE);
+    // 高負荷時間の機能が切(黄・赤とも 0): 2.9.0 と同じ ▼ 3000rpm と大きい経過時間
+    load::testReset();
+    set.loadYellowMin = 0; set.loadRedMin = 0;
+    shot("DriveLoadOffIdle", n, ui::SC_DRIVE);
+    settingsDefaults(&set);
+    si.timeOk = false;
     now += 20000;
+  }
+
+  // ---- サーキット(2.10.0): 時計と真ん中(キャンバス C1〜C4・N1〜N3)
+  {
+    si.timeOk = true; si.utc = 1793065338u;  // 10:42:18
+    ls.locked = true; ls.infoValid = true; ls.info.proto_ver = METER_LINK_PROTO_VER; ls.info.can_fps[0] = 1015; ls.info.can_fps[1] = 143;
+    si.rc.gpsOn = true; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 12; si.rc.pvtPerSec = 25;
+    si.rc.enabled = true; si.rc.imuOk = true; si.rc.bleOk = true; si.rc.connected = true;
+    shot("DriveStatus", sig(850, 'N', 92, 62), ui::SC_DRIVE);  // N1: すべて正常
+    si.timeOk = false; si.rc.fixType = 0; si.rc.numSV = 3; si.rc.connected = false;
+    shot("DriveStatusWait", sig(850, 'N', 92, 62), ui::SC_DRIVE);  // N2: 測位待ち・未接続(時刻なしで針なし)
+    si.rc.gpsOk = false; si.rc.enabled = false; si.rc.imuOk = false; si.rc.bleOk = false;
+    shot("DriveStatusNg", sig(850, 'N', 92, 62), ui::SC_DRIVE);  // N3: 送信が切・GPS が届かない
+    ls.locked = false; ls.infoValid = false;
+    shot("DriveStatusCanNg", sig(850, 'N', 92, 62), ui::SC_DRIVE);  // CAN も受けていない(起動から INFO_LINK_GRACE_MS 後)
+    ls.locked = true; ls.infoValid = true;
+    si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 12; si.rc.enabled = true; si.rc.imuOk = true; si.rc.bleOk = true; si.rc.connected = true;
+    load::testSet(200000, false);  // C4: 電源を入れた直後(時刻なし)・高負荷時間 3:20(白)
+    shot("DriveLoadWait", sig(1800, '2', 92, 62), ui::SC_DRIVE);
+    si.timeOk = true;
+    load::testSet(920000, false);  // C2: 5600 rpm・高負荷時間 15:20(黄)
+    shot("DriveLoadYellow", sig(5600, '4', 92, 62), ui::SC_DRIVE);
+    load::testSet(1860000, false);  // 31:00(赤。クールダウン前)、背景が緑
+    shot("DriveLoadRed", sig(4400, '3', 96, 40), ui::SC_DRIVE);
+    load::testSet(3725000, true);  // 1 時間以上(時:分:秒)
+    shot("DriveLoadHour", sig(2500, '3', 96, 40), ui::SC_DRIVE);
+    load::testReset();
+    // C1: 4200 rpm・ピーク 6100 を真ん中に(背景が緑)。ピークの印は回転数がはっきり上がったときに出す(3000 → 6100)
+    auto peakUp = [&](int to) {
+      ui::testPeakReset();
+      ui::testShow(ui::SC_DRIVE);
+      ui::testTouch(now);
+      ui::update(sig(3000, '3', 92, 62), ls, ps, si, now);
+      ui::update(sig(to, '3', 92, 62), ls, ps, si, now + 100);
+      gfx::dirtyClear();
+      now += 300;
+    };
+    peakUp(6100);
+    g_keepPeak = true;
+    shot("DrivePeak2", sig(4200, '3', 92, 62), ui::SC_DRIVE);
+    now += 10000;
+    // 背景が黄色のときの針とピーク(紺)
+    peakUp(6040);
+    g_keepPeak = true;
+    shot("DrivePeakYellow", sig(5500, '3', 92, 62), ui::SC_DRIVE);
+    now += 10000;
+    // 針が 1 秒ずつ進む(少しずつ描いたもの。最初から描いたものと比べる試験は run_tests.sh)
+    {
+      Signals s = sig(850, 'N', 92, 62);
+      ui::testShow(ui::SC_DRIVE);
+      for (int k = 0; k < 75; k++) {
+        si.utc = 1793065338u + (uint32_t)k;
+        ui::testTouch(now);
+        ui::update(s, ls, ps, si, now);
+        gfx::dirtyClear();
+        now += 1000;
+      }
+      shot("DriveClockStep", s, ui::SC_DRIVE);
+    }
+    si.timeOk = false;
+    memset(&si.rc, 0, sizeof(si.rc));
+    memset(&ls, 0, sizeof(ls));
+  }
+
+  // ---- キャンバスの絵(C1〜C4・N1〜N3・T1・T2)と同じ値・同じ時刻の絵(見比べ用。2.10.0)
+  {
+    ls.locked = true; ls.infoValid = true; ls.info.proto_ver = METER_LINK_PROTO_VER; ls.info.can_fps[0] = 1015;
+    si.rc.gpsOn = true; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 12; si.rc.enabled = true; si.rc.imuOk = true; si.rc.bleOk = true; si.rc.connected = true;
+    const uint32_t base = 1793065338u;  // 10:42:18
+    auto rise = [&](int to, int water, float fuel) {
+      ui::testPeakReset();
+      ui::testShow(ui::SC_DRIVE);
+      ui::testTouch(now);
+      ui::update(sig(3000, '3', (float)water, fuel), ls, ps, si, now);
+      ui::update(sig(to, '3', (float)water, fuel), ls, ps, si, now + 100);
+      gfx::dirtyClear();
+      now += 300;
+    };
+    si.timeOk = true; si.utc = base;
+    rise(6100, 92, 62);
+    g_keepPeak = true;
+    shot("CanvasC1", sig(4200, '3', 92, 62), ui::SC_DRIVE);
+    now += 10000;
+    si.utc = base + 257;  // 10:46:35
+    load::testSet(920000, false);
+    shot("CanvasC2", sig(5600, '4', 95, 55), ui::SC_DRIVE);
+    {  // C3: N で 2:35 アイドリング
+      Signals n = sig(850, 'N', 96, 55);
+      ui::testShow(ui::SC_DRIVE);
+      const uint32_t t0 = now;
+      load::testReset();
+      for (uint32_t t = t0; t <= t0 + 155000; t += 1000) {
+        ui::testTouch(t);
+        ui::update(n, ls, ps, si, t);
+        gfx::dirtyClear();
+      }
+      now = t0 + 155000;
+      si.utc = base + 949;  // 10:58:07
+      load::testSet(1870000, true);
+      shot("CanvasC3", n, ui::SC_DRIVE);
+      now += 20000;
+    }
+    si.timeOk = false;
+    load::testSet(200000, false);
+    shot("CanvasC4", sig(850, '2', 96, 55), ui::SC_DRIVE);
+    load::testReset();
+    si.timeOk = true; si.utc = base + 2542;  // 11:24:40
+    shot("CanvasN1", sig(850, 'N', 88, 55), ui::SC_DRIVE);
+    si.timeOk = false; si.rc.fixType = 0; si.rc.numSV = 3; si.rc.connected = false;
+    shot("CanvasN2", sig(850, 'N', 45, 55), ui::SC_DRIVE);
+    si.rc.gpsOk = false; si.rc.enabled = false; si.rc.imuOk = false; si.rc.bleOk = false;
+    shot("CanvasN3", sig(850, 'N', 88, 55), ui::SC_DRIVE);
+    shot("CanvasT1", sig(4200, '3', 92, 62, true, true, 1.25f), ui::SC_BOOST);
+    now += 10000;
+    shot("CanvasT2", sig(5600, '4', 112, 12, true, true, 0.9f), ui::SC_BOOST);
+    now += 10000;
+    memset(&si.rc, 0, sizeof(si.rc));
+    memset(&ls, 0, sizeof(ls));
   }
 
   // ---- データ画面(10/23): GPS・IMU・CAN の値と、3000rpm 超・以下の累計時間
   {
     trip::setTimes(5025000, 45296000);  // 1:23:45 と 12:34:56
     ls.infoValid = true; ls.info.proto_ver = METER_LINK_PROTO_VER; ls.info.can_fps[0] = 1015; ls.info.can_fps[1] = 143;
-    si.rc.enabled = true; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 11; si.rc.pvtPerSec = 25; si.rc.imuOk = true;
+    si.rc.enabled = true; si.rc.gpsOn = true; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 11; si.rc.pvtPerSec = 25; si.rc.imuOk = true;
     si.rc.gLon = 0.32f; si.rc.gLat = -0.85f;
     Signals s = sig(4200, '3', 92, 62);
     shot("Data", s, ui::SC_DATA);
@@ -187,18 +316,26 @@ int main(int argc, char **argv) {
   {
     Signals s = sig(4200, '3', 92, 62);
     trip::setTimes(5025000, 45296000);
-    const char *items[] = { "Set1Bright", "SetIllum", "Set2Info", "Set3Sys", "Set4Shift", "Set5Warn", "Set6Time", "Set7Auto", "Set8Demo" };
-    for (int i = 0; i < 9; i++) shot(items[i], s, ui::SC_SET_LIST, i);
+    const char *items[] = { "Set1Bright", "SetIllum", "Set2Info", "Set3Sys", "Set4Shift", "Set5Warn", "SetLoadY", "SetLoadR", "SetCool", "SetLoadRs",
+                            "Set6Time", "Set7Auto", "Set8Demo", "SetDefaults" };  // 2.10.0: 高負荷時間の 4 項目とデフォルトに戻す
+    for (int i = 0; i < 14; i++) shot(items[i], s, ui::SC_SET_LIST, i);
     shot("SettingsBright", s, ui::SC_SET_EDIT, 0);
     shot("SettingsIllum", s, ui::SC_SET_EDIT, 1);  // 2.9.0: 名前は 2 行
     shot("SettingsShift", s, ui::SC_SET_EDIT, 4);
     shot("SettingsWarn", s, ui::SC_SET_EDIT, 5);
-    shot("SettingsAuto", s, ui::SC_SET_EDIT, 7);
+    shot("SettingsLoadY", s, ui::SC_SET_EDIT, 6);
+    set.loadRedMin = 0;
+    shot("SettingsLoadROff", s, ui::SC_SET_EDIT, 7);  // 0 = 「切」
+    set.loadRedMin = SET_LOADR_DEFAULT;
+    shot("SettingsCool", s, ui::SC_SET_EDIT, 8);
+    shot("SettingsLoadRs", s, ui::SC_SET_EDIT, 9);
+    shot("SettingsAuto", s, ui::SC_SET_EDIT, 11);
     set.demoOn = 1;
-    shot("SettingsDemo", s, ui::SC_SET_EDIT, 8);
+    shot("SettingsDemo", s, ui::SC_SET_EDIT, 12);
     set.demoOn = 0;
     shot("SettingsRcSend", s, ui::SC_SET_EDIT, 0, 1);
     shot("SetReset", s, ui::SC_SET_RESET);
+    shot("SetDefaultsConfirm", s, ui::SC_SET_RESET, 2);
     // 保存したあとの点滅(2.4.3): 変更の画面で、押した「決定」の帯が消える(1 回目)・点く(1 回目)。その間は値が太い
     {
       ui::testShow(ui::SC_SET_EDIT, 4);
@@ -265,7 +402,7 @@ int main(int argc, char **argv) {
     shot("CanNoLink", s, ui::SC_SET_GRP, 2, 0);
     shot("InfoCanNg", s, ui::SC_SET_INFO, 0);
     shot("Set2InfoNg", s, ui::SC_SET_LIST, 2);
-    si.rc.enabled = true; si.rc.bleOk = true; si.rc.connected = true; si.rc.canPerSec = 62; si.rc.gpsPerSec = 25; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 11;
+    si.rc.enabled = true; si.rc.bleOk = true; si.rc.connected = true; si.rc.canPerSec = 62; si.rc.gpsPerSec = 25; si.rc.gpsOn = true; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 11;
     si.rc.pvtPerSec = 25; si.rc.lat = 355812345; si.rc.lon = 1396821234; si.rc.gpsKmh = 48.3f; si.rc.imuOk = true; si.rc.imuLevel = true; si.rc.imuForward = true;
     si.rc.gLon = 0.32f; si.rc.gLat = -0.85f;
     shot("InfoGps", s, ui::SC_SET_INFO, 1);
@@ -416,7 +553,7 @@ int main(int argc, char **argv) {
     memset(&lo, 0, sizeof(lo));
     SysInfo so;
     memset(&so, 0, sizeof(so));
-    so.touchOk = true; so.nvsOk = true; so.rc.enabled = true; so.rc.bleOk = true; so.rc.imuOk = true; so.rc.gpsOk = true;
+    so.touchOk = true; so.nvsOk = true; so.rc.enabled = true; so.rc.bleOk = true; so.rc.imuOk = true; so.rc.gpsOn = true; so.rc.gpsOk = true;
     Signals o = sig(850, 'N', 62, 74, true, true, -0.55f);
     struct Mark { int kind; uint32_t at; const char *name; };
     const Mark marks[] = {
@@ -424,7 +561,8 @@ int main(int argc, char **argv) {
       { 0, OPC_SCAN_MS + OPC_FLASH_MS + OPC_RISE_MS * 8 / 10, "OpenCircuit2" },  // 点いていく
       { 0, OPC_SCAN_MS + OPC_FLASH_MS + OPC_RISE_MS + 100, "OpenCircuit3" },     // 全部点いて背景も赤(リミッター)
       { 0, OPC_SCAN_MS + OPC_FLASH_MS + OPC_RISE_MS + OPC_LIMIT_MS + OPC_FALL_MS / 4, "OpenCircuit4" },  // 消えていく
-      { 0, OPC_TOTAL_MS - 40, "OpenCircuit5" },                                   // ギアが浮かぶ
+      { 0, OPC_TOTAL_MS - OPC_CLOCK_MS / 2, "OpenCircuit5" },                     // 時計と真ん中が浮かぶ途中(2.10.0)
+      { 0, OPC_TOTAL_MS - 10, "OpenCircuit6" },                                   // 浮かび終わる所
       { 1, OPT_UP_MS * 4 / 10, "OpenTach1" },                                     // 針が通った所から文字盤が出る
       { 1, OPT_UP_MS + OPT_TOP_MS / 2, "OpenTach2" },                             // 振り切り(赤)
       { 1, OPT_UP_MS + OPT_TOP_MS + OPT_DOWN_MS * 6 / 10, "OpenTach3" },          // 戻っていく

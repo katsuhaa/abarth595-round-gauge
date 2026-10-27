@@ -913,6 +913,120 @@ uint32_t wotMs() {
 
 }  // namespace trip
 
+// ================================================================ 設定の初期値(2.10.0。設定の「デフォルトに戻す」と起動時)
+void settingsDefaults(Settings *s) {
+  s->shiftRpm = SET_SHIFT_DEFAULT;
+  s->autoReturnMin = SET_AUTORET_DEFAULT;
+  s->brightnessPct = SET_BRIGHT_DEFAULT;
+  s->warnTempC = SET_WARN_DEFAULT;
+  s->demoOn = SET_DEMO_DEFAULT;
+  s->rcOn = SET_RC_DEFAULT;
+  s->illumPct = SET_ILLUM_DEFAULT;
+  s->loadYellowMin = SET_LOADY_DEFAULT;
+  s->loadRedMin = SET_LOADR_DEFAULT;
+  s->coolMin = SET_LOADC_DEFAULT;
+  s->loadResetMin = SET_LOADRS_DEFAULT;
+}
+
+// ================================================================ load(高負荷時間。2.10.0。説明は app.h)
+namespace load {
+
+static uint32_t g_value = 0;       // 今の値 [ms]
+static uint32_t g_lastMs = 0;      // 前に update を呼んだ時刻
+static bool g_started = false;
+static uint32_t g_lowSince = 0;    // 回転数が LOAD_RPM 以下になった時刻(0 = 今は超えている・信号なし)
+static bool g_cool = false;        // タイトルを「クールダウン」にしている
+static bool g_haveSaved = false;   // restore で保存した値を受けた
+static uint32_t g_savedUtc = 0;    // 前の起動で最後に書いた時刻(0 = 分からなかった)
+static uint32_t g_savedLow = 0;    // そのときの LOAD_RPM 以下の経過 [ms]
+static bool g_timeDone = false;    // 起動してから時刻を受けた(電源が切れていた時間を引くのは 1 回だけ)
+
+static uint32_t minMs(int m) {
+  return m > 0 ? (uint32_t)m * 60000UL : 0;
+}
+bool enabled(const Settings &set) {
+  return set.loadYellowMin > 0 || set.loadRedMin > 0;
+}
+static void coolTrack(const Settings &set) {
+  if (g_value == 0) g_cool = false;
+  else if (set.coolMin > 0 && g_value >= minMs(set.coolMin)) g_cool = true;
+}
+
+void update(const Signals &s, const Settings &set, uint32_t nowMs) {
+  uint32_t dt = g_started ? (uint32_t)(nowMs - g_lastMs) : 0;
+  g_started = true;
+  g_lastMs = nowMs;
+  if (dt > 500) dt = 500;  // 画面の切り替えなどで間が空いても、数えすぎない(trip と同じ)
+  // LOAD_RPM 以下が続いている時間(リセットの数え。▼ 3000rpm の経過時間と同じ数え方。信号なしは 0 から)
+  if (s.rpmOk && s.rpm <= LOAD_RPM) {
+    if (!g_lowSince) g_lowSince = nowMs ? nowMs : 1;
+  } else {
+    g_lowSince = 0;
+  }
+  if (!enabled(set)) {  // 機能が切: 数えず 0
+    g_value = 0;
+    g_cool = false;
+    return;
+  }
+  if (!s.rpmOk) return;  // 信号がない間は変わらない
+  if (s.rpm >= LOAD_RPM) g_value = g_value + dt > LOAD_MAX_MS ? LOAD_MAX_MS : g_value + dt;
+  else g_value = g_value > dt ? g_value - dt : 0;
+  if (g_lowSince && (uint32_t)(nowMs - g_lowSince) >= minMs(set.loadResetMin)) g_value = 0;  // リセット
+  coolTrack(set);
+}
+uint32_t valueMs() {
+  return g_value;
+}
+uint8_t level(const Settings &set) {
+  // 0 の色は使わない。黄 ≥ 赤 のときは赤を優先(黄は出ない)
+  if (set.loadRedMin > 0 && g_value >= minMs(set.loadRedMin)) return 2;
+  if (set.loadYellowMin > 0 && g_value >= minMs(set.loadYellowMin)) return 1;
+  return 0;
+}
+bool coolDown() {
+  return g_cool;
+}
+uint32_t lowMs(uint32_t nowMs) {
+  return g_lowSince ? (uint32_t)(nowMs - g_lowSince) : 0;
+}
+void restore(uint32_t valueMs, uint32_t savedUtc, uint32_t lowMs) {
+  g_value = valueMs > LOAD_MAX_MS ? LOAD_MAX_MS : valueMs;
+  g_savedUtc = savedUtc;
+  g_savedLow = lowMs;
+  g_haveSaved = true;
+  g_timeDone = false;
+}
+void onTime(uint32_t utc, const Settings &set, uint32_t nowMs) {
+  if (g_timeDone) return;
+  g_timeDone = true;
+  if (!g_haveSaved || g_savedUtc == 0 || !enabled(set)) return;  // 前の起動で時刻が分からなかった: 引かない
+  // 起動した時刻(今の時刻 − 起動してからの時間)と、前の起動で最後に書いた時刻の差 = 電源が切れていた時間(最大 1 分多い)
+  const int64_t boot = (int64_t)utc - (int64_t)(nowMs / 1000);
+  const int64_t offS = boot - (int64_t)g_savedUtc;
+  if (offS <= 0) return;  // 差が負: 引かない
+  const uint64_t offMs = (uint64_t)offS * 1000ULL;
+  if ((uint64_t)g_savedLow + offMs >= (uint64_t)minMs(set.loadResetMin)) g_value = 0;  // 切る前の LOAD_RPM 以下 + 切れていた時間でリセット
+  else g_value = (uint64_t)g_value > offMs ? g_value - (uint32_t)offMs : 0;
+  coolTrack(set);
+}
+void testSet(uint32_t valueMs, bool coolDown) {
+  g_value = valueMs > LOAD_MAX_MS ? LOAD_MAX_MS : valueMs;
+  g_cool = coolDown && g_value > 0;
+  g_lowSince = 0;
+  g_started = false;
+}
+void testReset() {
+  g_value = 0;
+  g_cool = false;
+  g_lowSince = 0;
+  g_started = false;
+  g_haveSaved = false;
+  g_savedUtc = g_savedLow = 0;
+  g_timeDone = false;
+}
+
+}  // namespace load
+
 // ================================================================ perf(本体の状態の「FPS」。2.3.0。2.4.3: 1 秒ごと)
 namespace perf {
 
@@ -1221,6 +1335,42 @@ size_t buildBaud(uint8_t *out, size_t cap, uint32_t baud) {
 }
 
 }  // namespace gnss
+
+// ================================================================ gtime(今の時刻。2.10.0。説明は app.h)
+namespace gtime {
+
+static bool g_ok = false;
+static uint32_t g_utc = 0;  // 合わせた時刻(秒の始まり)
+static uint32_t g_ms = 0;   // そのときの millis
+
+uint32_t epoch(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t min, uint8_t sec) {
+  // 1970-01-01 からの日数(グレゴリオ暦。3 月始まりの年で数える)
+  const int y = (int)year - (month <= 2 ? 1 : 0);
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = (unsigned)(y - era * 400);
+  const unsigned doy = (153u * (unsigned)(month > 2 ? month - 3 : month + 9) + 2u) / 5u + day - 1u;
+  const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+  const int64_t days = (int64_t)era * 146097 + (int64_t)doe - 719468;
+  return (uint32_t)(days * 86400 + (int64_t)hour * 3600 + (int64_t)min * 60 + sec);
+}
+void onFix(const gnss::Fix &f) {
+  if (!f.timeOk || f.year < 2020 || f.month < 1 || f.month > 12 || f.day < 1 || f.day > 31 || f.hour > 23 || f.min > 59 || f.sec > 60) return;
+  g_utc = epoch(f.year, f.month, f.day, f.hour, f.min, f.sec);
+  g_ms = f.rxMs - (uint32_t)(f.nano / 1000000);  // 秒の始まりの millis(nano は負もある。受けるまでの遅れは見ない)
+  g_ok = true;
+}
+bool now(uint32_t nowMs, uint32_t *utc) {
+  if (!g_ok) return false;
+  const int32_t d = (int32_t)(nowMs - g_ms);
+  *utc = d >= 0 ? g_utc + (uint32_t)d / 1000u : g_utc - (uint32_t)(-d + 999) / 1000u;
+  return true;
+}
+void testReset() {
+  g_ok = false;
+  g_utc = g_ms = 0;
+}
+
+}  // namespace gtime
 
 // ================================================================ rcdiy
 namespace rcdiy {

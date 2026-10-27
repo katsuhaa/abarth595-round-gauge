@@ -24,7 +24,7 @@
 
 static uint16_t fb[gfx::W * gfx::H];
 static float scratch[gfx::W * (gfx::H + 2)];
-static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT };
+static Settings set;  // main で settingsDefaults(2.10.0)
 static LinkStats ls;
 static PerfStats ps;
 static SysInfo si;
@@ -64,6 +64,7 @@ int main(int argc, char **argv) {
   std::string outdir = argc > 1 ? argv[1] : ".";
   bool frames = argc > 2 && !strcmp(argv[2], "-");
   if (frames) msg = stderr;
+  settingsDefaults(&set);
   gfx::begin(fb, scratch);
   mlink::begin();
   cantab::begin();

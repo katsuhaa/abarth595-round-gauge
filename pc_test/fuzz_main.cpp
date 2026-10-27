@@ -16,7 +16,7 @@
 extern bool g_hostSaveOk;
 static uint16_t fb[gfx::W * gfx::H], fbRef[gfx::W * gfx::H];
 static float scratch[gfx::W * (gfx::H + 2)];
-static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT };
+static Settings set;  // main で settingsDefaults(2.10.0)
 static LinkStats ls;
 static PerfStats ps;
 static SysInfo si;
@@ -75,6 +75,7 @@ int main(int argc, char **argv) {
   uint32_t runs = argc > 1 ? (uint32_t)atoi(argv[1]) : 4;
   uint32_t steps = argc > 2 ? (uint32_t)atoi(argv[2]) : 200000;
   std::string outdir = argc > 3 ? argv[3] : ".";
+  settingsDefaults(&set);
   gfx::begin(fb, scratch);
   mlink::begin();
   cantab::begin();
@@ -155,7 +156,8 @@ int main(int argc, char **argv) {
           const int pp = (int)rndN(2);
           ui::testShow(cur, cur == ui::SC_CAN_REDO ? pp : 0, cur == ui::SC_CAN_ID ? pp : 0);
         } else {
-          ui::testShow(cur, cur == ui::SC_SET_EDIT ? (int)rndN(9) : (cur == ui::SC_SET_INFO ? (int)rndN(5) : (cur == ui::SC_SET_GRP ? (int)rndN(10) : 0)),
+          // 2.10.0: 設定 14 項目(高負荷時間の 4 項目とデフォルトに戻す)。リセットの確認は 3 種類(時間の記録・向きの補正・デフォルトに戻す)
+          ui::testShow(cur, cur == ui::SC_SET_EDIT ? (int)rndN(15) : (cur == ui::SC_SET_INFO ? (int)rndN(5) : (cur == ui::SC_SET_GRP ? (int)rndN(10) : (cur == ui::SC_SET_RESET ? (int)rndN(3) : 0))),
                        cur == ui::SC_SET_EDIT ? (int)rndN(2) : (cur == ui::SC_SET_GRP ? (int)rndN(6) : 0));
         }
       }
@@ -201,6 +203,18 @@ int main(int argc, char **argv) {
       mlink::getSignals(&s, now);
       mlink::getStats(&ls);
       trip::update(s, now);
+      // 2.10.0: 高負荷時間(ときどき値・設定を決める)と時計(GPS の時刻。分からない間・飛ぶことも)
+      if (chance(2)) load::testSet(rndN(40000) * 1000, chance(500));
+      if (chance(2)) load::testReset();
+      if (chance(3)) {
+        set.loadYellowMin = chance(200) ? 0 : (int)rndN(19) * SET_LOAD_STEP;
+        set.loadRedMin = chance(200) ? 0 : (int)rndN(19) * SET_LOAD_STEP;
+        set.coolMin = chance(200) ? 0 : (int)rndN(19) * SET_LOAD_STEP;
+        set.loadResetMin = SET_LOADRS_MIN + (int)rndN(SET_LOADRS_MAX);
+      }
+      load::update(s, set, now);
+      if (chance(5)) si.timeOk = chance(800);
+      si.utc = 1793065338u + now / 1000 + (chance(1) ? rnd() : 0);
       ps.fps = rndN(100);
       ps.loopMaxMs = rndN(60);
       ps.pageMaxUs = chance(100) ? 0 : rndN(120000);
@@ -218,6 +232,7 @@ int main(int argc, char **argv) {
       si.rc.gpsPerSec = rndN(30);
       si.rc.dropped = chance(900) ? 0 : rnd();
       si.rc.gpsOk = chance(800);
+      si.rc.gpsOn = chance(900);  // 2.10.0: GPS は送信の入・切に関係なく動かす
       si.rc.fixType = (uint8_t)rndN(6);
       si.rc.numSV = (uint8_t)rndN(40);
       si.rc.pvtPerSec = rndN(30);

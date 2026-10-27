@@ -16,7 +16,7 @@
 
 static uint16_t fb[gfx::W * gfx::H], fbRef[gfx::W * gfx::H];
 static float scratch[gfx::W * (gfx::H + 2)];
-static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT };
+static Settings set;  // main で settingsDefaults(2.10.0)
 static LinkStats ls;
 static PerfStats ps;
 static SysInfo si;
@@ -41,6 +41,7 @@ static double flushMs(uint32_t *pxOut) {
 int main(int argc, char **argv) {
   outdir = argc > 1 ? argv[1] : ".";
   bool doCheck = argc > 2 && !strcmp(argv[2], "check");  // 照合つき(時刻を飛ばすので、時間の統計は照合なしで取る)
+  settingsDefaults(&set);
   gfx::begin(fb, scratch);
   mlink::begin();
   cantab::begin();
@@ -180,6 +181,9 @@ int main(int argc, char **argv) {
         falseDown++;
       }
       trip::update(s, now);
+      load::update(s, set, now);  // 2.10.0: 高負荷時間
+      si.timeOk = now >= 20000;    // 2.10.0: 時計(20 秒で GPS の時刻が分かったことにする)
+      si.utc = 1793065338u + now / 1000;
       ui::update(s, ls, ps, si, now);
       uint32_t px;
       double ms = flushMs(&px);

@@ -60,19 +60,22 @@ UI_NAME_JP = _jp("シフトポイント", "自動で戻る", "明るさ", "水�
                  "本体の状態", "CANリーダー", "C-CAN・B-CAN", "測位", "速度", "加速度", "接続", "送った数",  # 2.4.0: 受信の状態を分け直した
                  "クロック", "温度", "フラッシュ",  # 2.4.3: 本体の状態の CPU など
                  "前後で比べる",  # 2.6.0: CAN確認の前後で比べる
-                 "ライト")  # 2.9.0: 受信の状態の「ライト」(設定の「イルミネーションの明るさ」は 1 行に入らないので 34 px の 2 行。34 px は UI_JP で入る)
+                 "ライト",  # 2.9.0: 受信の状態の「ライト」(設定の「イルミネーションの明るさ」は 1 行に入らないので 34 px の 2 行。34 px は UI_JP で入る)
+                 "高負荷時間 黄", "高負荷時間 赤", "クールダウン時間", "高負荷時間 リセット", "デフォルトに戻す")  # 2.10.0: 設定の項目
 UI_VALUE_JP = _jp("–正常異常待ち入切", "受信なし", "バイト/秒", "版が違います", "模擬", "不明", "5V 投入", "PWR ボタン", "電池", "切(設定)", "開始できない",
                   "接続中", "未接続(待機中)", "3D 衛星 2D 測位なし", "応答なし", "前後 横", "上 済 前 未", "済み", "件分",
                   "平均 最低", "(次の起動から)",  # 2.3.0: 「FPS」の値、RaceChrono の「送信」の値
                   "切(RaceChrono 送信)",  # 2.4.0: GPS・IMU・RaceChrono の、送信が切のとき
                   "候補 件 記録 回", "空き コア なし",  # 2.4.3: CAN確認のページ、本体の状態の CPU・RAM・PSRAM(温度の「°」は英数字の書体)
                   "点 消")  # 2.9.0: 受信の状態の「ライト」の値(「不明」「受信なし」は上にある)
-UI_BOTTOM_JP = _jp("決定", "リセット", "変化を記録", "やり直す", "記録 0 回", "切", "入", "取り直す")  # 2.4.4: 「変更」「開く」「詳細」「向きを取り直す」は使わない
+UI_BOTTOM_JP = _jp("決定", "リセット", "変化を記録", "やり直す", "記録 0 回", "切", "入", "取り直す", "戻す")  # 2.10.0: 「戻す」(デフォルトに戻す)  # 2.4.4: 「変更」「開く」「詳細」「向きを取り直す」は使わない
 UI_PP_JP = _jp("記録なし", "前を記録した", "前を記録", "後を記録", "待ち 秒")  # 2.6.0: 前後で比べるのページの値・画面・下の帯(44 px)
 UI_OPEN_JP = _jp("長押しで開く")  # 2.4.4: メニューに入る下の帯(40 px)
 UI_SELFCHECK_JP = _jp("タッチ", "待ち", "衛星待ち", "測位", "切")  # 2.5.0: データのオープニングの自己診断(44 px)
 # 2.3.0: 触れたときの案内(2.3.1: 長押しの表示と同じ 48 px の札)
 UI_GUIDE_JP = _jp("スワイプ", "長押し")
+# 2.10.0: サーキットの真ん中(高負荷時間のタイトル・「時刻 待ち」、接続の状態の値。18 px)
+UI_CENTER_JP = _jp("高負荷時間", "クールダウン", "時刻 待ち", "接続中", "未接続", "受信中", "なし", "切", "不可", "–")
 
 SSC = "SairaSemiCondensed-%s.ttf"
 VF = "Saira-VF.ttf"
@@ -92,13 +95,14 @@ def ssc(weight_name, wght, px, chars, digits=True):
 # 2026-10-22: 実走行で「文字が小さく見えない」ので大きくした。使わなくなった大きさは外した
 #   (GEAR_230/190、DIAL700_26、NUM600_80/76/54/29/26、NUM500_28、JP600_26/24/60/21/20、JP500_19、MONO 28〜32、MONO500_22)
 SPECS = [
-    fspec("GEAR_160", 160, [dict(file=VF, var={"wght": 600, "wdth": 100}, feats={"tnum": True}, chars="0123456789NR–")]),  # 走行画面のギア(10/22: 190 → 160。弧を太くしたぶん)
+    fspec("GEAR_100", 100, [dict(file=VF, var={"wght": 600, "wdth": 100}, feats={"tnum": True}, chars="0123456789NR–")]),  # タコのギア(2.10.0。サーキットの真ん中の 160 px から移した)
     fspec("DIAL600_60", 60, [dict(file=VF, var={"wght": 600, "wdth": 100}, feats={"tnum": True}, chars="0123456789")]),  # アナログ計の回転計の数字(10/22 夜: 太さ 700 → 600)
-    fspec("DIAL500_76", 76, [dict(file=VF, var={"wght": 500, "wdth": 100}, feats={"tnum": True}, chars="0123456789.−– ")]),  # アナログ計のブーストの今の値(太さ 500)
+    fspec("DIAL500_56", 56, [dict(file=VF, var={"wght": 500, "wdth": 100}, feats={"tnum": True}, chars="0123456789.−– ")]),  # アナログ計のブーストの今の値(太さ 500。2.10.0: 76 → 56 px)
     fspec("DIAL500_40", 40, [dict(file=VF, var={"wght": 500, "wdth": 100}, feats={"tnum": True}, chars="0123456789−")]),  # アナログ計の水温・燃料の札
     fspec("DIAL500_28", 28, [dict(file=VF, var={"wght": 500, "wdth": 100}, feats={"tnum": True}, chars="0123456789")]),  # アナログ計のブーストの輪の数字 0・1・2
     fspec("NUM600_100", 100, ssc("SemiBold", 600, 100, "– ")),  # 設定の値(1 画面 1 項目)
     fspec("NUM600_96", 96, ssc("SemiBold", 600, 96, "– :")),  # 設定の値、サーキットの 3000rpm 以下の経過時間
+    fspec("NUM600_88", 88, ssc("SemiBold", 600, 88, "")),  # サーキットの真ん中のピークの回転数(2.10.0)
     fspec("NUM600_64", 64, ssc("SemiBold", 600, 64, ASCII + "–−°")),  # データ画面の水温・燃料・全開の割合、受信の状態の値
     fspec("NUM600_56", 56, ssc("SemiBold", 600, 56, ASCII + "–°")),  # データ画面の ▲▼ の累計時間
     fspec("NUM600_48", 48, ssc("SemiBold", 600, 48, ASCII + "–°")),  # 設定の値の単位
@@ -106,8 +110,11 @@ SPECS = [
     fspec("NUM600_34", 34, ssc("SemiBold", 600, 34, ASCII + "–−°")),  # 見出し、単位、時間、オープニング、「– –」
     fspec("NUM600_30", 30, ssc("SemiBold", 600, 30, ASCII + "–°")),
     fspec("NUM600_28", 28, ssc("SemiBold", 600, 28, ASCII + "–−°")),  # データ画面の GPS・IMU・CAN の値、件数
+    fspec("NUM600_26", 26, ssc("SemiBold", 600, 26, ":")),  # サーキットの ▼ 3000rpm の経過時間(高負荷時間の下。2.10.0)
     fspec("NUM600_24", 24, ssc("SemiBold", 600, 24, ASCII + "–°")),  # データ画面の診断の行
+    fspec("NUM600_22", 22, ssc("SemiBold", 600, 22, ASCII + "–")),  # サーキットの「rpm」、接続の状態の名前と値(2.10.0)
     fspec("NUM600_20", 20, ssc("SemiBold", 600, 20, ASCII + "–°")),  # 「SIM」と場面番号
+    fspec("NUM600_16", 16, ssc("SemiBold", 600, 16, "rpm")),  # サーキットの ▼ 3000rpm(高負荷時間の下。2.10.0)
     fspec("JP600_100", 100, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars="入切正常異待ち")]),  # 設定の値(入・切、受信の状態の判定)
     fspec("JP600_64", 64, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars=UI_VALUE_JP)]),  # 受信の状態の値
     fspec("JP600_56", 56, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars=_jp("タコ", "データ"))]),  # 長押しの次の画面名
@@ -117,6 +124,8 @@ SPECS = [
     fspec("JP600_34", 34, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars="".join(dict.fromkeys("タッチ待ち衛星測位接続切受信" + UI_JP)))]),  # 小さい名前
     fspec("JP600_30", 30, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars=UI_JP)]),  # ボタン、データ画面の名前、「タップで変更」
     fspec("JP500_24", 24, [dict(file="IBMPlexSansJP-Medium.ttf", chars=UI_JP_BROAD)]),  # 説明、件数、受信の状態の行
+    fspec("JP600_18", 18, [dict(file="IBMPlexSansJP-SemiBold.ttf", chars=" " + UI_CENTER_JP)]),  # サーキットの真ん中(2.10.0)
+    fspec("JP500_14", 14, [dict(file="IBMPlexSansJP-Medium.ttf", chars="衛星")]),  # サーキットの接続の状態の「衛星」(2.10.0)
     fspec("MONO600_34", 34, [dict(file="IBMPlexMono-SemiBold.ttf", chars="0123456789ABCDEF -")]),
     fspec("MONO600_38", 38, [dict(file="IBMPlexMono-SemiBold.ttf", chars="0123456789ABCDEF -")]),
     fspec("MONO700_38", 38, [dict(file="IBMPlexMono-Bold.ttf", chars="0123456789ABCDEF -")]),
@@ -191,9 +200,11 @@ def render_icons():
     chev_d = f'<path d="M2 2 L16 14 L30 2" fill="none" stroke="{W}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'
     chev_u = f'<path d="M2 14 L16 2 L30 14" fill="none" stroke="{W}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'
     chev_ds = f'<path d="M2 2 L10 10 L18 2" fill="none" stroke="{W}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>'
-    water48 = water.replace('scale(0.833333)', 'scale(1)')  # 走行画面用の 48 px(10/21。データ画面は 40 px のまま)
+    water48 = water.replace('scale(0.833333)', 'scale(1)')  # データ画面用の 48 px(10/21。2.10.0 まではサーキットも)
     fuel48 = fuel.replace('scale(0.833333)', 'scale(1)')
-    icons = [("WATER", 40, 40, water), ("FUEL", 40, 40, fuel), ("WATER_L", 48, 48, water48), ("FUEL_L", 48, 48, fuel48), ("CHEV_RIGHT", 12, 20, chev_r), ("CHEV_LEFT", 12, 20, chev_l), ("CHEV_DOWN", 32, 16, chev_d), ("CHEV_UP", 32, 16, chev_u), ("CHEV_DOWN_S", 20, 12, chev_ds)]
+    water32 = water.replace('scale(0.833333)', 'scale(0.666667)')  # サーキット用の 32 px(2.10.0。弧の端の先)
+    fuel32 = fuel.replace('scale(0.833333)', 'scale(0.666667)')
+    icons = [("WATER", 40, 40, water), ("FUEL", 40, 40, fuel), ("WATER_L", 48, 48, water48), ("FUEL_L", 48, 48, fuel48), ("WATER_M", 32, 32, water32), ("FUEL_M", 32, 32, fuel32), ("CHEV_RIGHT", 12, 20, chev_r), ("CHEV_LEFT", 12, 20, chev_l), ("CHEV_DOWN", 32, 16, chev_d), ("CHEV_UP", 32, 16, chev_u), ("CHEV_DOWN_S", 20, 12, chev_ds)]
     res = []
     with sync_playwright() as p:
         b = p.chromium.launch()

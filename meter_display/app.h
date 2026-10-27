@@ -37,7 +37,14 @@ struct Settings {
   int demoOn;         // デモ表示(1 = 入)
   int rcOn;           // RaceChrono への送信(1 = 入)。次の起動から効く
   int illumPct;       // イルミネーションの明るさ [%](ライトのスイッチが入の間のふだんの明るさ。2.9.0。初期化の並びを変えないよう最後に置く)
+  // 2.10.0: 高負荷時間(load)。分。黄・赤・クールダウン時間は 0 で「切」(黄・赤とも 0 で機能を切)。初期化の並びを変えないよう最後に置く
+  int loadYellowMin;  // 高負荷時間 黄
+  int loadRedMin;     // 高負荷時間 赤
+  int coolMin;        // クールダウン時間(高負荷時間がこれ以上でタイトルを「クールダウン」に)
+  int loadResetMin;   // 高負荷時間 リセット(回転数 LOAD_RPM 以下がこれだけ続いたら 0)
 };
+// 2.10.0: 設定を全部初期値(config.h の SET_*_DEFAULT)にする(設定の「デフォルトに戻す」と、起動時の初期値)
+void settingsDefaults(Settings *s);
 
 struct LinkStats {
   uint32_t baud;         // いま受信に使っている速度
@@ -104,6 +111,9 @@ struct RcStats {
   bool imuLevel;        // 重力の向きを覚えた(停車中)
   bool imuForward;      // 前の向きを覚えた(発進の加速)
   float gLon, gLat;     // 車の座標での加速度 [g](前後、横)
+  // 2.10.0: GPS(M100)を動かしている。RaceChrono の送信の入・切に関係なく動かす(時計と高負荷時間に時刻を使う)。
+  // 落ちる起動が続いて RC_CRASH_LIMIT で止めたときだけ false(enabled は送信 = BLE・IMU を動かしているか)
+  bool gpsOn;
 };
 
 struct SysInfo {
@@ -113,6 +123,9 @@ struct SysInfo {
   bool nvsOk;           // 設定の保存領域を開けた
   RcStats rc;
   CpuInfo cpu;          // 2.4.3
+  // 2.10.0: 今の時刻(サーキットの時計と高負荷時間に使う)。GPS の時刻が一度分かったら、GPS が途切れても表示器の中の時計で進める
+  bool timeOk;          // 時刻が分かっている
+  uint32_t utc;         // UTC、1970-01-01 からの秒
 };
 
 // ---------------------------------------------------------------- plat(基板に依存する部分)
@@ -258,6 +271,27 @@ void setTimes(uint32_t above, uint32_t below);  // 起動時に NVS から戻す
 void resetTimes();    // 0 に戻す(「時間の記録」のリセット)
 }
 
+// ---------------------------------------------------------------- load(高負荷時間。2.10.0。仕様書 circuit_screen_spec.md 第 3 版 3 章。config.h の LOAD_*)
+// 回転数 LOAD_RPM 以上で 1 秒に 1 秒増え、未満で 1 秒に 1 秒減る(0 より下にならない。上限 LOAD_MAX_MS)。LOAD_RPM 以下が
+// 「高負荷時間 リセット」続いたら 0。回転数の信号がない間は変わらない(リセットの数えも 0 から)。黄・赤とも 0 なら数えず 0。
+// 表示器の電源が切れていた間も減る: 1 分ごとに値と時刻を NVS に書き(snapshot)、次の起動で戻し(restore)、GPS の時刻が分かったら
+// (onTime)切れていた時間ぶん引く。保存した「LOAD_RPM 以下の経過」+ 切れていた時間 が リセットの時間以上なら 0。
+// 「クールダウン時間」以上になったらタイトルを「クールダウン」にし、0 に戻るまでそのまま
+namespace load {
+void update(const Signals &s, const Settings &set, uint32_t nowMs);  // update のたびに呼ぶ(どの画面でも。同じ時刻で 2 回呼んでも同じ)
+bool enabled(const Settings &set);    // 黄・赤のどちらかが 0 でない
+uint32_t valueMs();                   // 今の値 [ms]
+uint8_t level(const Settings &set);   // 色: 0 = 白、1 = 黄、2 = 赤
+bool coolDown();                      // タイトルを「クールダウン」にする
+uint32_t lowMs(uint32_t nowMs);       // LOAD_RPM 以下が続いている時間 [ms](0 = 続いていない)
+// 起動時に NVS から戻す。savedUtc = 前の起動で最後に書いた時刻(0 = その起動では時刻が分からなかった)
+void restore(uint32_t valueMs, uint32_t savedUtc, uint32_t lowMs);
+// 今の時刻(SysInfo の timeOk のとき)。起動後に最初に呼ばれたときだけ、電源が切れていた時間を引く
+void onTime(uint32_t utc, const Settings &set, uint32_t nowMs);
+void testSet(uint32_t valueMs, bool coolDown);  // 試験用: 値とクールダウンを決める(数えた記録は消す)
+void testReset();                               // 試験用: 全部 0 に
+}
+
 // ---------------------------------------------------------------- perf(本体の状態の「FPS」。2.3.0。2.4.3: 1 秒ごとにまとめる)
 // サーキット・タコで 1 回描いて送るのにかかった時間を 1 秒ごとにまとめ、回を数えた秒だけを新しい方から PERF_FPS_SECS 秒ぶん覚える
 // (loop() だけから呼ぶ)
@@ -303,6 +337,16 @@ size_t buildConfig(uint8_t *out, size_t cap, int rateHz);
 size_t buildSignals(uint8_t *out, size_t cap);
 // UART1 の速度だけを変える(工場出荷の 9600 bps から RC_GPS_BAUD へ)
 size_t buildBaud(uint8_t *out, size_t cap, uint32_t baud);
+}
+
+// ---------------------------------------------------------------- gtime(今の時刻。2.10.0: サーキットの時計と高負荷時間)
+// GPS の日時(NAV-PVT の validDate・validTime)で合わせ、そのあとは millis で進める(GPS が途切れても続く。仕様書
+// circuit_screen_spec.md 第 3 版 3.2)。NAV-PVT を受けるたびに合わせ直す。基板は SysInfo の timeOk・utc に入れる
+namespace gtime {
+void onFix(const gnss::Fix &f);           // 新しい NAV-PVT を受けたら呼ぶ(日時が使えないものは捨てる)
+bool now(uint32_t nowMs, uint32_t *utc);  // 時刻が分かっていれば true と UTC(1970-01-01 からの秒)
+uint32_t epoch(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t min, uint8_t sec);  // 日時(UTC)→ 秒
+void testReset();                         // 試験用: 分からない状態に戻す
 }
 
 // ---------------------------------------------------------------- rcdiy(RaceChrono DIY の BLE の中身を作る。仕様: github.com/aollin/racechrono-ble-diy-device)

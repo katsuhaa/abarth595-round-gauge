@@ -15,7 +15,7 @@ extern size_t g_hostCanPreN;
 extern int g_hostCanPreSaves;
 static uint16_t fb[gfx::W * gfx::H];
 static float scratch[gfx::W * (gfx::H + 2)];
-static Settings set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT };
+static Settings set;  // main で settingsDefaults(2.10.0)
 static LinkStats ls;
 static PerfStats ps;
 static SysInfo si;
@@ -52,6 +52,7 @@ static void holdOpen(const Signals &sg, uint32_t &tt) {
 }
 
 int main() {
+  settingsDefaults(&set);
   gfx::begin(fb, scratch);
   mlink::begin();
   cantab::begin();
@@ -356,7 +357,7 @@ int main() {
   longPress(live, t);
   CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "設定は前回見ていた項目から(電源を切るまで覚える)");
   prev(t); prev(t); prev(t);
-  CHECK(ui::testSetItem() == 8, "右へスワイプで前へ(最初から最後のデモに回る)");
+  CHECK(ui::testSetItem() == 13, "右へスワイプで前へ(最初から最後のデフォルトに戻すに回る。2.10.0: 14 項目)");
   next(t);
   CHECK(ui::testSetItem() == 0, "左へスワイプ(最後の次は最初の明るさ)");
   // 指で押す(2.4.0: 離したときにタップ)。短いタッチと、HOLD_CANCEL_PX 以上動いたタッチは何もしない
@@ -728,9 +729,9 @@ int main() {
     CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1 && set.illumPct == 20 && ui::previewPct() == -1, "点滅が終わったら項目の画面へ(20 % を保存。previewPct = -1)");
     set.illumPct = SET_ILLUM_DEFAULT;
   }
-  // 時間の記録(7 項目目。2.9.0 で 6 → 7 項目目)
-  for (int i = 0; i < 5; i++) next(t);
-  CHECK(ui::testSetItem() == 6, "7 項目目 = 時間の記録");
+  // 時間の記録(11 項目目。2.9.0 で 6 → 7 項目目、2.10.0 で 7 → 11 項目目)
+  for (int i = 0; i < 9; i++) next(t);
+  CHECK(ui::testSetItem() == 10, "11 項目目 = 時間の記録");
   trip::setTimes(5000, 7000);
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_RESET, "下「長押しで開く」で確認の画面(2.4.4)");
@@ -1173,14 +1174,14 @@ int main() {
     b.waterC = 112;
     ui::update(b, ls, ps, si, td + 4 * ALARM_BLINK_HALF_MS);
     CHECK(px(233, 165) == gfx::rgb(0xE3241B) && px(233, 300) == gfx::rgb(0xE3241B), "水温 112 ℃ と燃料 29 %: 点灯側は上下とも赤く塗る");
-    int gearWhite = 0;  // ギアの文字(白)は塗る所に削られない
+    int gearWhite = 0;  // 真ん中の文字(白。2.10.0: ギアから接続の状態に変えた)は塗る所に削られない
     for (int y = 170; y < 296; y++)
       for (int x = 160; x < 306; x++)
         if (px(x, y) == gfx::rgb(0xFFFFFF)) gearWhite++;
     memcpy(fbD, fb, sizeof(fbD));
     ui::testRedraw();
     ui::update(b, ls, ps, si, td + 4 * ALARM_BLINK_HALF_MS);
-    CHECK(memcmp(fbD, fb, sizeof(fbD)) == 0 && gearWhite > 1000, "上下とも異常の絵 = 最初から描いた絵(ギアの文字は残る)");
+    CHECK(memcmp(fbD, fb, sizeof(fbD)) == 0 && gearWhite > 1000, "上下とも異常の絵 = 最初から描いた絵(真ん中の文字は残る)");
     gfx::dirtyClear();
   }
 
@@ -1251,15 +1252,15 @@ int main() {
     gfx::dirtyClear();
   }
 
-  // ---------------- 13. 設定の「デモ」(2.4.0: 最後の 8 項目目。2.9.0: 9 項目目)
+  // ---------------- 13. 設定の「デモ」(2.4.0: 最後の 8 項目目。2.9.0: 9 項目目。2.10.0: 13 項目目)
   {
     Signals d;
     memset(&d, 0, sizeof(d));
     uint32_t td = 50000000;
     set.demoOn = 0;
-    ui::testShow(ui::SC_SET_LIST, 8);
+    ui::testShow(ui::SC_SET_LIST, 12);
     holdOpen(d, td);  // 触れた時刻を操作した時刻にする(先に update すると、前の操作から時間がたっていて自動で戻る)
-    CHECK(ui::screen() == ui::SC_SET_EDIT, "設定 9 項目目で「デモ」の変更画面へ");
+    CHECK(ui::screen() == ui::SC_SET_EDIT, "設定 13 項目目で「デモ」の変更画面へ");
     ui::tap(366, 233, td += 100);
     CHECK(set.demoOn == 1, "右半分(入)でデモが入");
     ui::tap(366, 233, td += 100);
@@ -1269,7 +1270,7 @@ int main() {
     ui::update(d, ls, ps, si, td);
     CHECK(ui::screen() == ui::SC_SET_EDIT && g_hostSaves == sv + 1 && ui::testFlashing(), "「決定」で保存し、下の帯が点滅(2.4.3)");
     ui::update(d, ls, ps, si, td + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 8 && !ui::testFlashing(), "点滅が終わったらデモの項目へ");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 12 && !ui::testFlashing(), "点滅が終わったらデモの項目へ");
     set.demoOn = 0;
     gfx::dirtyClear();
   }
@@ -1941,34 +1942,62 @@ int main() {
     gfx::dirtyClear();
   }
 
-  // ---------------- 21. サーキットの 3000rpm 以下の経過時間(10/23): N が IDLE_SHOW_AFTER_N_MS 続いたらギアの所に出す
+  // ---------------- 21. サーキットの 3000rpm 以下の経過時間(10/23): N が IDLE_SHOW_AFTER_N_MS 続いたら ▼ 3000rpm と経過時間を出す。
+  //                   2.10.0: 高負荷時間を出しているときはその下に出し、高負荷時間が 0 なら出さない(接続の状態)。高負荷時間の機能が切
+  //                   (黄・赤とも 0)なら 2.9.0 と同じ大きい経過時間
   {
     Signals n;
     memset(&n, 0, sizeof(n));
     n.linkUp = n.rpmOk = n.gearOk = true;
     n.rpm = 850; n.gear = 'N';
     uint32_t ti = 97000000;
-    ui::testShow(ui::SC_DRIVE);
-    ui::update(n, ls, ps, si, ti);
     static uint16_t fbI[gfx::W * gfx::H];
+    // 機能が切: 真ん中は接続の状態 → 1 分で大きい経過時間
+    set.loadYellowMin = 0; set.loadRedMin = 0;
+    load::testReset();
+    ui::testPeakReset();
+    ui::testShow(ui::SC_DRIVE);
+    n.gear = '1';  // 前の試験の N の数えを捨てる
+    ui::update(n, ls, ps, si, ti - 1000);
+    n.gear = 'N';
+    ui::update(n, ls, ps, si, ti);
     ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS - 1000);
+    CHECK(ui::testCenter() == 3, "機能が切: N が 1 分続く前は接続の状態");
     memcpy(fbI, fb, sizeof(fbI));
     ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 1000);
-    CHECK(memcmp(fbI, fb, sizeof(fbI)) != 0, "N が 1 分続いたら、ギアの所が経過時間に変わる");
+    CHECK(memcmp(fbI, fb, sizeof(fbI)) != 0 && ui::testCenter() == 2, "機能が切: N が 1 分続いたら、真ん中が経過時間に変わる");
     memcpy(fbI, fb, sizeof(fbI));
     ui::testRedraw();
     ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 1000);
     CHECK(memcmp(fbI, fb, sizeof(fbI)) == 0, "経過時間の絵 = 同じ時刻に最初から描いた絵");
-    n.rpm = 3500;  // 3000 を超えると 0 に戻る(N のままなので、ギアの所は 0:00 から)
+    n.rpm = 3500;  // 3000 を超えると消える(回転がはっきり上がったので、真ん中はピークの回転数)
     ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 2000);
-    n.rpm = 900;
+    CHECK(ui::testCenter() == 0, "3000 を超えたら経過時間は消える(上がった回転数はピークの回転数)");
+    n.rpm = 900;  // 下がると 0:00 から(N のままなので、ピークの三角が消えたらすぐに出す)
     ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 3000);
+    ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 6000);
     memcpy(fbI, fb, sizeof(fbI));
     ui::testRedraw();
-    ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 3000);
-    CHECK(memcmp(fbI, fb, sizeof(fbI)) == 0, "数え直したあとも最初から描いた絵と同じ");
+    ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 6000);
+    CHECK(ui::testCenter() == 2 && memcmp(fbI, fb, sizeof(fbI)) == 0, "数え直したあとも最初から描いた絵と同じ");
+    settingsDefaults(&set);
+    // 機能が入で高負荷時間が 0: 接続の状態のまま(▼ は出さない)
+    ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 7000);
+    CHECK(ui::testCenter() == 3, "機能が入で高負荷時間 0: ▼ 3000rpm は出さない(接続の状態)");
+    // 高負荷時間 12:00 なら、その下に ▼ 3000rpm と経過時間(1 秒ごとに描き直す。最初から描いた絵と同じ)
+    load::testSet(12 * 60000, false);
+    ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 8000);
+    CHECK(ui::testCenter() == 1, "高負荷時間が 0 でなければ高負荷時間");
+    for (int k = 9; k < 15; k++) ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 1000 * k);
+    memcpy(fbI, fb, sizeof(fbI));
+    ui::testRedraw();
+    ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 14000);
+    CHECK(memcmp(fbI, fb, sizeof(fbI)) == 0, "高負荷時間と ▼ 3000rpm の絵 = 最初から描いた絵");
+    load::testReset();
+    ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 15000);
+    CHECK(ui::testCenter() == 3, "高負荷時間が 0 になったら ▼ 3000rpm も消える(接続の状態)");
     n.gear = '1';
-    ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 4000);
+    ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 16000);
     gfx::dirtyClear();
     // 3000rpm 超・以下の累計(trip)
     trip::resetTimes();
@@ -2505,7 +2534,7 @@ int main() {
     // 2.4.0: 受信の状態のまとめは 4 グループの赤を数える(同じ値は 1 回だけ)。待ち(スマホが未接続、GPS が測位前)は数えない
     {
       SysInfo s2 = s0;
-      s2.rc.enabled = true; s2.rc.bleOk = true; s2.rc.connected = false; s2.rc.gpsOk = true; s2.rc.fixType = 0; s2.rc.imuOk = true;
+      s2.rc.enabled = true; s2.rc.bleOk = true; s2.rc.connected = false; s2.rc.gpsOn = true; s2.rc.gpsOk = true; s2.rc.fixType = 0; s2.rc.imuOk = true;
       r = ui::testInfoSummary(-1, l1, p0, s2, far, v, sizeof(v));
       CHECK(r == 1 && strcmp(v, "正常") == 0, "受信の状態のまとめ: RaceChrono のスマホが未接続・GPS が測位前(待ち)でも「正常」");
       CHECK(ui::testInfoSummary(1, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "待ち") == 0, "GPS のまとめ: 測位前は「待ち」");
@@ -2520,15 +2549,19 @@ int main() {
       CHECK(ui::testInfoSummary(2, l1, p0, s2, far, v, sizeof(v)) == 2 && strcmp(v, "異常 1") == 0, "IMU のまとめ: 応答しなければ「異常 1」");
       CHECK(ui::testInfoSummary(3, l1, p0, s2, far, v, sizeof(v)) == 2 && strcmp(v, "異常 1") == 0, "RaceChrono のまとめ: BLE だけを数える(IMU は IMU のグループ。2.4.0)");
       s2.rc.enabled = false;
-      CHECK(ui::testInfoItem(1, 0, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切(RaceChrono 送信)") == 0, "GPS の測位: 送信が切なら「切(RaceChrono 送信)」の灰");
+      // 2.10.0: GPS は送信の入・切に関係なく動かす(時計と高負荷時間に時刻を使う)。止めるのは落ちる起動が続いたとき(gpsOn = false)だけ
+      CHECK(ui::testInfoItem(1, 0, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "測位なし 衛星 0 0 Hz") == 0, "GPS の測位: 送信が切でも GPS は動かす(2.10.0)");
       CHECK(ui::testInfoItem(2, 0, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切(RaceChrono 送信)") == 0, "IMU の加速度: 送信が切なら「切(RaceChrono 送信)」の灰");
       CHECK(ui::testInfoSummary(3, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切") == 0, "RaceChrono のまとめ: 送信が切なら「切」の灰");
-      CHECK(ui::testInfoSummary(1, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切") == 0, "GPS のまとめ: 送信が切なら「切」の灰");
-      CHECK(ui::testInfoSummary(-1, l1, p0, s2, far, v, sizeof(v)) == 1, "受信の状態のまとめ: 送信が切なら GPS・IMU・RaceChrono は数えない");
+      CHECK(ui::testInfoSummary(1, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "待ち") == 0, "GPS のまとめ: 送信が切でも測位前なら「待ち」(2.10.0)");
+      s2.rc.gpsOn = false;
+      CHECK(ui::testInfoItem(1, 0, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切") == 0, "GPS の測位: 止めているときは「切」の灰(2.10.0)");
+      CHECK(ui::testInfoSummary(1, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切") == 0, "GPS のまとめ: 止めているときは「切」の灰(2.10.0)");
+      CHECK(ui::testInfoSummary(-1, l1, p0, s2, far, v, sizeof(v)) == 1, "受信の状態のまとめ: 送信が切・GPS を止めているなら GPS・IMU・RaceChrono は数えない");
     }
     // RaceChrono: スマホが未接続なら「正常」にしない。GPS は GPS のグループ(RaceChrono のまとめに入れない)
     SysInfo s1 = s0;
-    s1.rc.enabled = true; s1.rc.bleOk = true; s1.rc.connected = false; s1.rc.gpsOk = true; s1.rc.fixType = 3; s1.rc.numSV = 9;
+    s1.rc.enabled = true; s1.rc.bleOk = true; s1.rc.connected = false; s1.rc.gpsOn = true; s1.rc.gpsOk = true; s1.rc.fixType = 3; s1.rc.numSV = 9;
     s1.rc.imuOk = true; s1.rc.imuLevel = true; s1.rc.imuForward = true;
     r = ui::testInfoSummary(3, l1, p0, s1, far, v, sizeof(v));
     CHECK(r == 0 && strcmp(v, "待ち") == 0, "RaceChrono のまとめ: スマホが未接続なら「待ち」");
@@ -3161,6 +3194,294 @@ int main() {
     CHECK(cantab::ppHasPre() && bot(ACC) < 6000 && ui::screen() == ui::SC_CAN_PP, "PRESS_FLASH_MS で前を記録し、帯は元に戻る(「後を記録」)");
     g_hostCanPreN = 0;
     cantab::begin();
+    ui::testShow(ui::SC_DRIVE);
+    gfx::dirtyClear();
+  }
+
+  // ---------------- 29. 2.10.0: 高負荷時間(仕様書 circuit_screen_spec.md 第 3 版 3 章・8.1)、GPS の時刻(gtime)、サーキットの時計と
+  //                   真ん中の出し分け(ピークの回転数・高負荷時間・▼ 3000rpm・接続の状態)、設定の高負荷時間の 4 項目とデフォルトに戻す
+  {
+    // ---- 高負荷時間の決まり(20 ms ごとに回転数を入れる)
+    Settings lset;
+    settingsDefaults(&lset);
+    uint32_t T = 1000;
+    auto rpmSig = [](int rpm, bool ok) {
+      Signals x;
+      memset(&x, 0, sizeof(x));
+      x.rpmOk = ok;
+      x.rpm = rpm;
+      return x;
+    };
+    auto run = [&](int rpm, uint32_t ms, bool ok) {
+      for (uint32_t k = 0; k < ms; k += 20) load::update(rpmSig(rpm, ok), lset, T += 20);
+    };
+    load::testReset();
+    load::update(rpmSig(3000, true), lset, T);
+    run(3000, 60000, true);
+    CHECK(load::valueMs() / 1000 == 60, "高負荷時間: 3000 rpm 以上を 60 秒で 1:00 増える");
+    run(2999, 30000, true);
+    CHECK(load::valueMs() / 1000 == 30, "2999 rpm を 30 秒で 0:30 減る");
+    run(0, 30000, true);
+    CHECK(load::valueMs() == 0, "0 rpm も同じく減る(0:00)");
+    run(0, 10000, true);
+    CHECK(load::valueMs() == 0, "0 より下にならない");
+    load::testReset();
+    load::update(rpmSig(5000, true), lset, T);
+    run(5000, 600000, true);
+    run(3000, 299000, true);
+    CHECK(load::valueMs() > 0, "リセット: 3000 rpm 以下が 4:59 では 0 にならない");
+    run(3000, 1020, true);  // 最初に 3000 rpm 以下になった回から 5:00
+    CHECK(load::valueMs() == 0, "リセット: 5:00 で 0");
+    load::testReset();
+    load::update(rpmSig(5000, true), lset, T);
+    run(5000, 900000, true);
+    run(1000, 240000, true);
+    run(3500, 1000, true);
+    run(1000, 240000, true);
+    CHECK(load::valueMs() > 0, "リセット: 途中で 3000 rpm を超えたら数え直し");
+    lset.loadResetMin = 1;
+    load::testReset();
+    load::update(rpmSig(5000, true), lset, T);
+    run(5000, 600000, true);
+    run(1000, 59000, true);
+    CHECK(load::valueMs() > 0, "リセット 1 分: 0:59 では 0 にならない");
+    run(1000, 1020, true);
+    CHECK(load::valueMs() == 0, "リセット 1 分: 1:00 で 0");
+    settingsDefaults(&lset);
+    load::testReset();
+    load::update(rpmSig(5000, true), lset, T);
+    run(5000, 120000, true);
+    run(1000, 240000, true);
+    const uint32_t keep = load::valueMs();
+    run(0, 60000, false);
+    CHECK(load::valueMs() == keep && load::lowMs(T) == 0, "回転数の信号なし: 値は変わらず、リセットの数えは 0 から");
+    // 電源が切れていた時間(GPS の時刻で求める)
+    load::testReset();
+    load::restore(600000, 1793065338u, 0);
+    load::update(rpmSig(850, true), lset, T += 20);
+    CHECK(load::valueMs() == 600000, "保存した値から続ける(時刻が分かるまで)");
+    load::onTime(1793065338u + 180 + 20, lset, 20000);  // 起動して 20 秒で時刻が分かった = 保存から 3 分後に起動
+    CHECK(load::valueMs() == 420000, "保存した時刻から 3 分後に時刻が分かると 3 分減る");
+    load::onTime(1793065338u + 900, lset, 30000);
+    CHECK(load::valueMs() == 420000, "電源が切れていた時間を引くのは 1 回だけ");
+    load::testReset();
+    load::restore(600000, 1793065338u, 120000);
+    load::onTime(1793065338u + 180 + 20, lset, 20000);
+    CHECK(load::valueMs() == 0, "保存した 3000 rpm 以下の経過 2 分 + 切れていた 3 分 で 0");
+    load::testReset();
+    load::restore(600000, 0, 0);
+    load::onTime(1793065338u, lset, 20000);
+    CHECK(load::valueMs() == 600000, "前回の起動で時刻が分からなかった(保存の時刻 0)ときは引かない");
+    load::testReset();
+    load::restore(600000, 1793065338u, 0);
+    load::onTime(1793065338u - 100, lset, 20000);
+    CHECK(load::valueMs() == 600000, "差が負のときは引かない");
+    // 色(黄 15・赤 30)
+    load::testSet(14 * 60000 + 59000, false);
+    CHECK(load::level(lset) == 0, "色: 14:59 は白");
+    load::testSet(15 * 60000, false);
+    CHECK(load::level(lset) == 1, "色: 15:00 で黄");
+    load::testSet(30 * 60000, false);
+    CHECK(load::level(lset) == 2, "色: 30:00 で赤");
+    load::testSet(29 * 60000 + 59000, false);
+    CHECK(load::level(lset) == 1, "色: 減って 29:59 で黄に戻る");
+    lset.loadYellowMin = 0;
+    load::testSet(29 * 60000, false);
+    CHECK(load::level(lset) == 0 && load::enabled(lset), "黄 0: 白 → 赤(29:00 は白)");
+    load::testSet(30 * 60000, false);
+    CHECK(load::level(lset) == 2, "黄 0: 30:00 で赤");
+    settingsDefaults(&lset);
+    lset.loadRedMin = 0;
+    load::testSet(40 * 60000, false);
+    CHECK(load::level(lset) == 1, "赤 0: 白 → 黄(40:00 は黄)");
+    lset.loadYellowMin = 0;
+    CHECK(!load::enabled(lset), "黄・赤とも 0 で機能を切");
+    load::update(rpmSig(5000, true), lset, T += 20);
+    CHECK(load::valueMs() == 0, "機能が切: 数えず 0");
+    settingsDefaults(&lset);
+    // クールダウン 30 分
+    load::testSet(29 * 60000 + 59000, false);
+    load::update(rpmSig(5000, true), lset, T += 20);
+    run(5000, 960, true);
+    CHECK(!load::coolDown(), "クールダウン: 29:59 は「高負荷時間」");
+    run(5000, 60, true);
+    CHECK(load::coolDown(), "クールダウン: 30:00 で「クールダウン」");
+    run(1000, 5000, true);
+    CHECK(load::coolDown(), "クールダウン: 減って 29:59 より下になってもそのまま");
+    load::testSet(1000, true);
+    load::update(rpmSig(1000, true), lset, T += 20);
+    run(1000, 1100, true);
+    CHECK(load::valueMs() == 0 && !load::coolDown(), "クールダウン: 0 になったら戻る");
+    lset.coolMin = 0;
+    load::testSet(60 * 60000, false);
+    load::update(rpmSig(5000, true), lset, T += 20);
+    CHECK(!load::coolDown(), "クールダウン時間 0: 替えない");
+    load::testReset();
+
+    // ---- GPS の時刻(gtime)
+    CHECK(gtime::epoch(1970, 1, 1, 0, 0, 0) == 0 && gtime::epoch(2024, 2, 29, 23, 59, 59) == 1709251199u && gtime::epoch(2026, 10, 27, 1, 42, 18) == 1793065338u &&
+            gtime::epoch(2100, 3, 1, 0, 0, 0) == 4107542400u,
+          "gtime: 日時 → UTC の秒(うるう年を含む)");
+    gtime::testReset();
+    uint32_t u = 0;
+    CHECK(!gtime::now(1000, &u), "gtime: GPS の時刻を受けるまでは分からない");
+    gnss::Fix gf;
+    memset(&gf, 0, sizeof(gf));
+    gf.timeOk = true; gf.year = 2026; gf.month = 10; gf.day = 27; gf.hour = 1; gf.min = 42; gf.sec = 18; gf.nano = -200000000; gf.rxMs = 50000;
+    gtime::onFix(gf);
+    CHECK(gtime::now(50199, &u) && u == 1793065337u && gtime::now(50200, &u) && u == 1793065338u && gtime::now(51200, &u) && u == 1793065339u,
+          "gtime: 秒の始まり(millis 50200)で秒が進む(nano の端数を引く)");
+    CHECK(gtime::now(50200 + 3600000, &u) && u == 1793065338u + 3600, "gtime: GPS が途切れても millis で進める");
+    gf.timeOk = false;
+    gf.sec = 30;
+    gtime::onFix(gf);
+    CHECK(gtime::now(50200, &u) && u == 1793065338u, "gtime: 日時が使えない NAV-PVT は捨てる");
+    gtime::testReset();
+
+    // ---- サーキットの時計(針)と真ん中の出し分け
+    Signals c;
+    memset(&c, 0, sizeof(c));
+    c.linkUp = c.rpmOk = c.gearOk = c.waterOk = c.fuelOk = true;
+    c.rpm = 850; c.gear = '1'; c.waterC = 88; c.fuelPct = 55;
+    LinkStats lc;
+    memset(&lc, 0, sizeof(lc));
+    lc.locked = true; lc.infoValid = true; lc.info.proto_ver = METER_LINK_PROTO_VER; lc.info.can_fps[0] = 1000;
+    SysInfo sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.rc.gpsOn = true; sc.rc.gpsOk = true; sc.rc.fixType = 3; sc.rc.numSV = 12; sc.rc.enabled = true; sc.rc.imuOk = true; sc.rc.bleOk = true; sc.rc.connected = true;
+    uint32_t tc = 120000000;
+    auto px = [&](int x, int y) { return fb[y * gfx::W + x]; };
+    static uint16_t fbC[gfx::W * gfx::H];
+    auto same = [&](const Signals &x, uint32_t at) {  // 少しずつ描いた絵と、同じ時刻に最初から描いた絵を比べる
+      memcpy(fbC, fb, sizeof(fbC));
+      ui::testRedraw();
+      ui::update(x, lc, ps, sc, at);
+      gfx::dirtyClear();
+      return memcmp(fbC, fb, sizeof(fbC)) == 0;
+    };
+    ui::testPeakReset();
+    ui::testShow(ui::SC_DRIVE);
+    ui::update(c, lc, ps, sc, tc);
+    gfx::dirtyClear();
+    // 秒針の通る所(18 秒 = 3 時から 18°、半径 150)。時刻が分からない間は針を出さない
+    const int sx = (int)(233 + 150 * cosf(18.0f * 3.14159265f / 180.0f)), sy = (int)(233 + 150 * sinf(18.0f * 3.14159265f / 180.0f));
+    CHECK(ui::testCenter() == 3 && px(sx, sy) == gfx::rgb(0x000000), "時刻が分からない間は針を出さない。真ん中は接続の状態");
+    // 接続の状態の点(GPS・IMU・RaceChrono・CAN の順に、半径 6 の点の真ん中の色)
+    auto dotAt = [&](int row) { return px(STATUS_DOT_X, STATUS_Y0 + STATUS_PITCH * row); };
+    const uint16_t G = gfx::rgb(0x22E36A), D = gfx::rgb(0x5A606A), R = gfx::rgb(0xE3241B);
+    CHECK(dotAt(0) == G && dotAt(1) == G && dotAt(2) == G && dotAt(3) == G, "接続の状態: 全部正常なら 4 つとも緑");
+    sc.timeOk = true;
+    sc.utc = 1793065338u;  // 10:42:18(日本時間)
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(px(sx, sy) == gfx::rgb(0xFFFFFF), "時刻が分かったら針を出す(10:42:18 の秒針は 3 時から 18°)");
+    CHECK(same(c, tc), "針の絵 = 最初から描いた絵");
+    for (int k = 1; k <= 75; k++) {  // 1 秒ずつ進める(秒針が一回り以上。分針・時針も動く)
+      sc.utc = 1793065338u + (uint32_t)k;
+      ui::update(c, lc, ps, sc, tc += 1000);
+      gfx::dirtyClear();
+    }
+    CHECK(px(sx, sy) == gfx::rgb(0x000000), "秒針は進み、前の所は消える");
+    CHECK(same(c, tc), "1 秒ずつ進めた針の絵 = 最初から描いた絵");
+    sc.rc.fixType = 0;  // GPS: 測位なし → 灰
+    sc.rc.connected = false;  // RaceChrono: 未接続 → 灰
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(dotAt(0) == D && dotAt(1) == G && dotAt(2) == D && dotAt(3) == G, "接続の状態: 測位なし・未接続は灰");
+    CHECK(same(c, tc), "接続の状態が変わった絵 = 最初から描いた絵");
+    sc.rc.gpsOk = false;  // GPS: UBX が届かない → 赤
+    sc.rc.enabled = false;  // 送信が切 → IMU・RaceChrono は灰
+    lc.locked = false;  // CAN: 受けていない(起動から INFO_LINK_GRACE_MS より後)→ 赤
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(dotAt(0) == R && dotAt(1) == D && dotAt(2) == D && dotAt(3) == R, "接続の状態: GPS が届かない・CAN を受けていないは赤、送信が切は灰");
+    sc.rc.gpsOn = false;  // GPS を止めている → 灰
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(dotAt(0) == D, "接続の状態: GPS を止めているときは灰");
+    CHECK(same(c, tc), "異常の接続の状態の絵 = 最初から描いた絵");
+    sc.rc.gpsOn = true; sc.rc.gpsOk = true; sc.rc.fixType = 3; sc.rc.enabled = true; sc.rc.connected = true; lc.locked = true;
+    // ピーク: 回転数がはっきり上がったら、真ん中にピークの回転数(上がり切った値。三角が下がっても下げない)
+    c.rpm = 3000;
+    ui::update(c, lc, ps, sc, tc += 100);
+    c.rpm = 6100;
+    ui::update(c, lc, ps, sc, tc += 100);
+    CHECK(ui::testCenter() == 0 && ui::testPeakDrawn(), "回転数が上がったら、真ん中はピークの回転数");
+    c.rpm = 4200;
+    ui::update(c, lc, ps, sc, tc += 100);
+    CHECK(ui::testCenter() == 0, "下がってもピークの三角の間はピークの回転数");
+    CHECK(same(c, tc), "ピークの回転数の絵 = 最初から描いた絵");
+    ui::update(c, lc, ps, sc, tc += TACH_PEAK_SHOW_MS + 1000);
+    CHECK(ui::testCenter() == 3 && !ui::testPeakDrawn(), "ピークの三角が消えたら接続の状態");
+    // 高負荷時間(GPS の時刻が分からない間は上に「時刻 待ち」)
+    load::testSet(200000, false);
+    sc.timeOk = false;
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(ui::testCenter() == 1, "高負荷時間が 0 でなければ高負荷時間");
+    CHECK(px(233, 233 - (int)LOAD_DISC_R + 8) == gfx::rgb(0x000000), "高負荷時間の黒い円(背景が黒なので見た目は同じ)");
+    CHECK(same(c, tc), "高負荷時間(時刻 待ち)の絵 = 最初から描いた絵");
+    sc.timeOk = true;
+    for (int k = 0; k < 3; k++) {
+      load::testSet(200000 + 1000 * (uint32_t)k, false);
+      ui::update(c, lc, ps, sc, tc += 1000);
+      gfx::dirtyClear();
+    }
+    CHECK(same(c, tc), "高負荷時間を 1 秒ずつ描き直した絵 = 最初から描いた絵");
+    c.rpm = 4500;  // 背景が緑: 黒い円が見える(回転が上がってもピークを出さないよう、ピークの記録を消してから)
+    load::testSet(16 * 60000, false);
+    ui::update(c, lc, ps, sc, tc += 1000);
+    ui::testPeakReset();
+    ui::update(c, lc, ps, sc, tc += 1000);
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(px(233, 233 - (int)LOAD_DISC_R + 8) == gfx::rgb(0x000000) && px(233, 233 + 140) != gfx::rgb(0x000000), "背景が緑でも高負荷時間は黒い円の上");
+    CHECK(same(c, tc), "高負荷時間 黄(背景が緑)の絵 = 最初から描いた絵");
+    load::testReset();
+    c.rpm = 850;
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(ui::testCenter() == 3, "高負荷時間が 0 になったら接続の状態");
+    gfx::dirtyClear();
+
+    // ---- 設定: 高負荷時間の 4 項目(7〜10 項目目)とデフォルトに戻す(14 項目目)
+    Signals d;
+    memset(&d, 0, sizeof(d));
+    uint32_t td = 130000000;
+    ui::testShow(ui::SC_SET_LIST, 6);
+    holdOpen(d, td);
+    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadYellowMin == SET_LOADY_DEFAULT, "7 項目目 = 高負荷時間 黄(15 分)の変更");
+    for (int k = 0; k < 4; k++) ui::tap(LX, MY, td += 100);
+    CHECK(set.loadYellowMin == 0, "高負荷時間 黄: 5 分ずつ下げて 0(「切」)で止まる");
+    ui::tap(RX, MY, td += 100);
+    CHECK(set.loadYellowMin == SET_LOAD_STEP, "高負荷時間 黄: 右半分で 5 分");
+    ui::tap(TOPX, TOPY, td += 100);
+    ui::update(d, ls, ps, si, td);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 6 && set.loadYellowMin == SET_LOADY_DEFAULT, "上「‹ 戻る」で変えずに戻る");
+    ui::testShow(ui::SC_SET_LIST, 9);
+    holdOpen(d, td);
+    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadResetMin == SET_LOADRS_DEFAULT, "10 項目目 = 高負荷時間 リセット(5 分)の変更");
+    for (int k = 0; k < 6; k++) ui::tap(LX, MY, td += 100);
+    CHECK(set.loadResetMin == SET_LOADRS_MIN, "高負荷時間 リセット: 1 分で止まる(0 はない)");
+    ui::tap(TOPX, TOPY, td += 100);
+    ui::update(d, ls, ps, si, td);
+    // デフォルトに戻す: 確認の画面(上「‹ 戻る」は戻さない、下「戻す」で全部初期値にして保存)。時間の記録・IMU の向き・高負荷時間は戻さない
+    set.shiftRpm = 6500; set.brightnessPct = 40; set.illumPct = 70; set.warnTempC = 100; set.autoReturnMin = 9; set.demoOn = 1; set.rcOn = 0;
+    set.loadYellowMin = 0; set.loadRedMin = 60; set.coolMin = 0; set.loadResetMin = 12;
+    trip::setTimes(5000, 7000);
+    load::testSet(600000, false);
+    const int resets0 = g_hostImuResets, saves0 = g_hostSaves;
+    ui::testShow(ui::SC_SET_LIST, 13);
+    holdOpen(d, td);
+    CHECK(ui::screen() == ui::SC_SET_RESET, "14 項目目 = デフォルトに戻す。下「長押しで開く」で確認の画面");
+    ui::tap(TOPX, TOPY, td += 100);
+    ui::update(d, ls, ps, si, td);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 13 && set.shiftRpm == 6500 && g_hostSaves == saves0, "確認: 上「‹ 戻る」は戻さない");
+    holdOpen(d, td);
+    ui::tap(BOTX, BOTY, td += 100);
+    ui::update(d, ls, ps, si, td);
+    Settings def;
+    settingsDefaults(&def);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 13 && memcmp(&set, &def, sizeof(Settings)) == 0 && g_hostSaves == saves0 + 1,
+          "確認: 下「戻す」で設定を全部初期値にして保存し、設定の項目へ");
+    CHECK(g_hostBrightness == SET_BRIGHT_DEFAULT, "明るさも初期値で決め直す");
+    CHECK(trip::aboveMs() == 5000 && trip::belowMs() == 7000 && g_hostImuResets == resets0 && load::valueMs() == 600000, "時間の記録・IMU の向き・高負荷時間は戻さない");
+    load::testReset();
+    trip::resetTimes();
+    settingsDefaults(&set);
     ui::testShow(ui::SC_DRIVE);
     gfx::dirtyClear();
   }

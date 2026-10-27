@@ -6,6 +6,8 @@
 // 10/23: 画面の名前をサーキット(走行)・タコ(ブースト計)・データにした。3 つはスワイプで切り替え、長押しで設定(2.1.0)。
 // 設定は 1 画面 1 項目(2.3.0: 7 項目。RaceChrono と CAN確認は受信の状態の中)で、上の帯・下の帯・真ん中の左右の 4 つの範囲で
 // 操作する(config.h の ZONE_*)。
+// 2.10.0: サーキットの輪の内側に時計を足し、真ん中をピークの回転数・高負荷時間・接続の状態の出し分けにした(ギアはタコへ)。
+// 仕様書は Project の circuit_screen_spec.md 第 3 版、絵はキャンバス「595 メーター サーキット画面・タコ画面 案」。
 #include "ui.h"
 #include "gfx.h"
 #include <math.h>
@@ -32,6 +34,8 @@ static const uint16_t C_ALARM_UNIT = rgb(0xFFE3DC);   // 異常のときの単�
 static const uint16_t C_ACCENT = rgb(0x5FD0FF);       // 押せる所の印
 static const uint16_t C_ORANGE = rgb(0xFF4600);
 static const uint16_t C_PEAK = rgb(0xFFD000);         // 回転計のピークホールドの印(黄)
+static const uint16_t C_DOT_OFF = rgb(0x5A606A);      // 状態の点: 待ち・切(データ画面の行と、サーキットの接続の状態)
+static const uint16_t C_DOT_OK = rgb(0x22E36A);       // 状態の点: 正常
 
 // 輪の色と背景の色(3.3、4 章)。並びは 灰・青・緑・黄・赤
 struct Rgb8 {
@@ -287,7 +291,6 @@ static uint16_t g_segCol[RING_SEGS];
 static uint16_t g_bgCol = 0;
 static uint32_t g_bgMs = 0;
 static uint32_t g_waterKey = 0, g_fuelKey = 0;
-static int g_gearKey = -1;
 
 // マス k の中心の角度(3 時が 0°、時計回り)。k = 0〜11 は左側(真下から上へ)、12 = 真下、13 = 真上
 static float segCenterDeg(int k) {
@@ -386,20 +389,27 @@ static uint16_t alarmFillOn(uint16_t bg) {
   return isReddish(bg) ? C_BG : C_ALARM;
 }
 
-// 水温(5.4、5.6、5.7 を円弧にしたもの)。上の弧: 左端(220°)から時計回りに伸びる。アイコンは弧の内側の上(48 px)。
-// 異常(10/22): 点滅の点灯側は上側を赤く塗り(fillSide)、弧の地は暗い赤・伸びた所とアイコンは白。消灯側は背景のまま、伸びた所とアイコンが赤。
-// clean = true: 背景を塗った直後(消す必要がない)
-static const int ICON_WATER_X = 209, ICON_WATER_Y = 109, ICON_FUEL_X = 209, ICON_FUEL_Y = 309;
+// 水温(5.4、5.6、5.7 を円弧にしたもの)。上の弧: 左端(220°)から時計回りに伸びる。
+// 2.10.0: 弧は時計の内側(ARC_R_IN〜ARC_R_OUT)、アイコン(32 px)は弧の右端の先(342°、半径 116。仕様書 circuit_screen_spec.md 4.1)。
+// 異常(10/22): 点滅の点灯側は上側を赤く塗り(fillSide)、弧の地は暗い赤・伸びた所は白。消灯側は背景のまま、伸びた所が赤。
+// アイコンは塗る所の外(背景の上)なので、点灯側は白、消灯側は赤。
+// clean = true: 背景を塗った直後(消す必要がない。サーキットでは時計の内側の絵 innerDraw がいつも塗ってから描く)。
+// false はオープニングだけ(時計を出す前に、画面へ直接描き直す)
+static const int ICON_M = 32;  // アイコンの大きさ(ICON_WATER_M・ICON_FUEL_M)
+static const int ICON_WATER_X = 327, ICON_WATER_Y = 181, ICON_FUEL_X = 107, ICON_FUEL_Y = 253;
 static void drawWaterPanel(const Signals &s, bool clean) {
   const float A0 = WATER_ARC_START_DEG, A1 = WATER_ARC_START_DEG + ARC_SWEEP_DEG;
   bool alarm = s.waterOk && g_waterAlarm;
   bool filled = alarm && !g_alarmOff;  // 点灯側: 赤く塗る
-  if (!clean) fillSide(true, g_bgCol, true);
+  if (!clean) {
+    fillSide(true, g_bgCol, true);
+    gfx::fillRect(ICON_WATER_X, ICON_WATER_Y, ICON_M, ICON_M, g_bgCol);
+  }
   if (filled) fillSide(true, alarmFillOn(g_bgCol), false);
   uint16_t alarmC = filled ? C_WHITE : alarmOn(g_bgCol);
-  gfx::drawIcon(ICON_WATER_L, ICON_WATER_X, ICON_WATER_Y, alarm ? alarmC : labelOn(g_bgCol));
+  gfx::drawIcon(ICON_WATER_M, ICON_WATER_X, ICON_WATER_Y, alarm ? alarmC : labelOn(g_bgCol));
   if (!s.waterOk) {
-    textC(FONT_NUM600_34, 233, 99, "– –", labelOn(g_bgCol));  // 弧の真ん中(半径 146)
+    textC(FONT_NUM600_34, 233, 129, "– –", labelOn(g_bgCol));  // 弧の真ん中(半径 116)
     return;
   }
   const float span = WATER_BAR_MAX_C - WATER_BAR_MIN_C;
@@ -421,18 +431,21 @@ static void drawWaterPanel(const Signals &s, bool clean) {
   if (ae > ab) arc(ab, ae, C_WHITE);
 }
 
-// 燃料(5.5、5.6、5.7 を円弧にしたもの)。下の弧: 左端(140°)から反時計回り(角度が減る向き)に伸びる。アイコンは弧の内側の下。
-// 0〜FUEL_ALARM_PCT の地は暗い赤(10/22)。異常の描き方は水温と同じ(下側を塗る)
+// 燃料(5.5、5.6、5.7 を円弧にしたもの)。下の弧: 左端(140°)から反時計回り(角度が減る向き)に伸びる。
+// 2.10.0: アイコン(32 px)は弧の左端の先(162°、半径 116)。0〜FUEL_ALARM_PCT の地は暗い赤(10/22)。異常の描き方は水温と同じ(下側を塗る)
 static void drawFuelPanel(const Signals &s, bool clean) {
   const float A1 = FUEL_ARC_START_DEG, A0 = FUEL_ARC_START_DEG - ARC_SWEEP_DEG;
   bool alarm = s.fuelOk && g_fuelAlarm;
   bool filled = alarm && !g_alarmOff;
-  if (!clean) fillSide(false, g_bgCol, true);
+  if (!clean) {
+    fillSide(false, g_bgCol, true);
+    gfx::fillRect(ICON_FUEL_X, ICON_FUEL_Y, ICON_M, ICON_M, g_bgCol);
+  }
   if (filled) fillSide(false, alarmFillOn(g_bgCol), false);
   uint16_t alarmC = filled ? C_WHITE : alarmOn(g_bgCol);
-  gfx::drawIcon(ICON_FUEL_L, ICON_FUEL_X, ICON_FUEL_Y, alarm ? alarmC : labelOn(g_bgCol));
+  gfx::drawIcon(ICON_FUEL_M, ICON_FUEL_X, ICON_FUEL_Y, alarm ? alarmC : labelOn(g_bgCol));
   if (!s.fuelOk) {
-    textC(FONT_NUM600_34, 233, 391, "– –", labelOn(g_bgCol));
+    textC(FONT_NUM600_34, 233, 361, "– –", labelOn(g_bgCol));
     return;
   }
   float as = A1 - fuelArcQ(s) * 0.25f;
@@ -461,17 +474,13 @@ static void idleTrack(const Signals &s, uint32_t now) {
     g_nSinceMs = 0;
   }
 }
-// ギアの所に経過時間を出すときは、その秒数。出さないときは -1
+// ▼ 3000rpm と経過時間を出すときは、その秒数。出さないときは -1
 static int idleShowSec(uint32_t now) {
   if (!g_lowSinceMs || !g_nSinceMs || (uint32_t)(now - g_nSinceMs) < IDLE_SHOW_AFTER_N_MS) return -1;
   uint32_t sec = (uint32_t)(now - g_lowSinceMs) / 1000;
   return sec > 359999 ? 359999 : (int)sec;
 }
 
-// ギア(5.3)。枠なし。文字の大きさは config.h の GEAR_FONT(10/22: 160 px。弧の内側に入る)。
-// 10/23: N が IDLE_SHOW_AFTER_N_MS 続いたら、ギアの代わりに「▼ 3000rpm」と 3000rpm 以下の経過時間(分:秒)。
-// 消す範囲は、上下の塗る所(ALARM_WATER_Y1 より上、ALARM_FUEL_Y0 から下)と、左右の「SIM」の印に掛からないようにする
-static const int GEAR_CLR_X0 = 120, GEAR_CLR_X1 = 346, GEAR_CLR_Y0 = 170, GEAR_CLR_Y1 = 293;
 static void triDown(float cx, float cy, float size, uint16_t c) {  // 下向きの正三角形(中心 cx, cy、一辺 size)
   const float h = size * 0.866f;
   gfx::Pt p[3] = { { cx - size * 0.5f, cy - h * 0.5f }, { cx + size * 0.5f, cy - h * 0.5f }, { cx, cy + h * 0.5f } };
@@ -486,36 +495,14 @@ static void triUp(float cx, float cy, float size, uint16_t c) {
   gfx::polyAdd(p, 3);
   gfx::polyFill(c);
 }
-static void drawGearPanel(const Signals &s, int idleSec) {
-  gfx::fillRect(GEAR_CLR_X0, GEAR_CLR_Y0, GEAR_CLR_X1 - GEAR_CLR_X0, GEAR_CLR_Y1 - GEAR_CLR_Y0, g_bgCol);
-  if (idleSec >= 0) {
-    const uint16_t lc = labelOn(g_bgCol);
-    char cap[12];
-    snprintf(cap, sizeof(cap), "%drpm", IDLE_RPM);
-    const float wc = gfx::textWidth(FONT_NUM600_30, cap);
-    const float x0 = 233 - (24 + 8 + wc) * 0.5f;
-    triDown(x0 + 12, 190, 24, lc);
-    gfx::drawText(FONT_NUM600_30, x0 + 32, 200, cap, lc);
-    char t[16];
-    if (idleSec < 3600) snprintf(t, sizeof(t), "%d:%02d", idleSec / 60, idleSec % 60);
-    else snprintf(t, sizeof(t), "%d:%02d:%02d", idleSec / 3600, idleSec / 60 % 60, idleSec % 60);
-    const FontData &f = gfx::textWidth(FONT_NUM600_96, t) <= (GEAR_CLR_X1 - GEAR_CLR_X0 - 6) ? FONT_NUM600_96 : FONT_NUM600_64;
-    textC(f, 233, 282, t, fgOn(g_bgCol));
-    return;
-  }
-  char t[4] = "–";
-  if (s.gearOk) {
-    t[0] = s.gear;
-    t[1] = 0;
-  }
-  textC(GEAR_FONT, 233, GEAR_BASELINE, t, fgOn(g_bgCol));
-}
 
 // 回転数のピークホールド(10/23): 輪の両側、画面の端に付く黄色の三角形(config.h の PEAK_TRI_*)。
 // 位置はピークの回転数が輪のマスのどこに当たるか(1 マス目〜12 マス目、マスの間は比例)。左側の角度 a、右側は 180 − a
 static int peakTriKey(const Signals &s);
 static gfx::Rect ptsRect(const gfx::Pt *p, int n);
 static bool rectsOverlap(const gfx::Rect &a, const gfx::Rect &b);
+static void needlePoints(int key, float rIn, float rOut, float wIn, float wOut, gfx::Pt p[4]);
+static void fmtTime(char *out, size_t n, uint32_t ms);
 static void peakTriPoints(int key, bool right, gfx::Pt p[3]) {
   float a = key * 0.25f;
   if (right) a = 180.0f - a;
@@ -541,6 +528,7 @@ static void drawPeakTris(int key) {
   }
 }
 static int g_triKey = -1;  // 描いてある三角形の角度 [1/4 度]。-1 = なし
+static float g_peakTop = -1.0f;  // ピークの三角を出している間の最高の回転数(真ん中の数字。三角が下がっても下げない。2.10.0)。-1 = 出していない
 
 // 描いた内容を表す数(これが変わったら描き直す)
 static uint32_t waterKey(const Signals &s) {
@@ -551,14 +539,412 @@ static uint32_t fuelKey(const Signals &s) {
   if (!s.fuelOk) return 1;
   return 2 | (g_fuelAlarm ? 4 : 0) | ((g_fuelAlarm && g_alarmOff) ? 8 : 0) | ((uint32_t)fuelArcQ(s) << 4);
 }
-static int gearKey(const Signals &s, int idleSec) {
-  if (idleSec >= 0) return 0x10000 + idleSec;
-  return s.gearOk ? s.gear : 0;
+
+// ---------------------------------------------------------------- 時計と真ん中(2.10.0。config.h の CLK_*・HAND_*・CENTER_*・LOAD_*・STATUS_*)
+// 画面 = 輪のマスとピークの三角(半径 RING_R_IN − 0.5 から外。画面にだけ描く)+ 時計の内側(半径 CLK_CLIP_R まで)+ 針。
+// 時計の内側(背景・異常の塗り・弧・アイコン・目盛・真ん中・「SIM」の印)は、別の画面メモリー g_drvFace に描いて、変わった所だけを
+// 画面へ写す(innerDraw)。g_drvFace はいつも全部が正しいので、写す範囲は広めでよい。真ん中の 1 行だけが変わったときは、その行の四角を
+// 行を描く前の絵(g_drvBase)から戻して描き直し、その四角だけを写す(行の四角は針に掛からず、ほかの行と重ならない)。
+// 針は画面にだけ描く: 前の所と今の所を g_drvFace から写して消し、消した所に掛かる針を全部、下から順に描き直す(handsUpdate)。
+// 写すのは半径 CLK_CLIP_R の中だけなので、輪のマスは消えない。少しずつ描いた絵は、最初から描いた絵と 1 画素も違わない
+static uint16_t *g_drvFace = nullptr;  // 時計の内側の絵(針を除く。半径 CLK_CLIP_R の中だけを使う)
+static int g_fade = 256;  // 時計(目盛と針)と真ん中の濃さ(0〜256。オープニングで浮かべるときだけ 256 未満)
+static uint16_t fadeOn(uint16_t bg, uint16_t c) {
+  return g_fade >= 256 ? c : gfx::blend(bg, c, (uint32_t)(g_fade * 255 / 256));
+}
+static const int CLK_SQ0 = 233 - (int)CLK_CLIP_R, CLK_SQ1 = 233 + (int)CLK_CLIP_R + 1;  // 時計の内側を包む四角(58〜409)
+
+// ---- 目盛(12 本。3・6・9・12 時は長く太い。色はアイコンと同じ)
+static void drawClockTicks() {
+  const uint16_t c = fadeOn(g_bgCol, labelOn(g_bgCol));
+  for (int i = 0; i < 12; i++) {
+    const bool maj = i % 3 == 0;
+    const float w = maj ? CLK_TICK_MAJ_W : CLK_TICK_MIN_W;
+    gfx::Pt p[4];
+    needlePoints(i * 30 * 4, maj ? CLK_TICK_MAJ_R_IN : CLK_TICK_MIN_R_IN, CLK_TICK_R_OUT, w, w, p);
+    gfx::polyBegin(ptsRect(p, 4));
+    gfx::polyAdd(p, 4);
+    gfx::polyFill(c);
+  }
+}
+
+// ---- 針(四角。時針・分針・秒針の順に下から描く)。角度は 1/4 度(3 時が 0°、時計回り)。-1 = 出さない(時刻が分からない)
+struct HandDef {
+  float rOut, w, e;  // 先の半径、太さ、縁の幅(片側)
+};
+static const HandDef HANDS[3] = { { HAND_H_R_OUT, HAND_H_W, HAND_EDGE }, { HAND_M_R_OUT, HAND_M_W, HAND_EDGE }, { HAND_S_R_OUT, HAND_S_W, HAND_S_EDGE } };
+static int16_t g_handK[3] = { -1, -1, -1 };  // 画面に描いてある針の角度
+// 今の時刻の針の角度。時針は分と秒の分も、分針は秒の分も進める(1/4 度に丸める)
+static void handsAt(const SysInfo &si, int16_t k[3]) {
+  if (!si.timeOk) {
+    k[0] = k[1] = k[2] = -1;
+    return;
+  }
+  const uint32_t t = (uint32_t)(((uint64_t)si.utc + CLOCK_TZ_SEC) % 43200u);  // 12 時間の中の秒
+  const uint32_t sec = t % 60, min = t / 60 % 60, hr = t / 3600;
+  const float rot[3] = { 30.0f * (float)hr + 0.5f * (float)min + (float)sec / 120.0f, 6.0f * (float)min + 0.1f * (float)sec, 6.0f * (float)sec };
+  for (int i = 0; i < 3; i++) {
+    int q = (int)lroundf((rot[i] + 270.0f) * 4.0f);  // 12 時の向き = 270°
+    k[i] = (int16_t)(q % 1440);
+  }
+}
+static void handOuter(int i, int key, gfx::Pt p[4]) {  // 縁を含めた形
+  const HandDef &h = HANDS[i];
+  needlePoints(key, HAND_R_IN - h.e, h.rOut + h.e, h.w + 2 * h.e, h.w + 2 * h.e, p);
+}
+static gfx::Rect handRect(int i, int key) {
+  gfx::Pt p[4];
+  handOuter(i, key, p);
+  return ptsRect(p, 4);
+}
+// 針の色: 白(背景が黄色のときは紺。ほかの文字と同じ)。縁: 黒の背景は黒、黄色は背景の色、ほか(緑・赤)は紺
+static uint16_t handFillOn(uint16_t bg) {
+  return isBright(bg) ? fgOn(bg) : C_WHITE;
+}
+static uint16_t handEdgeOn(uint16_t bg) {
+  return isBright(bg) ? bg : (bg == C_BG ? C_BG : rgb(0x06132E));
+}
+static void drawHand(int i, int key) {
+  const HandDef &h = HANDS[i];
+  gfx::Pt p[4];
+  handOuter(i, key, p);
+  gfx::polyBegin(ptsRect(p, 4));
+  gfx::polyAdd(p, 4);
+  gfx::polyFill(fadeOn(g_bgCol, handEdgeOn(g_bgCol)));
+  needlePoints(key, HAND_R_IN + h.e, h.rOut - h.e, h.w - 2 * h.e, h.w - 2 * h.e, p);
+  gfx::polyBegin(ptsRect(p, 4));
+  gfx::polyAdd(p, 4);
+  gfx::polyFill(fadeOn(g_bgCol, handFillOn(g_bgCol)));
+}
+// 針を k へ動かす。er[0..done) はもう g_drvFace から写した四角(内側を描き直した所)。そこに掛かる針と、動いた針の前の所・今の所を
+// 写して消し、消した所に掛かる針も全部(下の針に重なるときは、その上の針も)描き直す
+static void handsUpdate(const int16_t k[3], gfx::Rect *er, int done, int cap) {
+  int ne = done;
+  bool redo[3], gone[3] = { false, false, false };
+  for (int i = 0; i < 3; i++) redo[i] = k[i] != g_handK[i];
+  for (int pass = 0; pass < 4; pass++) {
+    bool more = false;
+    for (int i = 0; i < 3; i++) {
+      if (!redo[i] && g_handK[i] >= 0) {
+        const gfx::Rect hr = handRect(i, g_handK[i]);
+        for (int j = 0; j < ne && !redo[i]; j++) redo[i] = rectsOverlap(er[j], hr);
+      }
+      if (redo[i] && !gone[i]) {
+        gone[i] = true;
+        more = true;
+        if (g_handK[i] >= 0 && ne < cap) er[ne++] = handRect(i, g_handK[i]);
+        if (k[i] >= 0 && k[i] != g_handK[i] && ne < cap) er[ne++] = handRect(i, k[i]);
+      }
+    }
+    if (!more) break;
+  }
+  if (g_drvFace)
+    for (int j = done; j < ne; j++) gfx::copyDiscFrom(g_drvFace, er[j].x0, er[j].y0, er[j].x1, er[j].y1, 233, 233, CLK_CLIP_R);
+  for (int i = 0; i < 3; i++) {
+    if (redo[i] && k[i] >= 0) drawHand(i, k[i]);
+    g_handK[i] = k[i];
+  }
+}
+
+// ---- 真ん中(上から順に当てはまった 1 つ。config.h の CENTER_* の説明)
+enum CenterMode : uint8_t { CM_PEAK, CM_LOAD, CM_IDLE, CM_STATUS, CM_NONE = 0xFF };
+struct StatusLine {  // 接続の状態の 1 行
+  const char *name;
+  uint8_t kind;    // 0 = 緑(正常)、1 = 灰(待ち・切)、2 = 赤(異常)
+  bool sv;         // 値の前に「衛星」(GPS)
+  char value[12];
+};
+struct Center {
+  uint8_t mode;
+  int peak;           // CM_PEAK: 回転数(10 rpm 単位)
+  uint32_t loadSec;   // CM_LOAD: 高負荷時間 [秒]
+  uint8_t level;      // CM_LOAD: 0 白、1 黄、2 赤
+  bool cool;          // CM_LOAD: タイトルを「クールダウン」に
+  bool timeOk;        // CM_LOAD: 時刻が分かっている(「時刻 待ち」を出さない)
+  int idleSec;        // ▼ 3000rpm の経過時間(-1 = 出さない)
+  StatusLine st[4];   // CM_STATUS: GPS・IMU・RaceChrono・CAN
+};
+static uint8_t g_cMode = CM_NONE;  // 画面に描いてある真ん中の出し分け
+static char g_cKey[4][32];         // 画面に描いてある真ん中の各行の内容
+static uint16_t g_tagKey = 0xFFFF; // 画面に描いてある「SIM」の印(tagOf)
+
+// 接続の状態(データ画面の簡易版。言葉は仕様書 4.2 の表。水温のアイコンの横に来る GPS・IMU の行は 2 文字まで)
+static void statusMake(int row, const LinkStats &ls, const SysInfo &si, uint32_t now, StatusLine *o) {
+  const RcStats &r = si.rc;
+  o->kind = 1;
+  o->sv = false;
+  o->value[0] = 0;
+  auto set = [o](uint8_t kind, const char *v) {
+    o->kind = kind;
+    snprintf(o->value, sizeof(o->value), "%s", v);
+  };
+  switch (row) {
+    case 0:  // GPS: 測位あり = 緑「衛星 12」、測位なし = 灰「衛星 3」、止めている = 灰「切」、UBX が届かない = 赤「なし」
+      o->name = "GPS";
+      if (!r.gpsOn) set(1, "切");
+      else if (!r.gpsOk) set(2, "なし");
+      else {
+        o->sv = true;
+        o->kind = r.fixType >= 2 ? 0 : 1;
+        snprintf(o->value, sizeof(o->value), "%u", (unsigned)(r.numSV > 99 ? 99 : r.numSV));  // 2 桁まで(行の四角に入る幅)
+      }
+      break;
+    case 1:  // IMU(RaceChrono 送信が入のときだけ動かす)
+      o->name = "IMU";
+      if (!r.enabled) set(1, "切");
+      else if (!r.imuOk) set(2, "なし");
+      else set(0, "OK");
+      break;
+    case 2:
+      o->name = "RaceChrono";
+      if (!r.enabled) set(1, "切");
+      else if (!r.bleOk) set(2, "不可");
+      else if (r.connected) set(0, "接続中");
+      else set(1, "未接続");
+      break;
+    default:  // CAN: 受信の状態の「通信速度」と同じ決まり(デモ・起動から INFO_LINK_GRACE_MS の間は灰)。CANリーダーが C-CAN を受けていなければ赤
+      o->name = "CAN";
+      if (ls.locked && !(ls.infoValid && ls.info.proto_ver == METER_LINK_PROTO_VER && ls.info.can_fps[0] == 0)) set(0, "受信中");
+      else if (g_set->demoOn || (!ls.locked && now < INFO_LINK_GRACE_MS)) set(1, "–");
+      else set(2, "なし");
+      break;
+  }
+}
+static void centerMake(const Signals &s, const LinkStats &ls, const SysInfo &si, uint32_t now, Center *c) {
+  memset(c, 0, sizeof(*c));
+  c->idleSec = idleShowSec(now);
+  const uint32_t sec = load::valueMs() / 1000;
+  if (peakTriKey(s) >= 0) {
+    c->mode = CM_PEAK;
+    c->peak = g_peakTop > 0 ? (int)lroundf(g_peakTop / 10.0f) * 10 : 0;
+    if (c->peak > 9990) c->peak = 9990;  // 4 桁まで(行の四角に入る幅)
+  } else if (sec > 0) {
+    c->mode = CM_LOAD;
+    c->loadSec = sec;
+    c->level = load::level(*g_set);
+    c->cool = load::coolDown();
+    c->timeOk = si.timeOk;
+  } else if (!load::enabled(*g_set) && c->idleSec >= 0) {
+    c->mode = CM_IDLE;
+  } else {
+    c->mode = CM_STATUS;
+    for (int i = 0; i < 4; i++) statusMake(i, ls, si, now, &c->st[i]);
+  }
+}
+static uint16_t centerBg(uint8_t mode) {  // 真ん中の行の下地(高負荷時間は黒い円)
+  return mode == CM_LOAD ? C_BG : g_bgCol;
+}
+static uint16_t peakColOn(uint16_t bg) {  // ピークの回転数: 黄(三角と同じ)。背景が黄色のときは紺
+  return isBright(bg) ? fgOn(bg) : C_PEAK;
+}
+static uint16_t loadCol(uint8_t level) {
+  return level == 2 ? C_ALARM : (level == 1 ? C_PEAK : C_WHITE);
+}
+static int centerLines(uint8_t mode) {
+  return mode == CM_LOAD || mode == CM_STATUS ? 4 : (mode == CM_NONE ? 0 : 1);
+}
+// 行 i の範囲(行だけを描き直すときは、この四角を g_drvBase から戻してから描く)。文字の全部が入り、ほかの行と重ならない。
+// どれも真ん中の四角 CB_RECT の中で、画素の中心が半径 114 以内(針は半径 HAND_R_IN − HAND_EDGE から外なので掛からない)。
+// ピークの数字(4 桁で幅 190)と GPS の「衛星 12」は、アイコンの四角の端に少し入る(戻すのは g_drvBase なので、アイコンも元のまま)
+static gfx::Rect centerLineRect(uint8_t mode, int i) {
+  static const gfx::Rect LOAD_R[4] = { { 185, 162, 281, 185 }, { 175, 188, 291, 212 }, { 140, 212, 327, 265 }, { 150, 266, 316, 296 } };
+  if (mode == CM_PEAK) return gfx::Rect{ 136, 186, 330, 256 };
+  if (mode == CM_LOAD) return LOAD_R[i & 3];
+  if (mode == CM_IDLE) return gfx::Rect{ 138, 206, 329, 292 };
+  const int mid = STATUS_Y0 + STATUS_PITCH * i;  // 接続の状態
+  return gfx::Rect{ CENTER_X0, (int16_t)(mid - 14), (int16_t)(i < 2 ? 329 : 331), (int16_t)(mid + 14) };
+}
+static void centerKey(const Center &c, int i, char *k, size_t n) {
+  switch (c.mode) {
+    case CM_PEAK: snprintf(k, n, "%d", c.peak); break;
+    case CM_LOAD:
+      if (i == 0) snprintf(k, n, "%d", c.timeOk ? 1 : 0);
+      else if (i == 1) snprintf(k, n, "%d%d", c.cool ? 1 : 0, c.level);
+      else if (i == 2) snprintf(k, n, "%u|%d", (unsigned)c.loadSec, c.level);
+      else snprintf(k, n, "%d", c.idleSec);
+      break;
+    case CM_IDLE: snprintf(k, n, "%d", c.idleSec); break;
+    default: snprintf(k, n, "%d|%d|%s", c.st[i].kind, c.st[i].sv ? 1 : 0, c.st[i].value); break;
+  }
+}
+// ▼ 3000rpm と経過時間(高負荷時間の下の小さい行。▼ は三角で描く)
+static void drawIdleSmall(int sec, uint16_t bg) {
+  char cap[12], t[16];
+  snprintf(cap, sizeof(cap), "%drpm", IDLE_RPM);
+  fmtTime(t, sizeof(t), (uint32_t)sec * 1000u);
+  const FontData &ft = gfx::textWidth(FONT_NUM600_26, t) <= 64 ? FONT_NUM600_26 : FONT_NUM600_22;  // 1 時間以上は小さく
+  const float wc = gfx::textWidth(FONT_NUM600_16, cap), wt = gfx::textWidth(ft, t);
+  const float x0 = floorf(233 - (10 + 1 + wc + 6 + wt) * 0.5f);
+  const uint16_t lc = fadeOn(bg, labelOn(bg));
+  triDown(x0 + 5, (float)(LOAD_IDLE_BASE - 6), 10, lc);
+  gfx::drawText(FONT_NUM600_16, x0 + 11, (float)LOAD_IDLE_BASE, cap, lc);
+  gfx::drawText(ft, x0 + 11 + wc + 6, (float)LOAD_IDLE_BASE, t, fadeOn(bg, fgOn(bg)));
+}
+// 行 i を描く(下地は塗ってある)
+static void centerLine(const Center &c, int i) {
+  const uint16_t bg = centerBg(c.mode);
+  char t[16];
+  if (c.mode == CM_PEAK) {
+    snprintf(t, sizeof(t), "%d", c.peak);
+    textC(PEAK_NUM_FONT, 233, PEAK_NUM_BASE, t, fadeOn(bg, peakColOn(bg)));
+  } else if (c.mode == CM_LOAD) {
+    const uint16_t col = fadeOn(bg, loadCol(c.level));
+    if (i == 0) {
+      if (!c.timeOk) textC(FONT_JP600_18, 233, LOAD_WAIT_BASE, "時刻 待ち", fadeOn(bg, labelOn(bg)));
+    } else if (i == 1) {
+      textC(FONT_JP600_18, 233, LOAD_TITLE_BASE, c.cool ? "クールダウン" : "高負荷時間", col);
+    } else if (i == 2) {
+      fmtTime(t, sizeof(t), c.loadSec * 1000u);
+      textC(c.loadSec < 3600 ? FONT_NUM600_64 : FONT_NUM600_56, 233, LOAD_TIME_BASE, t, col);
+    } else if (c.idleSec >= 0) {
+      drawIdleSmall(c.idleSec, bg);
+    }
+  } else if (c.mode == CM_IDLE) {  // 2.9.0 のギアの所の表示と同じ(大きい経過時間)。入らなければ小さく
+    fmtTime(t, sizeof(t), (uint32_t)c.idleSec * 1000u);
+    const float room = CENTER_X1 - CENTER_X0 - 6;
+    const FontData *f = &FONT_NUM600_96;
+    if (gfx::textWidth(*f, t) > room) f = &FONT_NUM600_64;
+    if (gfx::textWidth(*f, t) > room) f = &FONT_NUM600_56;
+    if (gfx::textWidth(*f, t) > room) f = &FONT_NUM600_48;  // 10 時間以上
+    textC(*f, 233, 282, t, fadeOn(bg, fgOn(bg)));
+  } else {
+    const StatusLine &l = c.st[i & 3];
+    const int mid = STATUS_Y0 + STATUS_PITCH * i;
+    const uint16_t dot = l.kind == 0 ? C_DOT_OK : (l.kind == 2 ? alarmOn(bg) : C_DOT_OFF);
+    gfx::fillCircle((float)STATUS_DOT_X, (float)mid, 6.0f, fadeOn(bg, dot));
+    gfx::drawText(FONT_NUM600_22, STATUS_NAME_X, (float)(mid + 7), l.name, fadeOn(bg, fgOn(bg)));
+    float x = STATUS_VALUE_X;
+    if (l.sv) x = gfx::drawText(FONT_JP500_14, x, (float)(mid + 4), "衛星", fadeOn(bg, labelOn(bg))) + 3;
+    const uint16_t vc = l.kind == 2 ? alarmOn(bg) : ((l.kind == 0 || l.sv) ? fgOn(bg) : labelOn(bg));
+    if (isAsciiLike(l.value)) gfx::drawText(FONT_NUM600_22, x, (float)(mid + 7), l.value, fadeOn(bg, vc));
+    else gfx::drawText(FONT_JP600_18, x, (float)(mid + 5), l.value, fadeOn(bg, vc));
+  }
+}
+// 真ん中の変わらない所(下地は背景で塗ってある): 黒い円、「rpm」、▼ 3000rpm の見出し
+static void centerDrawStatic(const Center &c) {
+  const uint16_t bg = centerBg(c.mode);
+  if (c.mode == CM_LOAD) gfx::fillCircle(233, 233, LOAD_DISC_R, fadeOn(g_bgCol, C_BG));  // 黒い円(背景が黒なら見えない)
+  if (c.mode == CM_PEAK) textC(FONT_NUM600_22, 233, PEAK_RPM_BASE, "rpm", fadeOn(bg, peakColOn(bg)));
+  if (c.mode == CM_IDLE) {  // ▼ 3000rpm(2.9.0 と同じ形)
+    const uint16_t lc = fadeOn(bg, labelOn(bg));
+    char cap[12];
+    snprintf(cap, sizeof(cap), "%drpm", IDLE_RPM);
+    const float wc = gfx::textWidth(FONT_NUM600_30, cap);
+    const float x0 = 233 - (24 + 8 + wc) * 0.5f;
+    triDown(x0 + 12, 190, 24, lc);
+    gfx::drawText(FONT_NUM600_30, x0 + 32, 200, cap, lc);
+  }
+}
+// 真ん中の行を描く前の絵(真ん中の四角 CB_RECT だけ)。行だけを描き直すときに、その行の四角をここから戻す
+static const gfx::Rect CB_RECT = { 136, 136, 331, 331 };  // 黒い円(半径 LOAD_DISC_R)・真ん中の行・印を包む
+static uint16_t *g_drvBase = nullptr;
+static void baseSave() {  // 今の描く先から取る
+  const int w = CB_RECT.x1 - CB_RECT.x0, h = CB_RECT.y1 - CB_RECT.y0;
+  if (!g_drvBase) g_drvBase = (uint16_t *)platAlloc((size_t)w * h * sizeof(uint16_t));
+  if (!g_drvBase) return;
+  const uint16_t *f = gfx::frame();
+  for (int y = 0; y < h; y++) memcpy(g_drvBase + (size_t)y * w, f + (size_t)(CB_RECT.y0 + y) * gfx::W + CB_RECT.x0, (size_t)w * sizeof(uint16_t));
+}
+static void baseRestore(const gfx::Rect &r) {  // 今の描く先へ(r は CB_RECT の中)
+  const int w = CB_RECT.x1 - CB_RECT.x0;
+  uint16_t *f = gfx::frame();
+  for (int y = r.y0; y < r.y1; y++)
+    memcpy(f + (size_t)y * gfx::W + r.x0, g_drvBase + (size_t)(y - CB_RECT.y0) * w + (r.x0 - CB_RECT.x0), (size_t)(r.x1 - r.x0) * sizeof(uint16_t));
+}
+
+// ---- 「SIM」の印(サーキットは時計の内側に描く。2.10.0: 輪の左右から、真ん中の上下(弧の内側)へ移した)
+static const int DRV_SIM_X = 212, DRV_SIM_Y = 300, DRV_SCENE_X = 212, DRV_SCENE_Y = 140;  // 42×21 の四角の左上
+static uint16_t tagOf(const Signals &s) {  // 0 = 出さない。bit 8 = 「SIM」、下位 8 ビット = 場面番号
+  return (s.linkUp && s.sim) ? (uint16_t)(0x100 | s.scene) : 0;
+}
+static void drawDriveTags(uint16_t tag, uint16_t bg) {
+  if (!(tag & 0x100)) return;
+  const uint16_t fg = labelOn(bg);
+  textC(FONT_NUM600_20, DRV_SIM_X + 21, DRV_SIM_Y + 17, "SIM", fg);
+  if (tag & 0xFF) {
+    char t[4];
+    snprintf(t, sizeof(t), "%u", (unsigned)(tag & 0xFF));
+    textC(FONT_NUM600_20, DRV_SCENE_X + 21, DRV_SCENE_Y + 18, t, fg);
+  }
+}
+
+// 時計の内側を全部描く(今の描く先へ。針は描かない)。真ん中の行の前で、行の下地を g_drvBase に取る
+static void innerDraw(const Signals &s, const Center &c, uint16_t tag) {
+  gfx::fillRect(CLK_SQ0, CLK_SQ0, CLK_SQ1 - CLK_SQ0, CLK_SQ1 - CLK_SQ0, g_bgCol);
+  drawWaterPanel(s, true);
+  drawFuelPanel(s, true);
+  drawClockTicks();
+  centerDrawStatic(c);
+  drawDriveTags(tag, c.mode == CM_LOAD ? C_BG : g_bgCol);
+  baseSave();
+  for (int i = 0; i < centerLines(c.mode); i++) centerLine(c, i);
+}
+// 描いた内容の記録を今の値にする
+static void innerKeys(const Signals &s, const Center &c, uint16_t tag) {
+  g_waterKey = waterKey(s);
+  g_fuelKey = fuelKey(s);
+  g_cMode = c.mode;
+  g_tagKey = tag;
+  for (int i = 0; i < 4; i++) {
+    if (i < centerLines(c.mode)) centerKey(c, i, g_cKey[i], sizeof(g_cKey[i]));
+    else g_cKey[i][0] = 0;
+  }
+}
+// 時計の内側を全部描き直して画面へ写し、針を全部描く(背景を塗り直したとき・オープニング・g_drvFace が無いとき)
+static void innerFull(const Signals &s, const Center &c, uint16_t tag, const int16_t hk[3]) {
+  if (!g_drvFace) g_drvFace = (uint16_t *)platAlloc((size_t)gfx::W * gfx::H * sizeof(uint16_t));
+  if (g_drvFace) gfx::setTarget(g_drvFace);
+  innerDraw(s, c, tag);
+  if (g_drvFace) {
+    gfx::setTarget(nullptr);
+    gfx::copyDiscFrom(g_drvFace, CLK_SQ0, CLK_SQ0, CLK_SQ1, CLK_SQ1, 233, 233, CLK_CLIP_R);
+  }
+  for (int i = 0; i < 3; i++) {
+    if (hk[i] >= 0) drawHand(i, hk[i]);
+    g_handK[i] = hk[i];
+  }
+  innerKeys(s, c, tag);
+}
+// 画面のうち、時計の内側(半径 CLK_CLIP_R の中。g_drvFace から写す所)を除いた所を c で塗る(背景を塗り直すとき。copyDiscFrom と同じ画素。
+// 全部を塗るより速い)
+static void fillOutsideClock(uint16_t c) {
+  uint16_t *f = gfx::frame();
+  const float r2 = CLK_CLIP_R * CLK_CLIP_R;
+  for (int y = 0; y < gfx::H; y++) {
+    uint16_t *row = f + (size_t)y * gfx::W;
+    const float dy = (float)y + 0.5f - 233.0f;
+    const float q = r2 - dy * dy;
+    int xa = gfx::W, xb = gfx::W;  // 塗らない範囲 [xa, xb)
+    if (q >= 0) {
+      const float hw = sqrtf(q);
+      xa = (int)ceilf(233.0f - hw - 0.5f);
+      xb = (int)floorf(233.0f + hw - 0.5f) + 1;
+      if (xb < xa) xb = xa;
+    }
+    for (int x = 0; x < xa; x++) row[x] = c;
+    for (int x = xb; x < gfx::W; x++) row[x] = c;
+  }
+  gfx::addDirty(0, 0, gfx::W, gfx::H);
+}
+// 内側を描き直したときに画面へ写す範囲(変わり得る所だけ。g_drvFace はいつも全部が正しいので、広めに写してよい)
+enum : uint8_t { IR_WATER = 1, IR_FUEL = 2, IR_CENTER = 4 };
+static int innerRects(uint8_t reg, gfx::Rect *out) {
+  int n = 0;
+  if (reg & IR_WATER) {  // 上側(塗る所・弧・「– –」は y 172 より上)とアイコン
+    out[n++] = gfx::Rect{ (int16_t)CLK_SQ0, (int16_t)CLK_SQ0, (int16_t)CLK_SQ1, 172 };
+    out[n++] = gfx::Rect{ (int16_t)(ICON_WATER_X - 1), (int16_t)(ICON_WATER_Y - 1), (int16_t)(ICON_WATER_X + ICON_M + 1), (int16_t)(ICON_WATER_Y + ICON_M + 1) };
+  }
+  if (reg & IR_FUEL) {  // 下側(y 294 から下)とアイコン
+    out[n++] = gfx::Rect{ (int16_t)CLK_SQ0, 294, (int16_t)CLK_SQ1, (int16_t)CLK_SQ1 };
+    out[n++] = gfx::Rect{ (int16_t)(ICON_FUEL_X - 1), (int16_t)(ICON_FUEL_Y - 1), (int16_t)(ICON_FUEL_X + ICON_M + 1), (int16_t)(ICON_FUEL_Y + ICON_M + 1) };
+  }
+  if (reg & IR_CENTER) out[n++] = CB_RECT;  // 黒い円(半径 LOAD_DISC_R)・真ん中・印
+  return n;
 }
 
 static const uint16_t SEG_OFF_MARK = 0x0001;  // 「消えているマス」の印(色は背景から決める)
 
-static void updDrive(const Signals &s, uint32_t now) {
+static void updDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, uint32_t now) {
   const int sp = g_set->shiftRpm;
   uint16_t want[RING_SEGS];  // 点けるマスの色。SEG_OFF_MARK = 消す
   bool blinking = false;
@@ -577,45 +963,43 @@ static void updDrive(const Signals &s, uint32_t now) {
     }
   }
   uint16_t bgT = s.rpmOk ? to565(colorAt(BACK_C, s.rpm, sp)) : C_BG;
+  Center c;
+  centerMake(s, ls, si, now, &c);
+  const uint16_t tag = tagOf(s);
+  int16_t hk[3];
+  handsAt(si, hk);
 
   // 枠なし: 背景の色は画面の端まで。背景が変わったら全部を描き直す
   bool ringChanged = false;
   for (int k = 0; k < RING_SEGS; k++) {
-    uint16_t c = want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k];
-    if (c != g_segCol[k]) ringChanged = true;
+    uint16_t col = want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k];
+    if (col != g_segCol[k]) ringChanged = true;
   }
   bool bgNow = g_full || (bgT != g_bgCol && (uint32_t)(now - g_bgMs) >= BG_MIN_INTERVAL_MS && !(blinking && ringChanged));
   if (bgNow) {
     g_full = false;
     g_bgCol = bgT;
     g_bgMs = now;
-    // 全部を描き直すのは 30 ms 近くかかるので、合間に点滅の切り替えの時刻を見る(基板では platBlinkTick が blinkPoll を呼ぶ)
-    gfx::fillAll(g_bgCol);
+    // 全部を描き直すのは 30 ms 近くかかるので、合間に点滅の切り替えの時刻を見る(基板では platBlinkTick が blinkPoll を呼ぶ)。
+    // 時計の内側は innerFull が g_drvFace から写す(取っておけないときは画面に描く)ので、ここでは外だけを塗る
+    fillOutsideClock(g_bgCol);
     platBlinkTick();
     for (int k = 0; k < RING_SEGS; k++) drawSeg(k, want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k]);
     g_triKey = peakTriKey(s);
     if (g_triKey >= 0) drawPeakTris(g_triKey);
     platBlinkTick();
-    drawWaterPanel(s, true);
+    innerFull(s, c, tag, hk);
     platBlinkTick();
-    const int is = idleShowSec(now);
-    drawGearPanel(s, is);
-    platBlinkTick();
-    drawFuelPanel(s, true);
-    platBlinkTick();
-    g_waterKey = waterKey(s);
-    g_fuelKey = fuelKey(s);
-    g_gearKey = gearKey(s, is);
-    g_tagsDirty = true;
     return;
   }
   // 輪のマスとピークの三角形。三角形はマスに重なるので、三角形が動いたとき・重なるマスを描き直すときは、
-  // 三角形を包む四角を背景で消し、そこに掛かるマスを全部描き直してから三角形を描く(最初から描いたものと同じになる)
+  // 三角形を包む四角を背景で消し、そこに掛かるマスを全部描き直してから三角形を描く(最初から描いたものと同じになる)。
+  // どちらも時計の内側(半径 CLK_CLIP_R)には掛からない
   const int tk = peakTriKey(s);
   bool redo[RING_SEGS];
   for (int k = 0; k < RING_SEGS; k++) {
-    uint16_t c = want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k];
-    redo[k] = c != g_segCol[k];
+    uint16_t col = want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k];
+    redo[k] = col != g_segCol[k];
   }
   bool triRedo = tk != g_triKey;
   gfx::Rect tr[4];
@@ -649,21 +1033,60 @@ static void updDrive(const Signals &s, uint32_t now) {
     if (tk >= 0) drawPeakTris(tk);
     g_triKey = tk;
   }
-  uint32_t wk = waterKey(s), fk = fuelKey(s);
-  const int is = idleShowSec(now);
-  int gk = gearKey(s, is);
-  if (wk != g_waterKey) {
-    drawWaterPanel(s, false);
-    g_waterKey = wk;
+
+  // 時計の内側: 弧・アイコン(水温・燃料)、真ん中の出し分け、印が変わったら g_drvFace を描き直して、その所を写す
+  uint8_t reg = 0;
+  if (waterKey(s) != g_waterKey) reg |= IR_WATER;
+  if (fuelKey(s) != g_fuelKey) reg |= IR_FUEL;
+  if (c.mode != g_cMode || tag != g_tagKey) reg |= IR_CENTER;
+  char keys[4][32];
+  bool lineNew[4];
+  bool anyLine = false;
+  for (int i = 0; i < 4; i++) {
+    lineNew[i] = false;
+    if (i >= centerLines(c.mode)) continue;
+    centerKey(c, i, keys[i], sizeof(keys[i]));
+    lineNew[i] = strcmp(keys[i], g_cKey[i]) != 0;
+    anyLine = anyLine || lineNew[i];
   }
-  if (gk != g_gearKey) {
-    drawGearPanel(s, is);
-    g_gearKey = gk;
+  if (!g_drvFace) {  // 取っておけなかった: 何か変わったら内側を全部描き直す(遅いが正しい)
+    if (reg || anyLine || hk[0] != g_handK[0] || hk[1] != g_handK[1] || hk[2] != g_handK[2]) innerFull(s, c, tag, hk);
+    return;
   }
-  if (fk != g_fuelKey) {
-    drawFuelPanel(s, false);
-    g_fuelKey = fk;
+  if (anyLine && !g_drvBase) reg |= IR_CENTER;  // 行の下地を取っておけなかった: 真ん中ごと描き直す
+  gfx::Rect er[12];
+  int ne = 0;
+  if (reg) {
+    gfx::setTarget(g_drvFace);
+    innerDraw(s, c, tag);
+    gfx::setTarget(nullptr);
+    ne = innerRects(reg, er);
+    for (int i = 0; i < ne; i++) gfx::copyDiscFrom(g_drvFace, er[i].x0, er[i].y0, er[i].x1, er[i].y1, 233, 233, CLK_CLIP_R);
+    if (reg & IR_CENTER) {  // 真ん中は全部写した
+      innerKeys(s, c, tag);
+      anyLine = false;
+    } else {
+      g_waterKey = waterKey(s);
+      g_fuelKey = fuelKey(s);
+    }
   }
+  // 真ん中の行(変わった行だけ)。行は針・弧・アイコン・印に掛からない
+  if (anyLine) {
+    for (int i = 0; i < centerLines(c.mode); i++) {
+      if (!lineNew[i]) continue;
+      const gfx::Rect r = centerLineRect(c.mode, i);
+      if (!reg) {  // g_drvFace のその行だけを描き直す(下地を g_drvBase から戻す)
+        gfx::setTarget(g_drvFace);
+        baseRestore(r);
+        centerLine(c, i);
+        gfx::setTarget(nullptr);
+      }
+      gfx::copyRectFrom(g_drvFace, r.x0, r.y0, r.x1, r.y1);
+      memcpy(g_cKey[i], keys[i], sizeof(g_cKey[i]));
+    }
+  }
+  // 針(1 秒に 1 回。内側を写した所に掛かる針も)
+  handsUpdate(hk, er, ne, 12);
 }
 
 // ================================================================ アナログ計(仕様書に無いページ。2026-10-14 にブースト計として追加、
@@ -671,10 +1094,12 @@ static void updDrive(const Signals &s, uint32_t now) {
 // 回転計: 色を抑えた目盛線(1000・500・250)、数字(60 px、太さ 600)、白い針(同じ太さ、黒い縁と影)、
 // ピークホールドの黄色い長い印。ブースト: 中央の輪(10/23: 太さ 46。0 bar から今の値までトーンを落とした白、外に目盛線)と、
 // 輪の右に今の値の大きい数字(太さ 500、白)。水温・燃料: 異常のときだけ数字の下に赤い札(純正のメーターにあるので普段は出さない)。
+// 2.10.0: ブーストの数字を右上に移して小さく(56 px)、その下にギア(サーキットの真ん中から移した)。札はギアの下(仕様書
+// circuit_screen_spec.md 第 3 版 5 章)。
 // 回転計は 6000 rpm が真上(config.h の TACH_*)。ブーストは 1.4 bar が真上、2.0 bar が端(2.8.0。config.h の BOOST_TOP_*・BOOST_END_DEG)。
-// 描き方: 針・帯・ピークの印を除いた絵(文字盤 = 目盛・数字・帯の地・ブーストの数字・札)を別の画面メモリー g_face に取っておき、
+// 描き方: 針・帯・ピークの印を除いた絵(文字盤 = 目盛・数字・帯の地・ブーストの数字・ギア・札)を別の画面メモリー g_face に取っておき、
 // 動くものは「前の範囲を g_face から写して消す → 描き直す」(最初から描いたものと 1 画素も違わない)。
-// ブーストの数字と札が変わったときは、針を消してから描き直し、その範囲を g_face にも写す。
+// ブーストの数字・ギア・札が変わったときは、針を消してから描き直し、その範囲を g_face にも写す。
 // 何かを消すのに写した四角が、ほかの動くもの(帯・ピークの印)に掛かったら、それも描き直す。針と中心の丸は毎回最後に描く。
 // 10/23: 針とブースト以外を少しだけ暗くした(目盛線は 10/22 夜の色 × 0.93、数字 × 0.82、ピークの印 × 0.88)
 static const uint16_t C_TICK = rgb(0x777C84);      // 1000 ごとの目盛線(抑えた灰色)
@@ -764,6 +1189,7 @@ static void peakTrack(const Signals &s, uint32_t now) {
     g_peakShowOk = false;
     g_peakShow = false;
     g_peakLow = -1.0f;
+    g_peakTop = -1.0f;
     return;
   }
   float rpm = (float)s.rpm;
@@ -783,6 +1209,12 @@ static void peakTrack(const Signals &s, uint32_t now) {
     g_peakLow = rpm;
   }
   g_peakShow = g_peakShowOk && (uint32_t)(now - g_peakShowMs) < TACH_PEAK_SHOW_MS;
+  // 2.10.0: サーキットの真ん中に出すピークの回転数は、印を出している間の最高(印が時間で下がっても下げない)。印が消えたら忘れる
+  if (g_peakShow && g_peakRpm >= (float)PEAK_MIN_RPM) {
+    if (g_peakRpm > g_peakTop) g_peakTop = g_peakRpm;
+  } else {
+    g_peakTop = -1.0f;
+  }
 }
 // ピークホールドの印を出すか。2.4.0(本人の指示 10/24「回転数が高い状態では上がっても下がっても表示し続けて」): 回転数が上がっていても
 // 出す(2.2.0〜2.3.x は、下がっている間だけ出していた)。2.4.4: 回転が上がるのが終わってから TACH_PEAK_SHOW_MS の間(peakTrack)。
@@ -925,25 +1357,86 @@ static void drawBar(int key) {  // ブーストの輪(トーンを落とした�
   gfx::fillArc(233, 233, BOOST_MARK_R_IN, BOOST_MARK_R_OUT, a - BOOST_MARK_HALF_DEG, a + BOOST_MARK_HALF_DEG, C_WHITE);
 }
 
-// ---- ブーストの数字(輪の右。0.01 bar 刻み。信号なしは「– –」)
+// ---- ブーストの数字(0.01 bar 刻み。信号なしは「– –」)。2.10.0: 輪の右から右上へ移して小さくした(config.h の BOOST_NUM_*)。
+// 負圧の「−」が輪の終わり(2 bar の所)に少し掛かるので、消すときは背景の色で塗らずに、文字盤を描いたときに取っておいた
+// 「数字を描く前の絵」(g_numBg)を戻す
+static void hideApply(const gfx::Rect &r);
 static int boostNumKey(const Signals &s) {
   if (!s.boostOk) return -100000;
   float v = clampf(s.boostBar, -9.99f, 9.99f);
   return (int)lroundf(v * 100.0f);
 }
-static gfx::Rect boostNumRect() {  // 上端は輪の「2」の下、左端は輪の「0」の右(どちらも消さない)
-  const int h = FONT_DIAL500_76.px;
-  gfx::Rect r = { (int16_t)(BOOST_NUM_X - 202), (int16_t)(BOOST_NUM_BASE - (int)(h * 0.78f)), (int16_t)(BOOST_NUM_X + 4), (int16_t)(BOOST_NUM_BASE + 6) };
+static gfx::Rect boostNumRect() {  // 「−0.00」が入る幅。左端は輪の「2」の右
+  const int h = BOOST_NUM_FONT.px;
+  gfx::Rect r = { (int16_t)(BOOST_NUM_X - (int)(h * 2.66f)), (int16_t)(BOOST_NUM_BASE - (int)(h * 0.78f)), (int16_t)(BOOST_NUM_X + 4), (int16_t)(BOOST_NUM_BASE + 6) };
   return r;
 }
-static void drawBoostNum(int key, bool clean) {
+static uint16_t *g_numBg = nullptr;  // 数字の範囲の、数字を描く前の文字盤(drawBoostFace の途中で取る)
+static bool g_numBgOk = false;
+static void numBgSave() {  // 今の描く先から取る
   const gfx::Rect r = boostNumRect();
-  if (!clean) gfx::fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, C_BG);
+  const int w = r.x1 - r.x0, h = r.y1 - r.y0;
+  if (!g_numBg) g_numBg = (uint16_t *)platAlloc((size_t)w * h * sizeof(uint16_t));
+  g_numBgOk = g_numBg != nullptr;
+  if (!g_numBgOk) return;
+  const uint16_t *f = gfx::frame();
+  for (int y = 0; y < h; y++) memcpy(g_numBg + (size_t)y * w, f + (size_t)(r.y0 + y) * gfx::W + r.x0, (size_t)w * sizeof(uint16_t));
+}
+static void numBgRestore() {  // 今の描く先へ戻す(取っておけなかったときは背景で塗る)
+  const gfx::Rect r = boostNumRect();
+  const int w = r.x1 - r.x0, h = r.y1 - r.y0;
+  if (!g_numBgOk) {
+    gfx::fillRect(r.x0, r.y0, w, h, C_BG);
+    return;
+  }
+  uint16_t *f = gfx::frame();
+  for (int y = 0; y < h; y++) memcpy(f + (size_t)(r.y0 + y) * gfx::W + r.x0, g_numBg + (size_t)y * w, (size_t)w * sizeof(uint16_t));
+  gfx::addDirty(r.x0, r.y0, r.x1, r.y1);
+}
+static void boostNumText(int key) {
   char t[32];
   if (key == -100000) snprintf(t, sizeof(t), "– –");
   else if (key < 0) snprintf(t, sizeof(t), "−%d.%02d", -key / 100, -key % 100);  // 負圧。マイナスは U+2212
   else snprintf(t, sizeof(t), "%d.%02d", key / 100, key % 100);
-  textR(FONT_DIAL500_76, BOOST_NUM_X, BOOST_NUM_BASE, t, key == -100000 ? C_LABEL : C_BOOST);
+  textR(BOOST_NUM_FONT, BOOST_NUM_X, BOOST_NUM_BASE, t, key == -100000 ? C_LABEL : C_BOOST);
+}
+// clean = true: 文字盤を描いている途中(数字の所はまだ描いていない。ここで「数字を描く前の絵」を取る)
+static void drawBoostNum(int key, bool clean) {
+  if (clean) {
+    numBgSave();
+  } else {
+    numBgRestore();
+    hideApply(boostNumRect());  // タコのオープニングで文字盤を隠している所は黒(数字はそのまま出す)
+  }
+  boostNumText(key);
+}
+// g_face の数字を描き直す(g_face は文字盤を隠している間も文字盤の全部なので、画面からは写さずに描く)
+static void boostNumFace(int key) {
+  if (!g_face) return;
+  gfx::setTarget(g_face);
+  numBgRestore();
+  boostNumText(key);
+  gfx::setTarget(nullptr);
+}
+
+// ---- ギア(2.10.0。ブーストの数字の下。サーキットの真ん中から移した。本人「ブースト　とギヤは上下逆に」)。
+// 針・帯・輪・ピークの印の届かない右の空き(回転計の目盛の無い所)
+static int g_tachGearKey = -1;  // 描いてあるギア(文字。0 = 「–」)
+static int tachGearKey(const Signals &s) {
+  return (s.gearOk && s.gear && strchr("0123456789NR", s.gear)) ? s.gear : 0;
+}
+static gfx::Rect tachGearRect() {
+  return gfx::Rect{ (int16_t)(TACH_GEAR_CX - 50), (int16_t)(TACH_GEAR_BASE - 76), (int16_t)(TACH_GEAR_CX + 50), (int16_t)(TACH_GEAR_BASE + 4) };
+}
+static void drawTachGear(int key, bool clean) {
+  const gfx::Rect r = tachGearRect();
+  if (!clean) gfx::fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, C_BG);
+  char t[4] = "–";
+  if (key) {
+    t[0] = (char)key;
+    t[1] = 0;
+  }
+  textC(TACH_GEAR_FONT, TACH_GEAR_CX, TACH_GEAR_BASE, t, key ? C_WHITE : C_LABEL);
 }
 
 // ---- 水温・燃料の札(異常のときだけ。config.h の AN_BADGE_*)
@@ -1113,6 +1606,8 @@ static void drawBoostFace(const Signals &s) {
   }
   g_boostNumKey = boostNumKey(s);
   drawBoostNum(g_boostNumKey, true);
+  g_tachGearKey = tachGearKey(s);
+  drawTachGear(g_tachGearKey, true);
   g_badgeKey = badgeKey(s);
   drawBadges(s, true);
 }
@@ -1135,9 +1630,9 @@ static void updBoost(const Signals &s, uint32_t now) {
     g_peakKey = -1;
     g_tagsDirty = true;
   }
-  int nk = needleKey(s), tk = tachKey(s), pk = peakKey(s), bk = boostNumKey(s);
+  int nk = needleKey(s), tk = tachKey(s), pk = peakKey(s), bk = boostNumKey(s), gr = tachGearKey(s);
   uint32_t gk = badgeKey(s);
-  bool faceItems = bk != g_boostNumKey || gk != g_badgeKey;
+  bool faceItems = bk != g_boostNumKey || gk != g_badgeKey || gr != g_tachGearKey;
   if (nk == g_needleKey && tk == g_tachKey && pk == g_peakKey && !faceItems && !g_barForce) return;
   if (!g_faceOk) {  // 文字盤を取っておけなかったとき: 文字盤を描き直す(遅いが正しい)
     drawBoostFace(s);
@@ -1147,7 +1642,7 @@ static void updBoost(const Signals &s, uint32_t now) {
   }
   // 1. 消す(文字盤から写す)。写した四角が帯・ピークの印に掛かったら、その形も全部消して描き直す
   //    (一部だけ消して上から描くと、なめらかに塗った縁が 2 度塗りになって色が変わる)。消した四角が増えたら、もう一度見る
-  gfx::Rect erased[4];
+  gfx::Rect erased[8];
   int ne = 0;
   auto erase = [&](const gfx::Rect &r) {
     gfx::copyRectFrom(g_face, r.x0, r.y0, r.x1, r.y1);
@@ -1156,6 +1651,12 @@ static void updBoost(const Signals &s, uint32_t now) {
     if (g_sc == SC_BOOST) g_tagsLost = true;  // 「SIM」の印に掛かることがある(updTags が消して描き直す)
   };
   if (g_tachKey >= 0) erase(tachRect(g_tachKey));
+  // 2.10.0: 描き直す数字・ギア・札の範囲も、帯・ピークの印に掛かればそれを描き直す(数字は輪の終わりに少し掛かる)
+  if (faceItems) {
+    if (bk != g_boostNumKey) erased[ne++] = boostNumRect();
+    if (gr != g_tachGearKey) erased[ne++] = tachGearRect();
+    if (gk != g_badgeKey) erased[ne++] = badgeArea();
+  }
   bool barRedo = nk != g_needleKey || g_barForce, peakRedo = pk != g_peakKey;
   g_barForce = false;
   bool barGone = false, peakGone = false;  // 前の形を消した
@@ -1181,13 +1682,18 @@ static void updBoost(const Signals &s, uint32_t now) {
     }
     if (!more) break;
   }
-  // 2. 文字盤の中の変わるもの(ブーストの数字・札)。描き直して文字盤にも写す。針は消してあり、輪とピークの印には
-  //    届かない範囲(数字と札は回転計の目盛の無い右下、輪の切れている所)
+  // 2. 文字盤の中の変わるもの(ブーストの数字・ギア・札)。描き直して文字盤にも写す。針は消してあり、帯とピークの印は
+  //    掛かっていれば 1 で消してある(このあと 3 で描く)
   if (faceItems) {
     if (bk != g_boostNumKey) {
       drawBoostNum(bk, false);
-      faceTake(boostNumRect());
+      boostNumFace(bk);
       g_boostNumKey = bk;
+    }
+    if (gr != g_tachGearKey) {
+      drawTachGear(gr, false);
+      faceTake(tachGearRect());
+      g_tachGearKey = gr;
     }
     if (gk != g_badgeKey) {
       drawBadges(s, false);
@@ -1281,8 +1787,6 @@ struct StatPart {
   char value[24];
   uint16_t col;       // 値の色
 };
-static const uint16_t C_DOT_OFF = rgb(0x5A606A);
-static const uint16_t C_DOT_OK = rgb(0x22E36A);
 static void drawStatLine(int y, const char *name, uint16_t dot, const StatPart *p, int n) {
   fillRectData(36, y - 28, 394, 36, C_BG);
   float w = 16 + gfx::textWidth(FONT_NUM600_28, name) + 16;
@@ -1309,7 +1813,7 @@ static int statLines(int row, const LinkStats &ls, const SysInfo &si, const char
   *dot = C_DOT_OFF;
   if (row == 0) {
     *name = "GPS";
-    if (!r.enabled) { snprintf(p[0].value, 24, "切"); p[0].col = C_LABEL; return 1; }
+    if (!r.gpsOn) { snprintf(p[0].value, 24, "切"); p[0].col = C_LABEL; return 1; }  // 2.10.0: 送信の入・切に関係なく動かす
     if (!r.gpsOk) { snprintf(p[0].value, 24, "受信なし"); p[0].col = C_ALARM; *dot = C_ALARM; return 1; }
     p[0].label = "衛星";
     snprintf(p[0].value, 24, "%u", (unsigned)r.numSV);
@@ -1629,6 +2133,11 @@ static void drawTwoTimes(int y1, int y2, uint16_t labc) {
   fmtTime(t, sizeof(t), trip::belowMs());
   textR(FONT_NUM600_44, 384, (float)(y2 + 4), t, C_WHITE);
 }
+// 「デフォルトに戻す」の説明の 2 行(設定の項目の画面と確認の画面。2.10.0)
+static void drawDefaultsDesc(int y1, int y2) {
+  mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "設定をすべて初期値に") * 0.5f, (float)y1, "設定をすべて初期値に", C_LABEL2);
+  mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "記録と向きはそのまま") * 0.5f, (float)y2, "記録と向きはそのまま", C_LABEL2);
+}
 // ---- 受信の状態・本体の状態(2.4.0: 分け直した。本人の指示 10/24「表示内容などのカテゴライズ」)
 // 受信の状態 = データの出どころと行き先ごとのグループ: CAN(車 → CANリーダー → 表示器)・GPS・IMU・RaceChrono(表示器 → スマホ)。
 //   受信の状態の画面は 1 ページ 1 グループ(まとめ。下「開く」で中へ)。グループの中は 1 ページ 1 項目。
@@ -1681,7 +2190,7 @@ static void initItems(InfoItem *it, int n, const char *const *labels) {
     it[i].act = A_NONE;
   }
 }
-static const char *const RC_OFF_TEXT = "切(RaceChrono 送信)";  // RaceChrono の送信が切(GPS・IMU も動かしていない)
+static const char *const RC_OFF_TEXT = "切(RaceChrono 送信)";  // RaceChrono の送信が切(IMU も動かしていない。2.10.0: GPS は動かす)
 // CAN: 車の CAN を CANリーダー(XIAO ESP32C6)が読み、UART で表示器へ送る。燃料・ライトのほかは、まとめで緑でなければ「正常」にしない
 static void canItems(const LinkStats &ls, uint32_t now, InfoItem *it) {
   static const char *const L[] = { "通信速度", "受信", "誤り・欠落", "CANリーダー", "C-CAN・B-CAN", "燃料", "ライト", "CAN確認", "前後で比べる" };
@@ -1753,7 +2262,8 @@ static void lightSub(uint32_t now, char *out, size_t n) {
   out[0] = 0;
   if (li.have) snprintf(out, n, "b0 %02X 最初の受信 %u.%u 秒", (unsigned)li.lastB0, (unsigned)(li.firstMs / 1000), (unsigned)(li.firstMs % 1000 / 100));
 }
-// GPS(M100。RaceChrono の送信が入のときだけ動かす): 測位(届かなければ赤)・位置・速度
+// GPS(M100): 測位(届かなければ赤)・位置・速度。2.10.0: RaceChrono の送信の入・切に関係なく動かす(時計と高負荷時間に時刻を使う)。
+// 落ちる起動が続いて止めたとき(RC_CRASH_LIMIT)だけ「切」
 static void gpsItems(const SysInfo &si, InfoItem *it) {
   static const char *const L[] = { "測位", "位置", "速度" };
   initItems(it, GROUP_N[G_GPS], L);
@@ -1761,7 +2271,7 @@ static void gpsItems(const SysInfo &si, InfoItem *it) {
   const RcStats &r = si.rc;
   const bool fix = r.gpsOk && r.fixType >= 2;
   InfoItem &x = it[P_GPS_FIX], &p = it[P_GPS_POS], &s = it[P_GPS_SPEED];
-  if (!r.enabled) snprintf(x.value, sizeof(x.value), "%s", RC_OFF_TEXT);
+  if (!r.gpsOn) snprintf(x.value, sizeof(x.value), "切");
   else if (!r.gpsOk) snprintf(x.value, sizeof(x.value), "受信なし"), x.v = V_NG;
   else snprintf(x.value, sizeof(x.value), "%s 衛星 %u %u Hz", r.fixType == 3 || r.fixType == 4 ? "3D" : r.fixType == 2 ? "2D" : "測位なし", (unsigned)r.numSV, (unsigned)r.pvtPerSec), x.v = fix ? V_OK : V_WAIT;
   if (fix) snprintf(p.value, sizeof(p.value), "%.4f %.4f", (double)r.lat / 1e7, (double)r.lon / 1e7), p.v = V_OK;
@@ -1873,9 +2383,10 @@ static void verdictSummary(const InfoItem *it, int cnt, char *out, size_t n, uin
 static Verdict colVerdict(uint16_t col) {
   return col == C_ALARM ? V_NG : (col == C_WHITE ? V_OK : V_WAIT);
 }
-// グループのまとめ(受信の状態のページ、設定の「本体の状態」)。GPS・IMU・RaceChrono は、送信が切なら「切」の灰
+// グループのまとめ(受信の状態のページ、設定の「本体の状態」)。IMU・RaceChrono は、送信が切なら「切」の灰。
+// GPS は止めているとき(2.10.0: 送信の入・切には関係しない)だけ「切」の灰
 static void groupSummary(int g, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now, char *out, size_t n, uint16_t *col) {
-  if ((g == G_GPS || g == G_IMU || g == G_RC) && !si.rc.enabled) {
+  if ((g == G_GPS && !si.rc.gpsOn) || ((g == G_IMU || g == G_RC) && !si.rc.enabled)) {
     snprintf(out, n, "切");
     *col = C_LABEL2;
     return;
@@ -1909,12 +2420,14 @@ static void linkPages(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
   }
 }
 
-// ================================================================ 設定画面(8 章。10/23 に作り直し: 1 画面 1 項目。2.4.0: 8 項目。2.9.0: 9 項目)
+// ================================================================ 設定画面(8 章。10/23 に作り直し: 1 画面 1 項目。2.4.0: 8 項目。2.9.0: 9 項目。2.10.0: 14 項目)
 // 並び(本人の指示 10/24): 明るさ → 受信の状態 → シフトポイント → 水温の警告 → 時間の記録 → 自動で戻る → デモ。
 // 2.4.0: 受信の状態の次に「本体の状態」(受信と関係ない FPS・起動を受信の状態から出した)。
 // 2.9.0: 明るさの次に「イルミネーションの明るさ」(ライトのスイッチが入の間の明るさ。仕様書 light_dimming_spec.md 第 3 版)
-enum Unit : uint8_t { U_NONE, U_RPM, U_MIN, U_PCT, U_DEGC, U_ONOFF };
-enum ItemKind : uint8_t { K_VALUE, K_TIME, K_LINK, K_SYS };
+// 2.10.0: 水温の警告の次に「高負荷時間 黄」「高負荷時間 赤」「クールダウン時間」「高負荷時間 リセット」(仕様書 circuit_screen_spec.md
+// 第 3 版 6 章)、最後に「デフォルトに戻す」(本人 10/27「デフォルト設定を作り、デフォルトに戻すを入れたい」)。14 項目
+enum Unit : uint8_t { U_NONE, U_RPM, U_MIN, U_PCT, U_DEGC, U_ONOFF, U_MIN_OFF };  // U_MIN_OFF: 分。0 は「切」(2.10.0)
+enum ItemKind : uint8_t { K_VALUE, K_TIME, K_LINK, K_SYS, K_DEFAULTS };
 struct Item {
   const char *label;  // 項目の名前
   int Settings::*field;
@@ -1929,9 +2442,14 @@ static const Item ITEMS[] = {
   { "本体の状態", nullptr, 0, 0, 0, U_NONE, K_SYS },
   { "シフトポイント", &Settings::shiftRpm, SET_SHIFT_MIN, SET_SHIFT_MAX, SET_SHIFT_STEP, U_RPM, K_VALUE },
   { "水温の警告", &Settings::warnTempC, SET_WARN_MIN, SET_WARN_MAX, SET_WARN_STEP, U_DEGC, K_VALUE },
+  { "高負荷時間 黄", &Settings::loadYellowMin, SET_LOAD_MIN, SET_LOAD_MAX, SET_LOAD_STEP, U_MIN_OFF, K_VALUE },  // 2.10.0
+  { "高負荷時間 赤", &Settings::loadRedMin, SET_LOAD_MIN, SET_LOAD_MAX, SET_LOAD_STEP, U_MIN_OFF, K_VALUE },
+  { "クールダウン時間", &Settings::coolMin, SET_LOAD_MIN, SET_LOAD_MAX, SET_LOAD_STEP, U_MIN_OFF, K_VALUE },
+  { "高負荷時間 リセット", &Settings::loadResetMin, SET_LOADRS_MIN, SET_LOADRS_MAX, SET_LOADRS_STEP, U_MIN, K_VALUE },
   { "時間の記録", nullptr, 0, 0, 0, U_NONE, K_TIME },
   { "自動で戻る", &Settings::autoReturnMin, SET_AUTORET_MIN, SET_AUTORET_MAX, SET_AUTORET_STEP, U_MIN, K_VALUE },
   { "デモ", &Settings::demoOn, 0, 1, 1, U_ONOFF, K_VALUE },
+  { "デフォルトに戻す", nullptr, 0, 0, 0, U_NONE, K_DEFAULTS },  // 2.10.0
 };
 static const int N_ITEMS = sizeof(ITEMS) / sizeof(ITEMS[0]);
 // 画面の明るさの項目(変えたその場で反映し、変更の画面を出している間はその値で表示する。2.9.0: イルミネーションの明るさも)
@@ -1954,11 +2472,14 @@ static uint32_t g_infoMs = 0;
 static char g_setKey[64];          // 設定の項目の画面に描いてある値(変わったら描き直す)
 
 static const char *unitText(Unit u) {
-  return u == U_RPM ? "rpm" : u == U_PCT ? "%" : u == U_DEGC ? "°C" : u == U_MIN ? "分" : "";
+  return u == U_RPM ? "rpm" : u == U_PCT ? "%" : u == U_DEGC ? "°C" : (u == U_MIN || u == U_MIN_OFF) ? "分" : "";
 }
 static void valueText(const Item &it, int v, char *out, size_t n) {
-  if (it.unit == U_ONOFF) snprintf(out, n, "%s", v ? "入" : "切");
+  if (it.unit == U_ONOFF || (it.unit == U_MIN_OFF && v == 0)) snprintf(out, n, "%s", v ? "入" : "切");
   else snprintf(out, n, "%d", v);
+}
+static const char *unitFor(const Item &it, int v) {  // 値の右に出す単位(入・切と「切」には出さない)
+  return (it.unit == U_ONOFF || (it.unit == U_MIN_OFF && v == 0)) ? "" : unitText(it.unit);
 }
 static void startEdit(const Item *it, Screen from) {
   g_editItem = it;
@@ -1983,6 +2504,8 @@ static void setItemValue(const Item &it, const LinkStats &ls, const PerfStats &p
     snprintf(v, n, "%u|%u", (unsigned)(trip::aboveMs() / 1000), (unsigned)(trip::belowMs() / 1000));
   } else if (it.kind == K_LINK) {
     linkSummary(ls, ps, si, now, v, n, col);
+  } else if (it.kind == K_DEFAULTS) {
+    v[0] = 0;
   } else {
     groupSummary(G_SYS, ls, ps, si, now, v, n, col);
   }
@@ -2003,8 +2526,9 @@ static void updSetList(const LinkStats &ls, const PerfStats &ps, const SysInfo &
   g_tagsDirty = true;
   drawTopSet();
   drawName(it.label);
-  if (it.kind == K_VALUE) drawBigValue(v, it.unit == U_ONOFF ? "" : unitText(it.unit), 290, C_WHITE);
+  if (it.kind == K_VALUE) drawBigValue(v, unitFor(it, g_set->*(it.field)), 290, C_WHITE);
   else if (it.kind == K_TIME) drawTwoTimes(250, 304, C_LABEL2);
+  else if (it.kind == K_DEFAULTS) drawDefaultsDesc(258, 298);
   else drawBigValue(v, "", 290, col);
   drawSideArrows();
   drawDots(N_ITEMS, g_setItem, nullptr, 330);
@@ -2024,7 +2548,7 @@ static void drawEditValue() {
   gfx::fillRect(80, 206, 306, 98, C_BG);  // 〜303。下の刻みの消す範囲(304〜)と隙間を作らない
   char v[16];
   valueText(it, g_set->*(it.field), v, sizeof(v));
-  drawBigValue(v, it.unit == U_ONOFF ? "" : unitText(it.unit), 290, C_ACCENT, 290, g_saveFlash);
+  drawBigValue(v, unitFor(it, g_set->*(it.field)), 290, C_ACCENT, 290, g_saveFlash);
 }
 static void drawEditDesc() {  // 刻み(または「保存できませんでした」)
   const Item &it = *g_editItem;
@@ -2086,8 +2610,10 @@ static void updSetEdit(uint32_t now) {
   g_saveFlashPhase = ph;
 }
 
-// ---- 設定: 消す操作の確認(上「‹ 戻る」= 消さずに戻る、下の赤い帯 = 消して戻る)。2.4.3: 時間の記録のリセットと、IMU の向きの取り直し
-enum ResetKind : uint8_t { RK_TIME, RK_IMU };
+// ---- 設定: 消す操作の確認(上「‹ 戻る」= 消さずに戻る、下の赤い帯 = 消して戻る)。2.4.3: 時間の記録のリセットと、IMU の向きの取り直し。
+// 2.10.0: 設定の「デフォルトに戻す」(設定を全部 config.h の *_DEFAULT にして保存。時間の記録・IMU の向き・高負荷時間の値は戻さない。
+// RaceChrono 送信は次の起動から効く)
+enum ResetKind : uint8_t { RK_TIME, RK_IMU, RK_DEFAULTS };
 static ResetKind g_resetKind = RK_TIME;
 static Screen g_resetFrom = SC_SET_LIST;  // 戻る画面(時間の記録 = 設定、向きの補正 = IMU の中)
 static uint64_t g_resetKey = 0;  // 描いてある 2 つの時間(秒)
@@ -2105,6 +2631,10 @@ static void updSetReset() {
     drawTwoTimes(246, 298, C_LABEL);
     mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "2 つとも 0 に戻す") * 0.5f, 334, "2 つとも 0 に戻す", C_LABEL2);
     drawBottom("リセット", C_BAND_RED, C_WHITE);
+  } else if (g_resetKind == RK_DEFAULTS) {
+    drawName("デフォルトに戻す");
+    drawDefaultsDesc(262, 304);
+    drawBottom("戻す", C_BAND_RED, C_WHITE);
   } else {
     drawName("向きの補正");
     mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "覚えた向き(上・前)を捨てて") * 0.5f, 262, "覚えた向き(上・前)を捨てて", C_LABEL2);
@@ -2210,11 +2740,14 @@ static int listCount() {  // 一覧の件数を数え直す(前後で比べる: 
   }
   return g_listN;
 }
+// 2.10.0: 一覧の外の番号は -1・印なし(乱数試験で、変化を記録の件数のまま前後で比べるの詳細を出したとき、g_ppList の外を読んでいた)
 static int listEntry(int i) {  // 一覧の i 番目の表の番号
-  return g_canPp ? g_ppList[i].entry : g_candE[i];
+  if (g_canPp) return (i >= 0 && i < CAN_PP_MAX) ? g_ppList[i].entry : -1;
+  return (i >= 0 && i < CAN_LIST_MAX) ? g_candE[i] : -1;
 }
 static uint8_t listMask(int i) {  // 一覧の i 番目の候補のバイトの印
-  return g_canPp ? (uint8_t)(1u << g_ppList[i].byte) : g_candM[i];
+  if (g_canPp) return (i >= 0 && i < CAN_PP_MAX) ? (uint8_t)(1u << (g_ppList[i].byte & 7)) : 0;
+  return (i >= 0 && i < CAN_LIST_MAX) ? g_candM[i] : 0;
 }
 static int g_detEntry = -1, g_detByte = 0;
 static char g_canKey[64];
@@ -2479,7 +3012,8 @@ static bool g_openNg = false;       // データ: 自己診断に NG がある(�
 static uint16_t g_openBg = 0;       // サーキット: 塗ってある背景
 static bool g_openArcs = false;     // サーキット: 弧(とアイコン)が描いてある
 static uint32_t g_openWaterKey = 0, g_openFuelKey = 0;  // サーキット: 描いてある弧の内容(走行画面と同じ waterKey / fuelKey)
-static int g_openGearA = -1;        // サーキット: 描いてあるギアの濃さ(0〜16。-1 = まだ)
+static int g_openClockA = -1;       // サーキット: 描いてある時計と真ん中の濃さ(0〜16。-1 = まだ。2.10.0: 2.9.0 まではギア)
+static uint32_t g_openInnerKey = 0;  // サーキット: そのときの弧の内容(異常の点滅が進んだら描き直す)
 
 static float easeIn(float u) {  // はじめはゆっくり
   return u * u;
@@ -2509,7 +3043,7 @@ static const uint32_t OPC_T_FLASH = OPC_SCAN_MS;    // 段階の始まりの時�
 static const uint32_t OPC_T_RISE = OPC_T_FLASH + OPC_FLASH_MS;
 static const uint32_t OPC_T_LIMIT = OPC_T_RISE + OPC_RISE_MS;
 static const uint32_t OPC_T_FALL = OPC_T_LIMIT + OPC_LIMIT_MS;
-static const uint32_t OPC_T_GEAR = OPC_T_FALL + OPC_FALL_MS;
+static const uint32_t OPC_T_CLOCK = OPC_T_FALL + OPC_FALL_MS;
 
 // 仮の回転数 rpmV の色で、下から lit マスを点ける。背景は withBg のときだけ回転数の色(背景が変わるときは全部描き直す)
 static void openRing(int rpmV, int lit, bool withBg) {
@@ -2567,7 +3101,7 @@ static float openFuelP(const Signals &s) {  // 今の燃料の弧の長さ(0〜1
 static int scanSeg(int p) {  // 走る光の位置 p(0 = 真下、1〜12 = 片側の 1〜12 マス目、13 = 真上)のマス
   return p == 0 ? RING_SEG_BOTTOM : (p >= 13 ? RING_SEG_TOP : p - 1);
 }
-static void openDrive(const Signals &s, uint32_t t, uint32_t now) {
+static void openDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, uint32_t t, uint32_t now) {
   const int sp = g_set->shiftRpm;
   const int rLo = sp - 11 * RING_STEP_RPM;  // 1 マス目が点く回転数
   const int rHi = sp + RING_RED_OFFSET;     // 全部が赤
@@ -2616,20 +3150,26 @@ static void openDrive(const Signals &s, uint32_t t, uint32_t now) {
   const uint16_t lit = to565(colorAt(RING_C, rpm, sp));
   for (int k = 0; k < RING_SEGS; k++) want[k] = segLit(k, n) ? lit : C_BG;
   openSegs(want);
-  openPanels(1.0f + (openWaterP(s) - 1.0f) * e, 1.0f + (openFuelP(s) - 1.0f) * e);
+  if (t < OPC_T_CLOCK) {
+    openPanels(1.0f + (openWaterP(s) - 1.0f) * e, 1.0f + (openFuelP(s) - 1.0f) * e);
+    blinkRun(true, rpm, true, now);
+    return;
+  }
   blinkRun(true, rpm, true, now);
-  if (t < OPC_T_GEAR) return;
-  // 6: 真ん中にギアが浮かぶ(黒から白へ 16 段)。終わったらサーキットの画面(全部を描き直す。同じ絵になる)
-  const int a = (int)(16.0f * stepU(t, OPC_T_GEAR, OPC_GEAR_MS));
-  if (a != g_openGearA) {
-    g_openGearA = a;
-    gfx::fillRect(GEAR_CLR_X0, GEAR_CLR_Y0, GEAR_CLR_X1 - GEAR_CLR_X0, GEAR_CLR_Y1 - GEAR_CLR_Y0, C_BG);
-    char g[4] = "–";
-    if (s.gearOk) {
-      g[0] = s.gear;
-      g[1] = 0;
-    }
-    if (a > 0) textC(GEAR_FONT, 233, GEAR_BASELINE, g, gfx::blend(C_BG, C_WHITE, (uint32_t)(a * 255 / 16)));
+  // 6: 時計(目盛と針)と真ん中が浮かぶ(黒から 16 段。2.10.0: 2.9.0 まではギア)。時計の内側を走行画面と同じ描き方(innerFull)で、
+  // 濃さを変えて描き直す(弧は今の値。異常の点滅が進んだときも)。終わったらサーキットの画面(全部を描き直す。同じ絵になる)
+  const int a = (int)(16.0f * stepU(t, OPC_T_CLOCK, OPC_CLOCK_MS));
+  const uint32_t ik = waterKey(s) * 31u + fuelKey(s);
+  if (a != g_openClockA || ik != g_openInnerKey) {
+    g_openClockA = a;
+    g_openInnerKey = ik;
+    Center c;
+    centerMake(s, ls, si, now, &c);
+    int16_t hk[3];
+    handsAt(si, hk);
+    g_fade = a * 16;
+    innerFull(s, c, 0, hk);  // 「SIM」の印はオープニングでは出さない
+    g_fade = 256;
   }
   if (t >= OPC_TOTAL_MS) openFinish();
 }
@@ -2638,7 +3178,8 @@ static void openDrive(const Signals &s, uint32_t t, uint32_t now) {
 static const uint32_t OPT_T_TOP = OPT_UP_MS;  // 段階の始まりの時刻
 static const uint32_t OPT_T_DOWN = OPT_T_TOP + OPT_TOP_MS;
 static const uint32_t OPT_T_SETTLE = OPT_T_DOWN + OPT_DOWN_MS;
-static Signals openTachSig(int rpm, float bar) {  // 仮の値(回転数とブーストだけ。水温・燃料は無し = 札を出さない)
+// 仮の値(回転数とブーストだけ。水温・燃料は無し = 札を出さない)。ギアは今の値(2.10.0)
+static Signals openTachSig(int rpm, float bar, const Signals &s) {
   Signals f;
   memset(&f, 0, sizeof(f));
   f.linkUp = true;
@@ -2646,6 +3187,8 @@ static Signals openTachSig(int rpm, float bar) {  // 仮の値(回転数とブ�
   f.rpm = rpm;
   f.boostOk = true;
   f.boostBar = bar;
+  f.gearOk = s.gearOk;
+  f.gear = s.gear;
   return f;
 }
 // 仮の値でタコの画面を描く(updBoost。ピークの印は出さない)。文字盤を隠している間に目盛を赤にする・戻すときは、ここで
@@ -2667,7 +3210,7 @@ static void openTachDraw(const Signals &f, uint32_t now) {
 static void openTach(const Signals &s, uint32_t t, uint32_t now) {
   if (g_openPhase < 1) {  // 最初の回: 文字盤を描いて g_face に取り、隠す所を黒に(取っておけなかったときは隠さない)
     g_openPhase = 1;
-    const Signals f0 = openTachSig(0, 0.0f);
+    const Signals f0 = openTachSig(0, 0.0f, s);
     tachRedTrack(f0);
     if (!g_face) g_face = (uint16_t *)platAlloc((size_t)gfx::W * gfx::H * sizeof(uint16_t));
     drawBoostFace(f0);
@@ -2690,7 +3233,7 @@ static void openTach(const Signals &s, uint32_t t, uint32_t now) {
     rpm = (int)lroundf((s.rpmOk ? (float)s.rpm : 0.0f) * e);
     bar = (s.boostOk ? s.boostBar : 0.0f) * e;
   }
-  const Signals f = openTachSig(rpm, bar);
+  const Signals f = openTachSig(rpm, bar, s);
   if (g_hideA >= 0) {  // 針の所まで文字盤を出す(振り切りで全部)
     float a = t < OPT_T_TOP ? (float)tachKey(f) * 0.25f : OPT_HIDE_A1;
     if (a > OPT_HIDE_A1) a = OPT_HIDE_A1;
@@ -2720,7 +3263,7 @@ static uint8_t openRowState(int i, const LinkStats &ls, const SysInfo &si, const
   switch (i) {
     case 0: *name = "CAN"; *state = "OK"; if (!ls.locked) { *state = "待ち"; kind = 1; } break;
     case 1: *name = "GPS"; *state = "測位";
-      if (!si.rc.enabled) { *state = "切"; kind = 3; }
+      if (!si.rc.gpsOn) { *state = "切"; kind = 3; }  // 2.10.0: 送信の入・切に関係なく動かす
       else if (si.rc.fixType >= 2) { kind = 0; }
       else if (si.rc.gpsOk) { *state = "衛星待ち"; kind = 1; }
       else { *state = "待ち"; kind = 1; }
@@ -2826,7 +3369,7 @@ static void updOpening(const Signals &s, const LinkStats &ls, const SysInfo &si,
     if (g_openKind == OPK_DRIVE) {
       g_openBg = 0xFFFF;  // 必ず塗る
       g_openArcs = false;
-      g_openGearA = -1;
+      g_openClockA = -1;
       openRing(0, 0, false);  // 黒で塗る(マスは描かない)
     } else if (g_openKind == OPK_DATA) {
       gfx::fillAll(C_BG);
@@ -2839,16 +3382,17 @@ static void updOpening(const Signals &s, const LinkStats &ls, const SysInfo &si,
   const uint32_t t = now - g_openT0;
   if (g_openKind == OPK_TACH) openTach(s, t, now);
   else if (g_openKind == OPK_DATA) openData(ls, si, t);
-  else openDrive(s, t, now);
+  else openDrive(s, ls, si, t, now);
 }
 
 // ================================================================ 「SIM」の印
 // 模擬データを受けている間、「SIM」と場面番号を出す(仕様書に無い。車で模擬の値を本物と取り違えないため)。
-// 置く所(42×21 の四角): データ画面 = 下に「SIM」、上に場面番号(2.5.0: 外周の回転数の輪の内側に入れた)。走行画面 = 輪の真上・真下を 10/21 にマスで埋めたので、
-// 弧の無い左右の真ん中(ギアと輪の間): 左に「SIM」、右に場面番号。アナログ計 = 針の通らない右(ブーストの数字と札の右下)に「SIM」だけ
+// 置く所(42×21 の四角): データ画面 = 下に「SIM」、上に場面番号(2.5.0: 外周の回転数の輪の内側に入れた)。
+// 走行画面 = 2.10.0: 時計の内側の絵に描く(drawDriveTags。真ん中の下に「SIM」、上に場面番号)。ここでは描かない。
+// アナログ計 = 針の通らない右(ギアの下、札の右)に「SIM」だけ
 static void updTags(const Signals &s, bool redrawn) {
-  // 設定・CAN確認の画面は上下が帯なので印は出さない(帯の上を背景色で消してしまうため)
-  if (g_sc != SC_DRIVE && g_sc != SC_BOOST && g_sc != SC_DATA) {
+  // 設定・CAN確認の画面は上下が帯なので印は出さない(帯の上を背景色で消してしまうため)。サーキットは updDrive が描く
+  if (g_sc != SC_BOOST && g_sc != SC_DATA) {
     g_tagsDirty = false;
     g_tagsLost = false;
     g_simShown = false;
@@ -2864,12 +3408,9 @@ static void updTags(const Signals &s, bool redrawn) {
   bool lost = g_tagsLost;  // 印の所が一部消されたかもしれない(アナログ計の帯を消したとき): 消して描き直す
   g_tagsLost = false;
   if (!redrawn && !lost && sim == g_simShown && scene == g_sceneShown) return;
-  uint16_t bg = (g_sc == SC_DRIVE) ? g_bgCol : C_BG;
-  uint16_t fg = (g_sc == SC_DRIVE) ? labelOn(g_bgCol) : C_LABEL;
+  const uint16_t bg = C_BG, fg = C_LABEL;
   int simX = 212, simY = 430, sceneX = 212, sceneY = 15;  // 四角の左上(データ画面。2.5.0: 437・8 から回転数の輪の内側へ)
-  if (g_sc == SC_DRIVE) {
-    simX = 76; simY = 223; sceneX = 348; sceneY = 223;
-  } else if (g_sc == SC_BOOST) {
+  if (g_sc == SC_BOOST) {
     simX = 384; simY = 300;
   }
   if (!redrawn || sim) {
@@ -3028,6 +3569,10 @@ static void menuOpen() {
       } else if (it.kind == K_LINK) {
         g_infoPage = 0;
         go(SC_SET_INFO);
+      } else if (it.kind == K_DEFAULTS) {  // 2.10.0: 確かめてから戻す
+        g_resetKind = RK_DEFAULTS;
+        g_resetFrom = SC_SET_LIST;
+        go(SC_SET_RESET);
       } else {
         openGroup(G_SYS, SC_SET_LIST);
       }
@@ -3283,6 +3828,10 @@ void tap(int x, int y, uint32_t nowMs) {
         if (g_resetKind == RK_TIME) {
           trip::resetTimes();
           platSaveTimes();
+        } else if (g_resetKind == RK_DEFAULTS) {  // 2.10.0
+          settingsDefaults(g_set);
+          platSaveSettings(*g_set);
+          platSetBrightness(g_set->brightnessPct);  // 基板は明るさを決め直す(ライトのスイッチで、明るさかイルミネーションの明るさ)
         } else {
           platResetImuCal();
         }
@@ -3512,7 +4061,7 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
   if (guideStep(now)) return;  // 案内・長押しの表示の間は描き直さない(札と外周だけ)
   bool redrawn = g_full;
   if (g_sc == SC_DRIVE) {
-    updDrive(s, now);
+    updDrive(s, ls, si, now);
   } else if (g_sc == SC_BOOST) {
     redrawn = redrawn || g_tachRed != g_faceRed;  // 目盛を赤に・赤から戻すときは全部を描き直す(updBoost)
     updBoost(s, now);
@@ -3571,7 +4120,7 @@ void testShow(Screen sc, int a, int b) {
   } else if (sc == SC_SET_LIST) {
     g_setItem = a;
   } else if (sc == SC_SET_RESET) {
-    g_resetKind = a == 1 ? RK_IMU : RK_TIME;
+    g_resetKind = a == 1 ? RK_IMU : (a == 2 ? RK_DEFAULTS : RK_TIME);
     g_resetFrom = a == 1 ? SC_SET_GRP : SC_SET_LIST;
     if (a == 1) {
       g_grp = G_IMU;
@@ -3641,9 +4190,13 @@ void testPeakReset() {
   g_peakShowOk = false;
   g_peakShow = false;
   g_peakLow = -1.0f;
+  g_peakTop = -1.0f;
 }
 float testPeakRpm() {
   return g_peakRpm;
+}
+int testCenter() {
+  return g_sc == SC_DRIVE && g_cMode != CM_NONE ? (int)g_cMode : -1;
 }
 bool testPeakDrawn() {
   return g_sc == SC_BOOST ? g_peakKey >= 0 : g_triKey >= 0;

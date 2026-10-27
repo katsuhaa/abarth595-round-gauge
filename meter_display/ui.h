@@ -10,14 +10,14 @@ enum Screen : uint8_t {
   SC_DATA,        // データ
   SC_CAN,         // CAN確認(件数・記録の回数。2.4.0: 受信の状態 → CAN の「C-CAN・B-CAN」の下「CAN確認」)
   SC_CAN_DETAIL,  // CAN確認:詳細(バイトを選んで値とグラフ)
-  SC_SET_LIST,    // 設定(1 画面 1 項目、8 項目。2.4.0)
+  SC_SET_LIST,    // 設定(1 画面 1 項目。2.4.0: 8 項目、2.10.0: 14 項目)
   SC_SET_EDIT,    // 設定:値の変更
   SC_SET_INFO,    // 設定:受信の状態の中(2.4.0: 1 ページ 1 グループ。CAN・GPS・IMU・RaceChrono のまとめ)
   SC_SET_GRP,     // 設定:グループの中(2.4.0: 受信の状態の CAN・GPS・IMU・RaceChrono と、設定の本体の状態。1 ページ 1 項目)
   SC_OPENING,     // オープニング(電源を入れた直後。2.5.0: 覚えた画面ごとに 3 種類。config.h の OPENING_ON・OPC_*・OPT_*・OPD_*。仕様書に無い)
   SC_CAN_ID,      // CAN確認:一覧(1 件ずつ)
   SC_CAN_REDO,    // CAN確認:やり直すの確認
-  SC_SET_RESET,   // 設定:リセットの確認(時間の記録。2.4.3: IMU の向きの補正も)
+  SC_SET_RESET,   // 設定:リセットの確認(時間の記録。2.4.3: IMU の向きの補正も。2.10.0: デフォルトに戻すも)
   SC_CAN_PP,      // CAN確認:前後で比べる(2.6.0。給油などの前後で、ゆっくり変わる値のバイトを見つける)
   SC_COUNT
 };
@@ -81,7 +81,7 @@ void blinkStats(BlinkStats *out, bool reset);  // reset = true なら回数と�
 // 試験用(PC 上で各画面を描いてキャンバスの絵と比べるのに使う)
 // a: 設定・変更 = 設定の項目、受信の状態・グループの中 = ページ(グループの中は b = グループ: 0 CAN、1 GPS、2 IMU、3 RaceChrono、
 // 4 本体の状態)、CAN確認の一覧 = 何件目、CAN確認の詳細 = 表の番号(b = バイト)。変更で b = 1 なら、RaceChrono の「送信」(a は使わない)。
-// リセットの確認は a = 1 なら IMU の向きの補正(2.4.3。0 = 時間の記録)。オープニングは a = 種類(0 サーキット、1 タコ、2 データ。
+// リセットの確認は a = 1 なら IMU の向きの補正(2.4.3。0 = 時間の記録)、2 ならデフォルトに戻す(2.10.0)。オープニングは a = 種類(0 サーキット、1 タコ、2 データ。
 // 覚えた画面もそれにする。2.5.0)。CAN確認の一覧は b = 1、やり直すは a = 1 なら「前後で比べる」の候補(2.6.0)
 void testShow(Screen sc, int a = 0, int b = 0);
 void testTouch(uint32_t nowMs);  // 試験用: 「操作した」ことにして、自動で戻るのを先延ばしにする
@@ -102,5 +102,8 @@ int testInfoSummary(int g, const LinkStats &ls, const PerfStats &ps, const SysIn
 bool testPeakDrawn();  // 試験用: ピークホールドの印(タコは回転計の印、サーキットは三角形)を描いてある
 void testPeakReset();  // 試験用: ピークホールドの記録を消す(前の絵・試験のピークを残さない)
 float testPeakRpm();   // 試験用: ピークホールドの印の回転数(止まっている・下がっている値。-1 = なし。2.4.4)
+// 試験用: サーキットの真ん中に描いてあるもの(2.10.0。0 = ピークの回転数、1 = 高負荷時間、2 = ▼ 3000rpm(高負荷時間の機能が切)、
+// 3 = 接続の状態。サーキット以外の画面・まだ描いていないときは -1)
+int testCenter();
 
 }  // namespace ui
