@@ -180,7 +180,7 @@ int main(int argc, char **argv) {
         if (falseDown < 5) printf("FALSE DOWN t=%u scene=%d linkOnSince=%u\n", now, sim::scene(), linkOnSince);
         falseDown++;
       }
-      trip::update(s, now);
+      trip::update(s, now, set.loadRpm);  // 2.12.0: 基板と同じく設定の過負荷 回転数
       load::update(s, set, now);  // 2.10.0: 高負荷時間
       si.timeOk = now >= 20000;    // 2.10.0: 時計(20 秒で GPS の時刻が分かったことにする)
       si.utc = 1793065338u + now / 1000;

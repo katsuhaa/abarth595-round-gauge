@@ -27,9 +27,12 @@
  *   どの画面も、触れてから 0.1 秒(config.h の TOUCH_CONFIRM_MS)押し続けたらタッチと決め、離したときに操作する。短いタッチは何もしない。
  *   サーキット・タコ・データでは、決まったら案内(上に「‹ スワイプ ›」、下に「長押し ▶ 設定」)が出る。指が 80 px 以上動くと
  *   長押しは取り消し(長押しの札が灰)。しきい値は config.h の TOUCH_CONFIRM_MS・HOLD_*・SWIPE_*。
- *   設定の並び(2.4.0。2.9.0 で 2 番目にイルミネーションの明るさ。2.10.0 で高負荷時間の 4 つと最後に「デフォルトに戻す」): 明るさ・
- *   イルミネーションの明るさ・受信の状態・本体の状態・シフトポイント・水温の警告・高負荷時間 黄・高負荷時間 赤・クールダウン時間・
- *   高負荷時間 リセット・時間の記録・自動で戻る・デモ・デフォルトに戻す。
+ *   設定の並び(2.12.0: カテゴリにまとめた。設定の段で左右に送り、長押しでカテゴリの中へ。中は 1 画面 1 項目、上の帯「‹ カテゴリ名」で戻る):
+ *   画面(明るさ・イルミネーションの明るさ・自動で戻る)、シフトポイント(シフトポイント・回転数の輪)、水温・過負荷(水温の警告・過負荷 回転数・
+ *   過負荷時間 黄・過負荷時間 赤・過負荷がリセットされる時間・メンテナンスまでの累積時間・累積時間 リセット(値を入れてから)。2.12.0 で「高負荷時間」を
+ *   「過負荷時間」に、2.11.0 までの「時間の記録」を「累積時間」に。境目の回転数は「過負荷 回転数」1 つ)、
+ *   受信の状態、本体の状態、その他(デモ・デフォルトに戻す)。受信の状態・本体の状態は長押しでその中へ(今までどおり)。
+ *   回転数の輪(2.12.0): 両側 = 左右の下から真上へ点く(今まで)。片側 = 4 時の位置から右回りに真上まで点く(シフト点で真上)。
  *   タコの下の真ん中に、スポーツモードの間「SPORT」(2.11.0。C-CAN 0A18A000 b4 の 0x10)。時計の針と目盛は Apple Watch 風、秒針は赤の三角(2.11.0)。
  *   ライトのスイッチ(B-CAN 06214000 b0 の 0x08)が入の間は、ふだんの明るさを「イルミネーションの明るさ」にする(2.9.0。点滅の消灯と
  *   最大輝度はそのまま)。明るさの 2 つの項目は、変更の画面を出している間はその値で表示する。
@@ -478,7 +481,8 @@ static void touchPoll(uint32_t now) {
 static SemaphoreHandle_t g_mutex = nullptr;
 static Preferences g_prefs;
 static Settings g_set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT,
-                          SET_LOADY_DEFAULT, SET_LOADR_DEFAULT, SET_LOADC_DEFAULT, SET_LOADRS_DEFAULT };  // 初期値(app.cpp の settingsDefaults と同じ)
+                          SET_LOADY_DEFAULT, SET_LOADR_DEFAULT, SET_LOADRS_DEFAULT, SET_RING_DEFAULT, SET_LOADRPM_DEFAULT,
+                          SET_MAINT_DEFAULT };  // 初期値(app.cpp の settingsDefaults と同じ)
 static PerfStats g_perf = {};
 
 void platLock() {
@@ -558,8 +562,10 @@ static void loadSettings() {
   g_set.illumPct = clampInt(g_prefs.getInt("illum", SET_ILLUM_DEFAULT), SET_ILLUM_MIN, SET_ILLUM_MAX);  // 2.9.0
   g_set.loadYellowMin = clampInt(g_prefs.getInt("loady", SET_LOADY_DEFAULT), SET_LOAD_MIN, SET_LOAD_MAX);  // 2.10.0
   g_set.loadRedMin = clampInt(g_prefs.getInt("loadr", SET_LOADR_DEFAULT), SET_LOAD_MIN, SET_LOAD_MAX);
-  g_set.coolMin = clampInt(g_prefs.getInt("loadcd", SET_LOADC_DEFAULT), SET_LOAD_MIN, SET_LOAD_MAX);
   g_set.loadResetMin = clampInt(g_prefs.getInt("loadrs", SET_LOADRS_DEFAULT), SET_LOADRS_MIN, SET_LOADRS_MAX);
+  g_set.ringOne = clampInt(g_prefs.getInt("ring", SET_RING_DEFAULT), 0, 1);  // 2.12.0
+  g_set.loadRpm = clampInt(g_prefs.getInt("loadrpm", SET_LOADRPM_DEFAULT), SET_LOADRPM_MIN, SET_LOADRPM_MAX);  // 2.12.0: 過負荷 回転数
+  g_set.maintHours = clampInt(g_prefs.getInt("maint", SET_MAINT_DEFAULT), SET_MAINT_MIN, SET_MAINT_MAX);  // 2.12.0: メンテナンスまでの累積時間
   // 2.10.0: 高負荷時間を前の起動の続きから。時刻(0 = その起動では時刻が分からなかった)は、GPS の時刻が分かったときに電源が
   // 切れていた時間を求めるのに使う(load::onTime)
   g_loadSavedV = g_prefs.getULong("loadms", 0);
@@ -581,8 +587,10 @@ bool platSaveSettings(const Settings &s) {
   g_prefs.putInt("illum", s.illumPct);
   g_prefs.putInt("loady", s.loadYellowMin);  // 2.10.0
   g_prefs.putInt("loadr", s.loadRedMin);
-  g_prefs.putInt("loadcd", s.coolMin);
   g_prefs.putInt("loadrs", s.loadResetMin);
+  g_prefs.putInt("ring", s.ringOne);  // 2.12.0
+  g_prefs.putInt("loadrpm", s.loadRpm);  // 2.12.0
+  g_prefs.putInt("maint", s.maintHours);
   // 2.10.0: 送信を入に戻したら、落ちる起動が続いて止めた GPS も次の起動から動かす
   const bool gpsBack = s.rcOn && g_gpsOffSaved;
   if (gpsBack) {
@@ -592,13 +600,14 @@ bool platSaveSettings(const Settings &s) {
   bool ok = g_prefs.getInt("shift", -1) == s.shiftRpm && g_prefs.getInt("autoret", -1) == s.autoReturnMin && g_prefs.getInt("bright", -1) == s.brightnessPct
             && g_prefs.getInt("warn", -1) == s.warnTempC && g_prefs.getInt("demo", -1) == s.demoOn && g_prefs.getInt("rc", -1) == s.rcOn
             && g_prefs.getInt("illum", -1) == s.illumPct && g_prefs.getInt("loady", -1) == s.loadYellowMin && g_prefs.getInt("loadr", -1) == s.loadRedMin
-            && g_prefs.getInt("loadcd", -1) == s.coolMin && g_prefs.getInt("loadrs", -1) == s.loadResetMin;
+            && g_prefs.getInt("loadrs", -1) == s.loadResetMin && g_prefs.getInt("ring", -1) == s.ringOne
+            && g_prefs.getInt("loadrpm", -1) == s.loadRpm && g_prefs.getInt("maint", -1) == s.maintHours;
   mlink::graceUntil(millis() + 200);
-  char y[16], r[16], c[16];
-  Serial.printf("設定の保存: %s(シフト点 %d、自動で戻る %d 分、明るさ %d %%、イルミネーションの明るさ %d %%、警告温度 %d ℃、高負荷時間 黄 %s・赤 %s・"
-                "クールダウン時間 %s・リセット %d 分、デモ %s、RaceChrono 送信 %s%s%s)\n", ok ? "OK" : "失敗",
-                s.shiftRpm, s.autoReturnMin, s.brightnessPct, s.illumPct, s.warnTempC, minText(s.loadYellowMin, y, sizeof(y)), minText(s.loadRedMin, r, sizeof(r)),
-                minText(s.coolMin, c, sizeof(c)), s.loadResetMin, s.demoOn ? "入" : "切", s.rcOn ? "入" : "切",
+  char y[16], r[16];
+  Serial.printf("設定の保存: %s(シフト点 %d、回転数の輪 %s、過負荷 回転数 %d、メンテナンスまでの累積時間 %d 時間、自動で戻る %d 分、明るさ %d %%、"
+                "イルミネーションの明るさ %d %%、警告温度 %d ℃、過負荷時間 黄 %s・赤 %s・リセットされる時間 %d 分、デモ %s、RaceChrono 送信 %s%s%s)\n",
+                ok ? "OK" : "失敗", s.shiftRpm, s.ringOne ? "片側" : "両側", s.loadRpm, s.maintHours, s.autoReturnMin, s.brightnessPct, s.illumPct, s.warnTempC, minText(s.loadYellowMin, y, sizeof(y)), minText(s.loadRedMin, r, sizeof(r)),
+                s.loadResetMin, s.demoOn ? "入" : "切", s.rcOn ? "入" : "切",
                 s.rcOn != g_sys.rc.enabled ? "(次の起動から)" : "", gpsBack ? "。GPS も次の起動から動かす" : "");
   return ok;
 }
@@ -1587,11 +1596,12 @@ static void printSelfCheck() {
     Serial.println("電源 IC(AXP2101): 応答なし");
   }
   Serial.printf("タッチ(CST9217、0x5A): %s\n", g_sys.touchOk ? "応答あり" : "応答なし(タップが効かない)");
-  char y[16], r[16], c[16];
-  Serial.printf("設定(%s): シフト点 %d rpm、自動で戻る %d 分、明るさ %d %%、イルミネーションの明るさ %d %%、警告温度 %d ℃、高負荷時間 黄 %s・赤 %s・"
-                "クールダウン時間 %s・リセット %d 分、デモ %s、RaceChrono 送信 %s\n",
-                g_sys.nvsOk ? "保存領域 OK" : "保存領域を開けない。初期値を使う", g_set.shiftRpm, g_set.autoReturnMin, g_set.brightnessPct, g_set.illumPct, g_set.warnTempC,
-                minText(g_set.loadYellowMin, y, sizeof(y)), minText(g_set.loadRedMin, r, sizeof(r)), minText(g_set.coolMin, c, sizeof(c)), g_set.loadResetMin,
+  char y[16], r[16];
+  Serial.printf("設定(%s): シフト点 %d rpm、回転数の輪 %s、過負荷 回転数 %d、メンテナンスまでの累積時間 %d 時間、自動で戻る %d 分、明るさ %d %%、"
+                "イルミネーションの明るさ %d %%、警告温度 %d ℃、過負荷時間 黄 %s・赤 %s・リセットされる時間 %d 分、デモ %s、RaceChrono 送信 %s\n",
+                g_sys.nvsOk ? "保存領域 OK" : "保存領域を開けない。初期値を使う", g_set.shiftRpm, g_set.ringOne ? "片側" : "両側", g_set.loadRpm, g_set.maintHours,
+                g_set.autoReturnMin, g_set.brightnessPct, g_set.illumPct, g_set.warnTempC,
+                minText(g_set.loadYellowMin, y, sizeof(y)), minText(g_set.loadRedMin, r, sizeof(r)), g_set.loadResetMin,
                 g_set.demoOn ? "入" : "切", g_set.rcOn ? "入" : "切");
   Serial.printf("UART 受信(「IO16」): %s\n", g_linkOk ? "開始。速度は自動で合わせる" : "開始していない");
   Serial.printf("前回のリセットの理由: %s(%d)。落ちた回数 %lu\n", resetReasonName(g_resetReason), (int)g_resetReason, (unsigned long)g_crashCount);
@@ -1684,11 +1694,11 @@ static void timePoll(uint32_t now) {
   Serial.printf("時刻: GPS の時刻が分かった %02lu:%02lu:%02lu(日本時間。電源を入れて %lu 秒)。", (unsigned long)(l / 3600), (unsigned long)(l / 60 % 60),
                 (unsigned long)(l % 60), (unsigned long)(now / 1000));
   const int64_t offS = ((int64_t)utc - (int64_t)(now / 1000)) - (int64_t)g_loadBootT;  // 電源が切れていた時間(最後に書いてから起動まで)
-  if (!load::enabled(g_set)) Serial.println("高負荷時間は切");
-  else if (g_loadBootT == 0) Serial.printf("前の起動で書いた時刻が無い(その起動では時刻が分からなかった)ので、高負荷時間は引かない(%s)\n", b);
-  else if (offS <= 0) Serial.printf("電源が切れていた時間が 0 以下(%ld 秒)なので、高負荷時間は引かない(%s)\n", (long)offS, b);
+  if (!load::enabled(g_set)) Serial.println("過負荷時間は切");
+  else if (g_loadBootT == 0) Serial.printf("前の起動で書いた時刻が無い(その起動では時刻が分からなかった)ので、過負荷時間は引かない(%s)\n", b);
+  else if (offS <= 0) Serial.printf("電源が切れていた時間が 0 以下(%ld 秒)なので、過負荷時間は引かない(%s)\n", (long)offS, b);
   else
-    Serial.printf("電源が切れていた時間 約 %ld 分 %ld 秒(前の起動で最後に書いてから)→ 高負荷時間 %s → %s\n", (long)(offS / 60), (long)(offS % 60), a, b);
+    Serial.printf("電源が切れていた時間 約 %ld 分 %ld 秒(前の起動で最後に書いてから)→ 過負荷時間 %s → %s\n", (long)(offS / 60), (long)(offS % 60), a, b);
 }
 
 // ライトのスイッチ(2.9.0。B-CAN 06214000 b0 の 0x08、veh::lightInfo)を明るさに使う値 g_lightOn に入れる。最初に受けたとき(電源を
@@ -1731,7 +1741,7 @@ void loop() {
   mlink::getSignals(&s, now);
   mlink::getStats(&ls);
   lightPoll(now);  // 2.9.0: ライトのスイッチ → ふだんの明るさ(送り直しは画面を送ったあと)
-  trip::update(s, now);
+  trip::update(s, now, g_set.loadRpm);  // 2.12.0: 累積時間の境目は設定の過負荷 回転数
   load::update(s, g_set, now);  // 2.10.0: 高負荷時間
   timePoll(now);                // 2.10.0: 時計の時刻と、電源が切れていた時間の引き算
   saveTimes(now, false);
@@ -1854,7 +1864,7 @@ void loop() {
     }
     if (g_sys.rc.enabled || g_sys.rc.gpsOn) rcPrintStatusLine();
     // 2.10.0: 時計と高負荷時間
-    char clk[24] = "待ち", lv[16], lo[16] = "–", y[16], r[16], c[16];
+    char clk[24] = "待ち", lv[16], lo[16] = "–", y[16], r[16], cd[24] = "";
     if (g_sys.timeOk) {
       const uint32_t l = (g_sys.utc + CLOCK_TZ_SEC) % 86400u;
       snprintf(clk, sizeof(clk), "%02lu:%02lu:%02lu%s", (unsigned long)(l / 3600), (unsigned long)(l / 60 % 60), (unsigned long)(l % 60),
@@ -1862,12 +1872,16 @@ void loop() {
     }
     msText(load::valueMs(), lv, sizeof(lv));
     if (load::lowMs(now)) msText(load::lowMs(now), lo, sizeof(lo));
+    if (load::coolDown(now)) {  // 2.12.0: クールダウン(リセットまでの残り)
+      char left[16];
+      msText(load::coolLeftMs(g_set, now), left, sizeof(left));
+      snprintf(cd, sizeof(cd), " クールダウン 残り %s", left);
+    }
     static const char *const LEVEL[] = { "白", "黄", "赤" };
     if (load::enabled(g_set))
-      Serial.printf("  時計 %s(日本時間)| 高負荷時間 %s %s%s 3000rpm 以下 %s(黄 %s・赤 %s・クールダウン時間 %s・リセット %d 分)\n", clk, lv, LEVEL[load::level(g_set) % 3],
-                    load::coolDown() ? " クールダウン" : "", lo, minText(g_set.loadYellowMin, y, sizeof(y)), minText(g_set.loadRedMin, r, sizeof(r)),
-                    minText(g_set.coolMin, c, sizeof(c)), g_set.loadResetMin);
-    else Serial.printf("  時計 %s(日本時間)| 高負荷時間 切\n", clk);
+      Serial.printf("  時計 %s(日本時間)| 過負荷時間 %s %s%s %drpm 未満 %s(黄 %s・赤 %s・リセットされる時間 %d 分)\n", clk, lv, LEVEL[load::level(g_set) % 3],
+                    cd, g_set.loadRpm, lo, minText(g_set.loadYellowMin, y, sizeof(y)), minText(g_set.loadRedMin, r, sizeof(r)), g_set.loadResetMin);
+    else Serial.printf("  時計 %s(日本時間)| 過負荷時間 切\n", clk);
   }
   delay(1);
 }

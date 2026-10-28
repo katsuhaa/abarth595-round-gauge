@@ -125,14 +125,26 @@ int main(int argc, char **argv) {
     }
     now = t0 + 155000;
     shot("DriveIdleTime", n, ui::SC_DRIVE);
-    // 2.10.0: 高負荷時間 31:10(クールダウン時間を超えたのでタイトルが「クールダウン」、赤)と、その下に ▼ 3000rpm 2:35(キャンバス C3)
+    // 2.10.0: 高負荷時間 31:10 と、その下に ▼ 3000rpm 2:35(キャンバス C3)。2.12.0: 「過負荷」(赤)
     si.timeOk = true; si.utc = 1793065338u;  // 2026-10-27 10:42:18(日本時間)
     load::testSet(1870000, true);
+    shot("DriveLoadIdle", n, ui::SC_DRIVE);
+    // 2.12.0: クールダウン(黄に達したあと 3000 未満が 1:30 → タイトル「クールダウン」、リセットまでの残り 3:30 を水色。▼ は出さない)
+    load::update(n, set, now - 90000);
+    load::update(n, set, now);
     shot("DriveLoadCool", n, ui::SC_DRIVE);
+    {  // 2.12.0: メンテナンスの印(過負荷時間と ▼ の下)
+      const uint32_t a0 = trip::aboveMs(), b0 = trip::belowMs();
+      trip::setTimes(18000000u, 0);
+      shot("DriveMaintLoad", n, ui::SC_DRIVE);
+      trip::setTimes(a0, b0);
+    }
     // 高負荷時間の機能が切(黄・赤とも 0): 2.9.0 と同じ ▼ 3000rpm と大きい経過時間
     load::testReset();
     set.loadYellowMin = 0; set.loadRedMin = 0;
     shot("DriveLoadOffIdle", n, ui::SC_DRIVE);
+    set.loadRpm = 4500;  // 2.12.0: ▼ の数字は設定の過負荷 回転数
+    shot("DriveLoadRpm4500", n, ui::SC_DRIVE);
     settingsDefaults(&set);
     si.timeOk = false;
     now += 20000;
@@ -158,12 +170,12 @@ int main(int argc, char **argv) {
     si.timeOk = true;
     load::testSet(920000, false);  // C2: 5600 rpm・高負荷時間 15:20(黄)
     shot("DriveLoadYellow", sig(5600, '4', 92, 62), ui::SC_DRIVE);
-    load::testSet(1860000, false);  // 31:00(赤。クールダウン前)、背景が緑
+    load::testSet(1860000, false);  // 31:00(赤。クールダウン前)。4400 rpm(2.12.0: 背景は黄の手前まで黒)
     shot("DriveLoadRed", sig(4400, '3', 96, 40), ui::SC_DRIVE);
     load::testSet(3725000, true);  // 1 時間以上(時:分:秒)
     shot("DriveLoadHour", sig(2500, '3', 96, 40), ui::SC_DRIVE);
     load::testReset();
-    // C1: 4200 rpm・ピーク 6100 を真ん中に(背景が緑)。ピークの印は回転数がはっきり上がったときに出す(3000 → 6100)
+    // C1: 4200 rpm・ピーク 6100 を真ん中に(2.12.0: 背景は黒)。ピークの印は回転数がはっきり上がったときに出す(3000 → 6100)
     auto peakUp = [&](int to) {
       ui::testPeakReset();
       ui::testShow(ui::SC_DRIVE);
@@ -186,6 +198,17 @@ int main(int argc, char **argv) {
     peakUp(6040);
     g_keepPeak = true;
     shot("DrivePeakYellow", sig(5500, '3', 92, 62), ui::SC_DRIVE);
+    now += 10000;
+    // 2.12.0: 回転数の輪 = 片側(右斜め下から真上へ。シフト点で真上)。ピークの三角は右側だけ
+    set.ringOne = 1;
+    shot("DriveOne1800", sig(1800, '2', 92, 62), ui::SC_DRIVE);
+    shot("DriveOne4200", sig(4200, '3', 92, 62), ui::SC_DRIVE);
+    shot("DriveOne5600", sig(5600, '4', 92, 62), ui::SC_DRIVE);
+    shot("DriveOneShift", sig(6000, '4', 92, 62), ui::SC_DRIVE);
+    peakUp(5600);
+    g_keepPeak = true;
+    shot("DriveOnePeak", sig(4200, '3', 92, 62), ui::SC_DRIVE);
+    set.ringOne = 0;
     now += 10000;
     // 針が 1 秒ずつ進む(少しずつ描いたもの。最初から描いたものと比べる試験は run_tests.sh)
     {
@@ -270,7 +293,15 @@ int main(int argc, char **argv) {
     si.rc.enabled = true; si.rc.gpsOn = true; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 11; si.rc.pvtPerSec = 25; si.rc.imuOk = true;
     si.rc.gLon = 0.32f; si.rc.gLat = -0.85f;
     Signals s = sig(4200, '3', 92, 62);
-    shot("Data", s, ui::SC_DATA);
+    shot("Data", s, ui::SC_DATA);  // 2.12.0: 下の行はメンテナンスまでの残り(5 時間 − 1:23:45 = 3:36:15)
+    set.maintHours = 0;
+    shot("DataMaintOff", s, ui::SC_DATA);  // メンテナンスが切: 今までどおり ▼
+    set.maintHours = 99;
+    shot("DataMaint99", s, ui::SC_DATA);   // 残り 97:36:15(いちばん長い)
+    set.maintHours = SET_MAINT_DEFAULT;
+    trip::setTimes(18000000u, 45296000);
+    shot("DataMaintDue", s, ui::SC_DATA);  // 5 時間に達した: 赤の「メンテナンス」
+    trip::setTimes(5025000, 45296000);
     si.rc.fixType = 0; si.rc.numSV = 3; si.rc.pvtPerSec = 0; si.rc.imuOk = false; ls.info.can_fps[1] = 0;
     shot("DataNg", s, ui::SC_DATA);
     Signals a = sig(5600, '4', 112, 12);
@@ -331,29 +362,59 @@ int main(int argc, char **argv) {
   {
     Signals s = sig(4200, '3', 92, 62);
     trip::setTimes(5025000, 45296000);
-    const char *items[] = { "Set1Bright", "SetIllum", "Set2Info", "Set3Sys", "Set4Shift", "Set5Warn", "SetLoadY", "SetLoadR", "SetCool", "SetLoadRs",
-                            "Set6Time", "Set7Auto", "Set8Demo", "SetDefaults" };  // 2.10.0: 高負荷時間の 4 項目とデフォルトに戻す
-    for (int i = 0; i < 14; i++) shot(items[i], s, ui::SC_SET_LIST, i);
+    // 2.12.0: 設定の段 = カテゴリ 6 つ(SetCat*)、カテゴリの中 = 項目(ITEMS の並び。受信の状態・本体の状態はカテゴリの段から中へ)
+    const char *cats[] = { "SetCat1Screen", "SetCat2Shift", "SetCat3Warn", "SetCat4Info", "SetCat5Sys", "SetCat6Other" };
+    for (int c = 0; c < 6; c++) shot(cats[c], s, ui::SC_SET_LIST, c);
+    const char *items[] = { "Set1Bright", "SetIllum", "Set7Auto", "Set4Shift", "SetRing", "Set5Warn", "SetLoadRpm", "SetLoadY", "SetLoadR",
+                            "SetLoadRs", "SetMaint", "Set6Time", nullptr, nullptr, "Set8Demo", "SetDefaults" };
+    for (int i = 0; i < 16; i++)
+      if (items[i]) shot(items[i], s, ui::SC_SET_CAT, i);
+    // 2.12.0: 累積時間がメンテナンスの時間に達した(水温・過負荷のカテゴリ・累積時間 リセットの項目と確認の画面は赤の「メンテナンス」)
+    trip::setTimes(18000000u, 45296000);
+    shot("SetCat3WarnDue", s, ui::SC_SET_LIST, 2);
+    shot("Set6TimeDue", s, ui::SC_SET_CAT, 11);
+    trip::setTimes(5025000, 45296000);
+    set.maintHours = 0;  // メンテナンスが切: 今までどおり ▲▼ と「2 つとも 0 に戻す」
+    shot("Set6TimeOff", s, ui::SC_SET_CAT, 11);
+    shot("SettingsMaintOff", s, ui::SC_SET_EDIT, 10);  // 0 = 「切」
+    set.maintHours = SET_MAINT_DEFAULT;
     shot("SettingsBright", s, ui::SC_SET_EDIT, 0);
     shot("SettingsIllum", s, ui::SC_SET_EDIT, 1);  // 2.9.0: 名前は 2 行
-    shot("SettingsShift", s, ui::SC_SET_EDIT, 4);
+    shot("SettingsShift", s, ui::SC_SET_EDIT, 3);
+    shot("SettingsRing", s, ui::SC_SET_EDIT, 4);  // 2.12.0: 回転数の輪(両側)
+    set.ringOne = 1;
+    shot("SettingsRingOne", s, ui::SC_SET_EDIT, 4);  // 片側
+    shot("SetRingOne", s, ui::SC_SET_CAT, 4);
+    set.ringOne = 0;
     shot("SettingsWarn", s, ui::SC_SET_EDIT, 5);
-    shot("SettingsLoadY", s, ui::SC_SET_EDIT, 6);
+    shot("SettingsLoadRpm", s, ui::SC_SET_EDIT, 6);  // 2.12.0: 過負荷 回転数
+    shot("SettingsLoadY", s, ui::SC_SET_EDIT, 7);
     set.loadRedMin = 0;
-    shot("SettingsLoadROff", s, ui::SC_SET_EDIT, 7);  // 0 = 「切」
+    shot("SettingsLoadROff", s, ui::SC_SET_EDIT, 8);  // 0 = 「切」
     set.loadRedMin = SET_LOADR_DEFAULT;
-    shot("SettingsCool", s, ui::SC_SET_EDIT, 8);
     shot("SettingsLoadRs", s, ui::SC_SET_EDIT, 9);
-    shot("SettingsAuto", s, ui::SC_SET_EDIT, 11);
+    shot("SettingsMaint", s, ui::SC_SET_EDIT, 10);  // 2.12.0: メンテナンスまでの累積時間
+
+    shot("SettingsAuto", s, ui::SC_SET_EDIT, 2);
     set.demoOn = 1;
-    shot("SettingsDemo", s, ui::SC_SET_EDIT, 12);
+    shot("SettingsDemo", s, ui::SC_SET_EDIT, 14);
     set.demoOn = 0;
     shot("SettingsRcSend", s, ui::SC_SET_EDIT, 0, 1);
-    shot("SetReset", s, ui::SC_SET_RESET);
+    shot("SetReset", s, ui::SC_SET_EDIT, 11);  // 2.12.0: 累積時間 リセットは変更の画面(0:00:00 から 30 分ずつ)
+    {
+      ui::testShow(ui::SC_SET_EDIT, 11);
+      ui::testTouch(now);
+      ui::update(s, ls, ps, si, now);
+      for (int k = 0; k < 5; k++) ui::tap(366, 233, now + 10 + k);  // 2:30:00
+      ui::update(s, ls, ps, si, now + 20);
+      saveShot("SetResetIn");
+      printf("%-22s missing=%u\n", "SetResetIn", (unsigned)gfx::missingGlyphs());
+      gfx::dirtyClear();
+    }
     shot("SetDefaultsConfirm", s, ui::SC_SET_RESET, 2);
     // 保存したあとの点滅(2.4.3): 変更の画面で、押した「決定」の帯が消える(1 回目)・点く(1 回目)。その間は値が太い
     {
-      ui::testShow(ui::SC_SET_EDIT, 4);
+      ui::testShow(ui::SC_SET_EDIT, 3);
       ui::testTouch(now);
       ui::update(s, ls, ps, si, now);
       ui::tap(366, 233, now + 10);  // + 100
@@ -416,7 +477,7 @@ int main(int argc, char **argv) {
     ls.locked = false; ls.infoValid = false; si.axpOk = false; ls.crcErrors = 3; ls.bytesPerSec = 1480; ls.framesPerSec = 0;
     shot("CanNoLink", s, ui::SC_SET_GRP, 2, 0);
     shot("InfoCanNg", s, ui::SC_SET_INFO, 0);
-    shot("Set2InfoNg", s, ui::SC_SET_LIST, 2);
+    shot("Set2InfoNg", s, ui::SC_SET_LIST, 3);  // 2.12.0: 受信の状態は 4 つ目のカテゴリ
     si.rc.enabled = true; si.rc.bleOk = true; si.rc.connected = true; si.rc.canPerSec = 62; si.rc.gpsPerSec = 25; si.rc.gpsOn = true; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 11;
     si.rc.pvtPerSec = 25; si.rc.lat = 355812345; si.rc.lon = 1396821234; si.rc.gpsKmh = 48.3f; si.rc.imuOk = true; si.rc.imuLevel = true; si.rc.imuForward = true;
     si.rc.gLon = 0.32f; si.rc.gLat = -0.85f;
@@ -536,6 +597,20 @@ int main(int argc, char **argv) {
     shot("DriveSim", s, ui::SC_DRIVE);
     shot("BoostSim", s, ui::SC_BOOST);
     shot("DataSim", s, ui::SC_DATA);
+    {  // 2.12.0: メンテナンスの印(累積時間がメンテナンスの時間に達した。本人 10/28「メンテナンスの表示は全ての画面で表示してください」)
+      const uint32_t a0 = trip::aboveMs(), b0 = trip::belowMs();
+      trip::setTimes(18000000u, 0);
+      shot("DriveMaint", sig(2500, '3', 92, 62), ui::SC_DRIVE);              // 真ん中の下に赤の「メンテナンス」
+      shot("DriveMaintSim", s, ui::SC_DRIVE);                                 // デモ: 「SIM 7」は上、「メンテナンス」は下
+      shot("DriveMaintFuel", sig(2500, '3', 92, 6), ui::SC_DRIVE);            // 燃料の警告の赤の上は白
+      shot("DriveMaintRed", sig(6600, '4', 92, 62), ui::SC_DRIVE);            // 背景が赤の上は白
+      shot("BoostMaint", sig(2500, '3', 92, 62, true, true, 0.4f), ui::SC_BOOST);         // 札の段に赤の「メンテナンス」
+      shot("BoostMaintWater", sig(2500, '3', 112, 62, true, true, 0.4f), ui::SC_BOOST);   // 水温の札の下の段
+      shot("BoostMaintBoth", sig(2500, '3', 112, 6, true, true, 0.4f), ui::SC_BOOST);     // 2 段とも水温・燃料: 出さない
+      shot("BoostMaintSim", s, ui::SC_BOOST);
+      shot("DataMaintSim", s, ui::SC_DATA);
+      trip::setTimes(a0, b0);
+    }
     Signals down;
     memset(&down, 0, sizeof(down));
     shot("DriveNoLink", down, ui::SC_DRIVE);

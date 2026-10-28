@@ -20,7 +20,7 @@ using gfx::rgb;
 
 // ---------------------------------------------------------------- 色(9.1)
 // 背景は仕様書の紺(#0A1E46)から黒に変えた(2026-10-14。AMOLED では黒が最もコントラストが高い)。
-// 走行画面の背景は回転数で緑・黄・赤になる(4 章)。その手前(灰・青の範囲)は黒。
+// 走行画面の背景は回転数で黄・赤になる(4 章。2.12.0: 緑はやめて黄の手前まで黒)。
 static const uint16_t C_BG = rgb(0x000000);           // 背景(黒)
 static const uint16_t C_TRACK = rgb(0x1F3A70);        // 走行画面の弧の地
 static const uint16_t C_HBAR = rgb(0x274F9C);         // データ画面の横棒の地
@@ -42,7 +42,8 @@ struct Rgb8 {
   uint8_t r, g, b;
 };
 static const Rgb8 RING_C[5] = { { 0x8D, 0x97, 0xAD }, { 0x2B, 0x7B, 0xFF }, { 0x22, 0xE3, 0x6A }, { 0xFF, 0xDC, 0x00 }, { 0xFF, 0x2A, 0x2A } };
-static const Rgb8 BACK_C[5] = { { 0x00, 0x00, 0x00 }, { 0x00, 0x00, 0x00 }, { 0x0E, 0x7A, 0x3C }, { 0xC4, 0xA0, 0x00 }, { 0xA3, 0x15, 0x15 } };
+// 2.12.0: 背景は黄の手前まで黒(本人 10/28「回転数の警告 → 黄色までは背景を黒に」。2.11.0 までは緑の所(5800 なら 4000〜)を緑 #0E7A3C)
+static const Rgb8 BACK_C[5] = { { 0x00, 0x00, 0x00 }, { 0x00, 0x00, 0x00 }, { 0x00, 0x00, 0x00 }, { 0xC4, 0xA0, 0x00 }, { 0xA3, 0x15, 0x15 } };
 
 static inline uint16_t to565(Rgb8 c) {
   return rgb(((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b);
@@ -287,7 +288,15 @@ static const int RING_SEG_BOTTOM = 12, RING_SEG_TOP = 13;
 static const float RING_PITCH_DEG = 360.0f / 26.0f;
 static uint8_t *g_segMask[RING_SEGS];
 static gfx::Rect g_segRect[RING_SEGS];
-static uint16_t g_segCol[RING_SEGS];
+// 2.12.0: 片側の輪(設定「回転数の輪」= 片側。config.h の RING_ONE_*)。マス k = 0〜RING_ONE_SEGS−1 を 4 時の位置から右回りに真上へ
+// (最後 = 真上 = シフト点)。両側のマスとは別の形を作っておき、描くときに g_ringOne で選ぶ。間隔は、1 マス目の外の端が RING_ONE_START_DEG、
+// 最後のマスの真ん中が真上(270°)になる幅。マスの色は「置き場」k ごとに持つ(両側は 0〜13、片側は 0〜RING_ONE_SEGS−1)
+static const int RING_SLOTS = RING_ONE_SEGS > RING_SEGS ? RING_ONE_SEGS : RING_SEGS;
+static uint16_t g_segCol[RING_SLOTS];
+static const float RING_ONE_PITCH_DEG = (270.0f - RING_ONE_START_DEG + RING_GAP_DEG * 0.5f) / ((float)RING_ONE_SEGS - 0.5f);
+static uint8_t *g_oneMask[RING_ONE_SEGS];
+static gfx::Rect g_oneRect[RING_ONE_SEGS];
+static bool g_ringOne = false;  // 描いている輪が片側(走行画面は設定が変わったら全部を描き直す。オープニングは始めに決める)
 static uint16_t g_bgCol = 0;
 static uint32_t g_bgMs = 0;
 static uint32_t g_waterKey = 0, g_fuelKey = 0;
@@ -298,55 +307,93 @@ static float segCenterDeg(int k) {
   if (k == RING_SEG_TOP) return 270.0f;
   return 90.0f + RING_PITCH_DEG * (k + 1);
 }
-// マス k(片側 n マス点いているとき)が点いているか
+// 片側の輪のマス k の中心の角度(3 時が 0°、時計回り。最後 = 真上の 270°、0 = 4 時のすぐ下。2.12.0)
+static float oneCenterDeg(int k) {
+  return 270.0f - RING_ONE_PITCH_DEG * (float)(RING_ONE_SEGS - 1 - k);
+}
+// 片側の輪で点くマスの数(1 マス目はシフト点 − (RING_ONE_SEGS − 1) × RING_ONE_STEP_RPM = 両側の 1 マス目と同じ回転数。2.12.0)
+static int litOne(int rpm, int sp) {
+  const int first = sp - (RING_ONE_SEGS - 1) * RING_ONE_STEP_RPM;
+  int n = 0;
+  for (int k = 0; k < RING_ONE_SEGS; k++)
+    if (rpm >= first + RING_ONE_STEP_RPM * k) n++;
+  return n;
+}
+static int ringLit(int rpm, int sp) {  // 今の輪で点くマスの数(両側は片側の数)
+  return g_ringOne ? litOne(rpm, sp) : litPerSide(rpm, sp);
+}
+static int ringFull() {  // 全部点いたときの数
+  return g_ringOne ? RING_ONE_SEGS : 12;
+}
+// マス k(n マス点いているとき。両側は片側の数)が点いているか
 static bool segLit(int k, int n) {
+  if (g_ringOne) return k < RING_ONE_SEGS && k < n;  // 2.12.0: 片側
+  if (k >= RING_SEGS) return false;
   if (k == RING_SEG_BOTTOM) return n >= 1;
   if (k == RING_SEG_TOP) return n >= 12;
   return k < n;
 }
-// マスの形: 中心 (233, 233)、半径 RING_R_IN〜RING_R_OUT、中心の角度 ± (間隔 − すき間) / 2
-static const int RING_POOL_BYTES = RING_SEGS * 80 * 80;
+// マスの形: 中心 (233, 233)、半径 RING_R_IN〜RING_R_OUT、中心の角度 c ± 幅 w / 2(w = 間隔 − すき間)。pool に作る(入らなければ nullptr)
+static const int RING_POOL_BYTES = (RING_SEGS + RING_ONE_SEGS) * 80 * 80;  // 2.12.0: 片側のマスのぶんも
+static void segShape(float c, float w, uint8_t *&pool, uint8_t *poolEnd, uint8_t **mask, gfx::Rect *rect) {
+  *mask = nullptr;
+  if (!pool) return;
+  gfx::Pt p[20];
+  int n = 0;
+  float a0 = c - w * 0.5f;
+  for (int i = 0; i <= 8; i++) {
+    float a = (a0 + w * i / 8) * PI_F / 180.0f;
+    p[n++] = { 233 + RING_R_OUT * cosf(a), 233 + RING_R_OUT * sinf(a) };
+  }
+  for (int i = 8; i >= 0; i--) {
+    float a = (a0 + w * i / 8) * PI_F / 180.0f;
+    p[n++] = { 233 + RING_R_IN * cosf(a), 233 + RING_R_IN * sinf(a) };
+  }
+  float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+  for (int i = 0; i < n; i++) {
+    if (p[i].x < x0) x0 = p[i].x;
+    if (p[i].y < y0) y0 = p[i].y;
+    if (p[i].x > x1) x1 = p[i].x;
+    if (p[i].y > y1) y1 = p[i].y;
+  }
+  gfx::Rect r = { (int16_t)floorf(x0), (int16_t)floorf(y0), (int16_t)ceilf(x1), (int16_t)ceilf(y1) };
+  *rect = r;
+  if (pool + (r.x1 - r.x0) * (r.y1 - r.y0) > poolEnd) return;
+  *mask = pool;
+  pool += (r.x1 - r.x0) * (r.y1 - r.y0);
+  gfx::polyBegin(r);
+  gfx::polyAdd(p, n);
+  gfx::polyToMask(*mask);
+}
 static void buildRing() {
   uint8_t *pool = (uint8_t *)platAlloc(RING_POOL_BYTES);
-  uint8_t *poolEnd = pool + RING_POOL_BYTES;
-  const float w = RING_PITCH_DEG - RING_GAP_DEG;
-  for (int k = 0; k < RING_SEGS; k++) {
-    g_segMask[k] = nullptr;
-    if (!pool) continue;
-    gfx::Pt p[20];
-    int n = 0;
-    float a0 = segCenterDeg(k) - w * 0.5f;
-    for (int i = 0; i <= 8; i++) {
-      float a = (a0 + w * i / 8) * PI_F / 180.0f;
-      p[n++] = { 233 + RING_R_OUT * cosf(a), 233 + RING_R_OUT * sinf(a) };
-    }
-    for (int i = 8; i >= 0; i--) {
-      float a = (a0 + w * i / 8) * PI_F / 180.0f;
-      p[n++] = { 233 + RING_R_IN * cosf(a), 233 + RING_R_IN * sinf(a) };
-    }
-    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
-    for (int i = 0; i < n; i++) {
-      if (p[i].x < x0) x0 = p[i].x;
-      if (p[i].y < y0) y0 = p[i].y;
-      if (p[i].x > x1) x1 = p[i].x;
-      if (p[i].y > y1) y1 = p[i].y;
-    }
-    gfx::Rect r = { (int16_t)floorf(x0), (int16_t)floorf(y0), (int16_t)ceilf(x1), (int16_t)ceilf(y1) };
-    g_segRect[k] = r;
-    if (pool + (r.x1 - r.x0) * (r.y1 - r.y0) > poolEnd) continue;
-    g_segMask[k] = pool;
-    pool += (r.x1 - r.x0) * (r.y1 - r.y0);
-    gfx::polyBegin(r);
-    gfx::polyAdd(p, n);
-    gfx::polyToMask(g_segMask[k]);
-  }
+  uint8_t *poolEnd = pool ? pool + RING_POOL_BYTES : nullptr;
+  for (int k = 0; k < RING_SEGS; k++) segShape(segCenterDeg(k), RING_PITCH_DEG - RING_GAP_DEG, pool, poolEnd, &g_segMask[k], &g_segRect[k]);
+  for (int k = 0; k < RING_ONE_SEGS; k++) segShape(oneCenterDeg(k), RING_ONE_PITCH_DEG - RING_GAP_DEG, pool, poolEnd, &g_oneMask[k], &g_oneRect[k]);
 }
 
 static void drawSeg(int k, uint16_t c) {
   g_segCol[k] = c;
-  if (!g_segMask[k]) return;
+  if (g_ringOne) {  // 2.12.0: 片側(左右反転しない)
+    if (k < RING_ONE_SEGS && g_oneMask[k]) gfx::maskReplace(g_oneMask[k], g_oneRect[k], false, c, g_bgCol);
+    return;
+  }
+  if (k >= RING_SEGS || !g_segMask[k]) return;
   gfx::maskReplace(g_segMask[k], g_segRect[k], false, c, g_bgCol);  // 縁は今の背景の色と混ぜる
   if (k < 12) gfx::maskReplace(g_segMask[k], g_segRect[k], true, c, g_bgCol);  // 右側は左右反転(x → 466−x)。真上・真下は 1 つ
+}
+// マス k が描く所の四角を r に入れ、数を返す(両側の片側 12 マスは左右の 2 つ、使わない置き場は 0。2.12.0)
+static int segRects(int k, gfx::Rect r[2]) {
+  if (g_ringOne) {
+    if (k >= RING_ONE_SEGS) return 0;
+    r[0] = g_oneRect[k];
+    return 1;
+  }
+  if (k >= RING_SEGS) return 0;
+  r[0] = g_segRect[k];
+  if (k >= 12) return 1;
+  r[1] = { (int16_t)(gfx::W - r[0].x1), r[0].y0, (int16_t)(gfx::W - r[0].x0), r[0].y1 };
+  return 2;
 }
 
 static float clampf(float v, float lo, float hi) {
@@ -459,11 +506,11 @@ static void drawFuelPanel(const Signals &s, bool clean) {
   arc(as, A1, alarm ? alarmC : C_WHITE);
 }
 
-// 3000rpm 以下の経過時間(config.h の IDLE_*)。update のたびに記録する(どの画面でも)
-static uint32_t g_lowSinceMs = 0;  // 回転数が IDLE_RPM 以下になった時刻(0 = 今は超えている、信号なし)
+// 3000rpm 以下の経過時間(config.h の IDLE_*)。update のたびに記録する(どの画面でも)。2.12.0: 回転数は設定の「過負荷 回転数」(初期値 3000)
+static uint32_t g_lowSinceMs = 0;  // 回転数が過負荷 回転数未満になった時刻(0 = 今は以上、信号なし)
 static uint32_t g_nSinceMs = 0;    // ギアが N になった時刻(0 = N ではない)
 static void idleTrack(const Signals &s, uint32_t now) {
-  if (s.rpmOk && s.rpm <= IDLE_RPM) {
+  if (s.rpmOk && s.rpm < g_set->loadRpm) {  // 2.12.0: 過負荷時間とそろえて「以下」→「未満」
     if (!g_lowSinceMs) g_lowSinceMs = now ? now : 1;
   } else {
     g_lowSinceMs = 0;
@@ -520,7 +567,7 @@ static gfx::Rect peakTriRect(int key, bool right) {
   return ptsRect(p, 3);
 }
 static void drawPeakTris(int key) {
-  for (int r = 0; r < 2; r++) {
+  for (int r = g_ringOne ? 1 : 0; r < 2; r++) {  // 2.12.0: 片側の輪は 1 つだけ(peakTriKey の角度を反転した所)
     gfx::Pt p[3];
     peakTriPoints(key, r != 0, p);
     gfx::polyBegin(ptsRect(p, 3));
@@ -720,7 +767,8 @@ struct Center {
   int clockMin;       // CM_CLOCK: 日本時間の 0 時からの分(2.11.0)
   uint32_t loadSec;   // CM_LOAD: 高負荷時間 [秒]
   uint8_t level;      // CM_LOAD: 0 白、1 黄、2 赤
-  bool cool;          // CM_LOAD: タイトルを「クールダウン」に
+  bool cool;          // CM_LOAD: クールダウン(タイトルを「クールダウン」、時間の所をリセットまでの残りに。2.12.0)
+  uint32_t coolSec;   // CM_LOAD: クールダウンのリセットまでの残り [秒](切り上げ)
   bool timeOk;        // CM_LOAD: 時刻が分かっている(「時刻 待ち」を出さない)
   int idleSec;        // ▼ 3000rpm の経過時間(-1 = 出さない)
   StatusLine st[4];   // CM_STATUS: GPS・IMU・RaceChrono・CAN
@@ -808,7 +856,8 @@ static void centerMake(const Signals &s, const LinkStats &ls, const SysInfo &si,
     c->mode = CM_LOAD;
     c->loadSec = sec;
     c->level = load::level(*g_set);
-    c->cool = load::coolDown();
+    c->cool = load::coolDown(now);
+    c->coolSec = c->cool ? (load::coolLeftMs(*g_set, now) + 999) / 1000 : 0;
     c->timeOk = si.timeOk && !si.timeDemo;  // 2.11.0: デモの時刻では電源が切れていた時間を引かないので「時刻 待ち」のまま
   } else if (!load::enabled(*g_set) && c->idleSec >= 0) {
     c->mode = CM_IDLE;
@@ -850,18 +899,18 @@ static void centerKey(const Center &c, int i, char *k, size_t n) {
     case CM_LOAD:
       if (i == 0) snprintf(k, n, "%d", c.timeOk ? 1 : 0);
       else if (i == 1) snprintf(k, n, "%d%d", c.cool ? 1 : 0, c.level);
-      else if (i == 2) snprintf(k, n, "%u|%d", (unsigned)c.loadSec, c.level);
-      else snprintf(k, n, "%d", c.idleSec);
+      else if (i == 2) snprintf(k, n, "%d|%u|%d", c.cool ? 1 : 0, (unsigned)(c.cool ? c.coolSec : c.loadSec), c.level);
+      else snprintf(k, n, "%d", c.cool ? -1 : c.idleSec);
       break;
     case CM_IDLE: snprintf(k, n, "%d", c.idleSec); break;
     case CM_CLOCK: snprintf(k, n, "%d", c.clockMin); break;
     default: snprintf(k, n, "%d|%d|%s", c.st[i].kind, c.st[i].sv ? 1 : 0, c.st[i].value); break;
   }
 }
-// ▼ 3000rpm と経過時間(高負荷時間の下の小さい行。▼ は三角で描く)
+// ▼ 3000rpm と経過時間(過負荷時間の下の小さい行。▼ は三角で描く。2.12.0: 数字は設定の過負荷 回転数)
 static void drawIdleSmall(int sec, uint16_t bg) {
   char cap[12], t[16];
-  snprintf(cap, sizeof(cap), "%drpm", IDLE_RPM);
+  snprintf(cap, sizeof(cap), "%drpm", g_set->loadRpm);
   fmtTime(t, sizeof(t), (uint32_t)sec * 1000u);
   const FontData &ft = gfx::textWidth(FONT_NUM600_26, t) <= 64 ? FONT_NUM600_26 : FONT_NUM600_22;  // 1 時間以上は小さく
   const float wc = gfx::textWidth(FONT_NUM600_16, cap), wt = gfx::textWidth(ft, t);
@@ -883,18 +932,21 @@ static void centerLine(const Center &c, int i) {
     textC(PEAK_NUM_FONT, 233, PEAK_NUM_BASE, t, pc);
     textC(FONT_NUM600_22, 233, PEAK_RPM_BASE, "rpm", pc);
   } else if (c.mode == CM_LOAD) {
-    const uint16_t col = fadeOn(bg, loadCol(c.level));
+    const uint16_t col = fadeOn(bg, c.cool ? C_ACCENT : loadCol(c.level));  // 2.12.0: クールダウンは水色(冷ましている途中)
     if (i == 0) {
       if (!c.timeOk) textC(FONT_JP600_18, 233, LOAD_WAIT_BASE, "時刻 待ち", fadeOn(bg, labelOn(bg)));
     } else if (i == 1) {
-      // 2.11.0: タイトルは「高負荷」(本人 10/28「文字が小さくて潰れているので文字を大きくして「高負荷」だけに」)。入らない「クールダウン」は小さく
-      const char *tt = c.cool ? "クールダウン" : "高負荷";
+      // 2.11.0: タイトルは「高負荷」(本人 10/28「文字が小さくて潰れているので文字を大きくして「高負荷」だけに」)。入らない「クールダウン」は小さく。
+      // 2.12.0(同じ版で): 「過負荷」(本人 10/28「過負荷に統一」)。「クールダウン」は冷ましている途中(本人「タイトルは今何をしているのかを
+      // 表示している」)
+      const char *tt = c.cool ? "クールダウン" : "過負荷";
       const FontData &tf = gfx::textWidth(FONT_JP600_30, tt) <= LOAD_TITLE_MAX_W ? FONT_JP600_30 : FONT_JP500_24;
       textC(tf, 233, LOAD_TITLE_BASE, tt, col);
     } else if (i == 2) {
-      fmtTime(t, sizeof(t), c.loadSec * 1000u);
-      textC(c.loadSec < 3600 ? FONT_NUM600_64 : FONT_NUM600_56, 233, LOAD_TIME_BASE, t, col);
-    } else if (c.idleSec >= 0) {
+      const uint32_t sec = c.cool ? c.coolSec : c.loadSec;  // クールダウンはリセットまでの残り
+      fmtTime(t, sizeof(t), sec * 1000u);
+      textC(sec < 3600 ? FONT_NUM600_64 : FONT_NUM600_56, 233, LOAD_TIME_BASE, t, col);
+    } else if (!c.cool && c.idleSec >= 0) {  // クールダウンの間は出さない(残りを出しているので)
       drawIdleSmall(c.idleSec, bg);
     }
   } else if (c.mode == CM_CLOCK) {  // 2.11.0: デジタル時計(時:分、日本時間)
@@ -925,10 +977,10 @@ static void centerLine(const Center &c, int i) {
 static void centerDrawStatic(const Center &c) {
   const uint16_t bg = centerBg(c.mode);
   if (c.mode == CM_LOAD) gfx::fillCircle(233, 233, LOAD_DISC_R, fadeOn(g_bgCol, C_BG));  // 黒い円(背景が黒なら見えない)
-  if (c.mode == CM_IDLE) {  // ▼ 3000rpm(2.9.0 と同じ形)
+  if (c.mode == CM_IDLE) {  // ▼ 3000rpm(2.9.0 と同じ形。2.12.0: 数字は設定の過負荷 回転数)
     const uint16_t lc = fadeOn(bg, labelOn(bg));
     char cap[12];
-    snprintf(cap, sizeof(cap), "%drpm", IDLE_RPM);
+    snprintf(cap, sizeof(cap), "%drpm", g_set->loadRpm);
     const float wc = gfx::textWidth(FONT_NUM600_30, cap);
     const float x0 = 233 - (24 + 8 + wc) * 0.5f;
     triDown(x0 + 12, 190, 24, lc);
@@ -952,19 +1004,31 @@ static void baseRestore(const gfx::Rect &r) {  // 今の描く先へ(r は CB_RE
     memcpy(f + (size_t)y * gfx::W + r.x0, g_drvBase + (size_t)(y - CB_RECT.y0) * w + (r.x0 - CB_RECT.x0), (size_t)(r.x1 - r.x0) * sizeof(uint16_t));
 }
 
-// ---- 「SIM」の印(サーキットは時計の内側に描く。2.10.0: 輪の左右から、真ん中の上下(弧の内側)へ移した)
-static const int DRV_SIM_X = 212, DRV_SIM_Y = 300, DRV_SCENE_X = 212, DRV_SCENE_Y = 140;  // 42×21 の四角の左上
-static uint16_t tagOf(const Signals &s) {  // 0 = 出さない。bit 8 = 「SIM」、下位 8 ビット = 場面番号
-  return (s.linkUp && s.sim) ? (uint16_t)(0x100 | s.scene) : 0;
+// ---- 「SIM」の印とメンテナンスの印(サーキットは時計の内側に描く。2.10.0: 輪の左右から、真ん中の上下(弧の内側)へ移した)。
+// 2.12.0: 下はメンテナンスの印(累積時間がメンテナンスの時間に達したら赤の「メンテナンス」。本人 10/28「メンテナンスの表示は全ての画面で
+// 表示してください」)。「SIM」は上に場面番号と並べた(「SIM 7」)
+static const int DRV_SIM_BASE = 158;    // 「SIM 7」のベースライン(真ん中の上。弧の内側)
+static const int DRV_MAINT_BASE = 312;  // 「メンテナンス」のベースライン(真ん中の下。真ん中の行の下端 295 と燃料の弧の内側の間)
+static bool maintDue();  // 累積時間がメンテナンスの時間に達した(データ画面の所)
+// 0 = 出さない。bit 8 = 「SIM」、下位 8 ビット = 場面番号、bit 9 = メンテナンス、bit 10 = その下が燃料の警告の赤
+static uint16_t tagOf(const Signals &s) {
+  uint16_t t = (s.linkUp && s.sim) ? (uint16_t)(0x100 | s.scene) : 0;
+  if (maintDue()) {
+    t |= 0x200;
+    if (s.fuelOk && g_fuelAlarm) t |= 0x400;
+  }
+  return t;
 }
-static void drawDriveTags(uint16_t tag, uint16_t bg) {
-  if (!(tag & 0x100)) return;
-  const uint16_t fg = labelOn(bg);
-  textC(FONT_NUM600_20, DRV_SIM_X + 21, DRV_SIM_Y + 17, "SIM", fg);
-  if (tag & 0xFF) {
-    char t[4];
-    snprintf(t, sizeof(t), "%u", (unsigned)(tag & 0xFF));
-    textC(FONT_NUM600_20, DRV_SCENE_X + 21, DRV_SCENE_Y + 18, t, fg);
+static void drawDriveTags(uint16_t tag, uint16_t bg, bool disc) {  // disc = 真ん中に黒い円(過負荷時間)
+  if (tag & 0x100) {
+    char t[12];
+    if (tag & 0xFF) snprintf(t, sizeof(t), "SIM %u", (unsigned)(tag & 0xFF));
+    else snprintf(t, sizeof(t), "SIM");
+    textC(FONT_NUM600_20, 233, DRV_SIM_BASE, t, labelOn(bg));
+  }
+  if (tag & 0x200) {
+    const uint16_t under = (!disc && (tag & 0x400)) ? C_ALARM : bg;  // 燃料の警告で赤く塗った上は白
+    textC(FONT_JP600_18, 233, DRV_MAINT_BASE, "メンテナンス", alarmOn(under));
   }
 }
 
@@ -975,7 +1039,7 @@ static void innerDraw(const Signals &s, const Center &c, uint16_t tag) {
   drawFuelPanel(s, true);
   drawClockTicks();
   centerDrawStatic(c);
-  drawDriveTags(tag, c.mode == CM_LOAD ? C_BG : g_bgCol);
+  drawDriveTags(tag, c.mode == CM_LOAD ? C_BG : g_bgCol, c.mode == CM_LOAD);
   baseSave();
   for (int i = 0; i < centerLines(c.mode); i++) centerLine(c, i);
 }
@@ -1043,20 +1107,29 @@ static int innerRects(uint8_t reg, gfx::Rect *out) {
 }
 
 static const uint16_t SEG_OFF_MARK = 0x0001;  // 「消えているマス」の印(色は背景から決める)
+static int g_drvLoadRpm = 0;  // 描いてある ▼ の見出しの回転数(2.12.0: 設定の過負荷 回転数)
 
 static void updDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, uint32_t now) {
   const int sp = g_set->shiftRpm;
-  uint16_t want[RING_SEGS];  // 点けるマスの色。SEG_OFF_MARK = 消す
+  if ((g_set->ringOne != 0) != g_ringOne) {  // 2.12.0: 設定の「回転数の輪」が変わった: マスの形が違うので全部を描き直す
+    g_ringOne = g_set->ringOne != 0;
+    g_full = true;
+  }
+  if (g_set->loadRpm != g_drvLoadRpm) {  // 2.12.0: 設定の「過負荷 回転数」が変わった: ▼ の見出しの数字が違うので全部を描き直す
+    g_drvLoadRpm = g_set->loadRpm;
+    g_full = true;
+  }
+  uint16_t want[RING_SLOTS];  // 点けるマスの色。SEG_OFF_MARK = 消す
   bool blinking = false;
   if (!s.rpmOk) {
-    for (int k = 0; k < RING_SEGS; k++) want[k] = SEG_OFF_MARK;
+    for (int k = 0; k < RING_SLOTS; k++) want[k] = SEG_OFF_MARK;
   } else {
-    int n = litPerSide(s.rpm, sp);
+    int n = ringLit(s.rpm, sp);
     blinking = g_blinkActive;  // 時刻の管理は blinkPoll(update の最初で呼んである)
     // 画面全体を消す設定(BLINK_WHOLE_SCREEN 1)では輪は点いたまま(消灯は明るさか一色で)。0 のときは、消灯の間は全部のマスを消す(3.4)
     bool off = BLINK_WHOLE_SCREEN ? false : g_blinkOff;
     uint16_t lit = to565(colorAt(RING_C, s.rpm, sp));
-    for (int k = 0; k < RING_SEGS; k++) {
+    for (int k = 0; k < RING_SLOTS; k++) {
       if (off) want[k] = SEG_OFF_MARK;
       else if (n == 0) want[k] = (RING_IDLE_MARK && k == 0) ? C_ORANGE : SEG_OFF_MARK;  // 点き始めより下: RING_IDLE_MARK なら一番下だけ橙(3.2)、既定は全部消す
       else want[k] = segLit(k, n) ? lit : SEG_OFF_MARK;
@@ -1071,7 +1144,7 @@ static void updDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, u
 
   // 枠なし: 背景の色は画面の端まで。背景が変わったら全部を描き直す
   bool ringChanged = false;
-  for (int k = 0; k < RING_SEGS; k++) {
+  for (int k = 0; k < RING_SLOTS; k++) {
     uint16_t col = want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k];
     if (col != g_segCol[k]) ringChanged = true;
   }
@@ -1084,7 +1157,7 @@ static void updDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, u
     // 時計の内側は innerFull が g_drvFace から写す(取っておけないときは画面に描く)ので、ここでは外だけを塗る
     fillOutsideClock(g_bgCol);
     platBlinkTick();
-    for (int k = 0; k < RING_SEGS; k++) drawSeg(k, want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k]);
+    for (int k = 0; k < RING_SLOTS; k++) drawSeg(k, want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k]);
     g_triKey = peakTriKey(s);
     if (g_triKey >= 0) drawPeakTris(g_triKey);
     platBlinkTick();
@@ -1096,8 +1169,8 @@ static void updDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, u
   // 三角形を包む四角を背景で消し、そこに掛かるマスを全部描き直してから三角形を描く(最初から描いたものと同じになる)。
   // どちらも時計の内側(半径 CLK_CLIP_R)には掛からない
   const int tk = peakTriKey(s);
-  bool redo[RING_SEGS];
-  for (int k = 0; k < RING_SEGS; k++) {
+  bool redo[RING_SLOTS];
+  for (int k = 0; k < RING_SLOTS; k++) {
     uint16_t col = want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k];
     redo[k] = col != g_segCol[k];
   }
@@ -1105,28 +1178,32 @@ static void updDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, u
   gfx::Rect tr[4];
   int nt = 0;
   if (g_triKey >= 0) {
-    tr[nt++] = peakTriRect(g_triKey, false);
+    if (!g_ringOne) tr[nt++] = peakTriRect(g_triKey, false);  // 2.12.0: 片側の輪は 1 つだけ
     tr[nt++] = peakTriRect(g_triKey, true);
   }
   if (!triRedo && g_triKey >= 0) {
-    for (int k = 0; k < RING_SEGS && !triRedo; k++) {
+    for (int k = 0; k < RING_SLOTS && !triRedo; k++) {
       if (!redo[k]) continue;
-      gfx::Rect sr = g_segRect[k], sm = { (int16_t)(gfx::W - sr.x1), sr.y0, (int16_t)(gfx::W - sr.x0), sr.y1 };
-      for (int i = 0; i < nt; i++) triRedo = triRedo || rectsOverlap(sr, tr[i]) || (k < 12 && rectsOverlap(sm, tr[i]));
+      gfx::Rect sr[2];
+      const int ns = segRects(k, sr);
+      for (int j = 0; j < ns; j++)
+        for (int i = 0; i < nt; i++) triRedo = triRedo || rectsOverlap(sr[j], tr[i]);
     }
   }
   if (triRedo) {
     if (tk >= 0) {
-      tr[nt++] = peakTriRect(tk, false);
+      if (!g_ringOne) tr[nt++] = peakTriRect(tk, false);
       tr[nt++] = peakTriRect(tk, true);
     }
     for (int i = 0; i < nt; i++) gfx::fillRect(tr[i].x0, tr[i].y0, tr[i].x1 - tr[i].x0, tr[i].y1 - tr[i].y0, g_bgCol);
-    for (int k = 0; k < RING_SEGS; k++) {
-      gfx::Rect sr = g_segRect[k], sm = { (int16_t)(gfx::W - sr.x1), sr.y0, (int16_t)(gfx::W - sr.x0), sr.y1 };
-      for (int i = 0; i < nt; i++) redo[k] = redo[k] || rectsOverlap(sr, tr[i]) || (k < 12 && rectsOverlap(sm, tr[i]));
+    for (int k = 0; k < RING_SLOTS; k++) {
+      gfx::Rect sr[2];
+      const int ns = segRects(k, sr);
+      for (int j = 0; j < ns; j++)
+        for (int i = 0; i < nt; i++) redo[k] = redo[k] || rectsOverlap(sr[j], tr[i]);
     }
   }
-  for (int k = 0; k < RING_SEGS; k++) {
+  for (int k = 0; k < RING_SLOTS; k++) {
     if (redo[k]) drawSeg(k, want[k] == SEG_OFF_MARK ? segOffOn(g_bgCol) : want[k]);
   }
   if (triRedo) {
@@ -1340,6 +1417,12 @@ static int peakTriKey(const Signals &s) {  // サーキットの三角形の左�
   // 2.4.0: 点いたマスの上にも出す(2.2.0〜2.3.x は、三角形の所のマスが点いている間は出さなかった)。
   // 2.4.3: 11 マス目から先は 2 マスぶん進め、シフト点(12 マス目)で真上に着く(真上のマスは 12 マス目と一緒に点くので、前は 12 マス目で
   // 止まって輪の天井まで行かないように見えた。本人「ピークホールドが天井までいかないように見える」)。左右の三角形は真上で重なる
+  // 2.12.0: 片側の輪はマスの真ん中を比例で結ぶ(最後のマス = 真上)。右側(反転して描く側)の角度 θ を 540° − θ で返す(0 以上にする)
+  if (g_ringOne) {
+    const float p1 = clampf((g_peakRpm - (float)(sp - (RING_ONE_SEGS - 1) * RING_ONE_STEP_RPM)) / RING_ONE_STEP_RPM + 1.0f, 1.0f, (float)RING_ONE_SEGS);
+    const float th = 270.0f - RING_ONE_PITCH_DEG * ((float)RING_ONE_SEGS - p1);
+    return (int)lroundf((540.0f - th) * 4.0f);
+  }
   const float at = pos <= 11.0f ? pos : 11.0f + 2.0f * (pos - 11.0f);
   return (int)lroundf((90.0f + RING_PITCH_DEG * at) * 4.0f);
 }
@@ -1566,9 +1649,9 @@ static gfx::Rect badgeArea() {
   return r;
 }
 static uint32_t badgeKey(const Signals &s) {
-  const bool wa = s.waterOk && g_waterAlarm, fa = s.fuelOk && g_fuelAlarm;
-  if (!wa && !fa) return 0;
-  uint32_t k = 1 | (wa ? 2 : 0) | (fa ? 4 : 0) | (g_alarmOff ? 8 : 0);
+  const bool wa = s.waterOk && g_waterAlarm, fa = s.fuelOk && g_fuelAlarm, md = maintDue();
+  if (!wa && !fa && !md) return 0;
+  uint32_t k = 1 | (wa ? 2 : 0) | (fa ? 4 : 0) | ((wa || fa) && g_alarmOff ? 8 : 0) | (md ? (1u << 27) : 0);  // 2.12.0: メンテナンス(点滅しない)
   if (wa) k |= ((uint32_t)((int)lroundf(clampf(s.waterC, -99, 999)) + 100) & 0x7FF) << 4;
   if (fa) k |= ((uint32_t)(int)lroundf(clampf(s.fuelPct, 0, 999)) & 0x3FF) << 16;
   return k;
@@ -1582,6 +1665,11 @@ static void drawBadge(int y, const IconData &icon, int value) {
   else snprintf(t, sizeof(t), "%d", value);
   textR(FONT_DIAL500_40, AN_BADGE_X + AN_BADGE_W - 10, y + 38, t, C_WHITE);
 }
+// 2.12.0: メンテナンスの札(累積時間がメンテナンスの時間に達したら。水温・燃料の札の次の段。点滅しない。2 段とも水温・燃料なら出さない)
+static void drawMaintBadge(int y) {
+  gfx::fillRoundRect(AN_BADGE_X, y, AN_BADGE_W, AN_BADGE_H, 6, C_ALARM);
+  textC(FONT_JP600_18, AN_BADGE_X + AN_BADGE_W * 0.5f, y + 30, "メンテナンス", C_WHITE);
+}
 static void drawBadges(const Signals &s, bool clean) {
   const gfx::Rect r = badgeArea();
   if (!clean) gfx::fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, C_BG);
@@ -1591,7 +1679,11 @@ static void drawBadges(const Signals &s, bool clean) {
     drawBadge(y, ICON_WATER, (int)lroundf(clampf(s.waterC, -99, 999)));
     y += AN_BADGE_PITCH;
   }
-  if (fa) drawBadge(y, ICON_FUEL, (int)lroundf(clampf(s.fuelPct, 0, 999)));
+  if (fa) {
+    drawBadge(y, ICON_FUEL, (int)lroundf(clampf(s.fuelPct, 0, 999)));
+    y += AN_BADGE_PITCH;
+  }
+  if (maintDue() && y <= AN_BADGE_Y + AN_BADGE_PITCH) drawMaintBadge(y);
 }
 
 // ---- タコのオープニングで文字盤を隠す(2.5.0)。中心から見た向きで、隠す範囲・出す範囲を決める
@@ -1842,10 +1934,14 @@ static void updBoost(const Signals &s, uint32_t now) {
 
 // ================================================================ データ画面(6 章。10/23 に作り直し)
 // 上: GPS・IMU・CAN の値(1 行ずつ。左の点が判定: 緑 = 正常、赤 = 異常、灰 = 待ち・切)。
-// 中: 水温・燃料。下: ▲ = 回転数が TIME_RPM を超えていた時間、▼ = 以下の時間(累計。電源を切っても続く。設定の「時間の記録」でリセット)。
+// 中: 水温・燃料。下: ▲ = 回転数が設定の過負荷 回転数を超えていた時間(累積時間)、▼ = 以下の時間(累計。電源を切っても続く。設定の
+// 「累積時間 リセット」でリセット。2.12.0: 2.11.0 までは TIME_RPM 3000 固定と「時間の記録」)。2.12.0: 設定の「メンテナンスまでの累積時間」が
+// 切でなければ、下の行は ▼ の代わりにメンテナンスまでの残り(累積時間がメンテナンスの時間に達したら赤の「メンテナンス」)。
 // 外周: 回転数の輪(2.5.0。config.h の DATA_RING_*)。中の絵は輪の内側に収め、消すときも輪に掛からないようにする(fillRectData)
 static int g_dWaterKey, g_dFuelKey;
 static uint32_t g_dAboveKey, g_dBelowKey;
+static int g_dLoadRpmKey = 0;  // 描いてある ▲▼ の横の回転数(2.12.0: 設定の過負荷 回転数)
+static int g_dRow2Key = -1;    // 描いてある下の行の種類(0 = ▼、1 = メンテナンスまでの残り、2 = メンテナンス。2.12.0)
 static char g_dStatKey[3][64];
 
 // ---- 回転数の輪(2.5.0。本人「実際の画面にも回転数のグラフを追加したい」「アニメーションと同じ幅で」)。真上から時計回りに
@@ -2001,7 +2097,7 @@ static void drawTimeRow(bool up, int y, uint32_t ms) {
   if (up) triUp(92, (float)(y - 16), 26, C_TIME_UP);
   else triDown(92, (float)(y - 16), 26, C_LABEL);
   char t[16];
-  snprintf(t, sizeof(t), "%d", TIME_RPM);
+  snprintf(t, sizeof(t), "%d", g_set->loadRpm);  // 2.12.0: 設定の過負荷 回転数
   float lx = gfx::drawText(FONT_NUM600_34, 112, (float)(y - 4), t, C_LABEL);
   fmtTime(t, sizeof(t), ms);
   // 時間は右端 400 に揃える。「3000」と 14px 以上あくように、入らなければ字を小さくする
@@ -2010,6 +2106,40 @@ static void drawTimeRow(bool up, int y, uint32_t ms) {
   if (gfx::textWidth(*f, t) > room) f = &FONT_NUM600_48;
   if (gfx::textWidth(*f, t) > room) f = &FONT_NUM600_44;
   textR(*f, 400, (float)y, t, up ? C_TIME_UP : C_WHITE);
+}
+
+// 2.12.0: 累積時間のメンテナンス(本人「それの累積によりメンテナンスの期間を推測する」)。設定の「メンテナンスまでの累積時間」[時間]。0 = 切
+static bool maintOn() {
+  return g_set->maintHours > 0;
+}
+static uint32_t maintTargetMs() {
+  return (uint32_t)g_set->maintHours * 3600000u;
+}
+static bool maintDue() {  // 累積時間がメンテナンスの時間に達した
+  return maintOn() && trip::aboveMs() >= maintTargetMs();
+}
+static uint32_t maintRemainMs() {  // メンテナンスまでの残り
+  const uint32_t t = maintTargetMs(), a = trip::aboveMs();
+  return a >= t ? 0 : t - a;
+}
+static int maintRow() {  // 下の行の種類(0 = ▼、1 = メンテナンスまでの残り、2 = メンテナンス)
+  return !maintOn() ? 0 : (maintDue() ? 2 : 1);
+}
+// メンテナンスの行(データ画面の下の行。y = 時間の数字のベースライン。▲ の行と同じく時間は右端 400 に揃える)
+static void drawMaintRow(int y) {
+  fillRectData(40, y - 48, 386, 56, C_BG);
+  if (maintDue()) {
+    textC(FONT_JP600_44, 233, (float)(y - 4), "メンテナンス", C_ALARM);
+    return;
+  }
+  const float lx = gfx::drawText(FONT_JP500_24, 79, (float)(y - 6), "メンテまで", C_LABEL);
+  char t[16];
+  fmtTime(t, sizeof(t), maintRemainMs());
+  const float room = 400 - (lx + 14);
+  const FontData *f = &FONT_NUM600_56;
+  if (gfx::textWidth(*f, t) > room) f = &FONT_NUM600_48;
+  if (gfx::textWidth(*f, t) > room) f = &FONT_NUM600_44;
+  textR(*f, 400, (float)y, t, C_WHITE);
 }
 
 static void updData(const Signals &s, const LinkStats &ls, const SysInfo &si, uint32_t now) {
@@ -2045,14 +2175,19 @@ static void updData(const Signals &s, const LinkStats &ls, const SysInfo &si, ui
     drawDataCell(236, ICON_FUEL_L, s.fuelOk, fv, "%", fa);
     g_dFuelKey = fk;
   }
-  uint32_t ak = trip::aboveMs() / 1000, bk = trip::belowMs() / 1000;
-  if (full || ak != g_dAboveKey) {
+  const int row2 = maintRow();  // 2.12.0: 下の行は ▼ かメンテナンス
+  uint32_t ak = trip::aboveMs() / 1000, bk = row2 == 0 ? trip::belowMs() / 1000 : (row2 == 1 ? maintRemainMs() / 1000 : 0);
+  const bool rk = g_set->loadRpm != g_dLoadRpmKey;  // 2.12.0: 過負荷 回転数(▲▼ の横の数字)が変わった
+  g_dLoadRpmKey = g_set->loadRpm;
+  if (full || rk || ak != g_dAboveKey) {
     drawTimeRow(true, 314, trip::aboveMs());
     g_dAboveKey = ak;
   }
-  if (full || bk != g_dBelowKey) {
-    drawTimeRow(false, 378, trip::belowMs());
+  if (full || rk || row2 != g_dRow2Key || bk != g_dBelowKey) {
+    if (row2 == 0) drawTimeRow(false, 378, trip::belowMs());
+    else drawMaintRow(378);
     g_dBelowKey = bk;
+    g_dRow2Key = row2;
   }
   updDataRing(s, full);
 }
@@ -2213,10 +2348,20 @@ static void drawDots(int n, int cur, const uint16_t *cols, int y) {
 // →「イルミネーション」「の明るさ」)。分ける所は真ん中に近い「の」の前(無ければ真ん中に近い文字の切れ目)。2 行目は値(上端 206)に
 // 掛からない高さ
 static const float NAME_MAX_W = 330;
-static size_t nameCut(const char *name) {
+// 2.12.0: 空白があればそこで分ける(空白は描かない。*next = 2 行目の始まり)。「メンテナンスまでの累積時間」が「累積時間 メ」「ンテナンス」に
+// 分かれていた
+static size_t nameCut(const char *name, size_t *next) {
   const size_t len = strlen(name);
   auto dist = [len](size_t pos) { return pos * 2 > len ? pos * 2 - len : len - pos * 2; };
   size_t cut = 0;
+  for (const char *p = strchr(name, ' '); p; p = strchr(p + 1, ' ')) {
+    const size_t pos = (size_t)(p - name);
+    if (pos > 0 && pos + 1 < len && (!cut || dist(pos) < dist(cut))) cut = pos;
+  }
+  if (cut) {
+    *next = cut + 1;
+    return cut;
+  }
   for (const char *p = strstr(name, "の"); p; p = strstr(p + 1, "の")) {
     const size_t pos = (size_t)(p - name);
     if (pos > 0 && (!cut || dist(pos) < dist(cut))) cut = pos;
@@ -2224,18 +2369,24 @@ static size_t nameCut(const char *name) {
   if (!cut)
     for (size_t i = 1; i < len; i++)
       if (((uint8_t)name[i] & 0xC0) != 0x80 && (!cut || dist(i) < dist(cut))) cut = i;
+  *next = cut;
   return cut;
+}
+static bool nameOneLine(const char *name) {  // 名前が 1 行に入る(2 行目はベースライン 200 で、値の上端 206 の近くまで来る)
+  const FontPair &s = FP_NAME[2];
+  return mixWidth(*s.a, *s.j, name) <= NAME_MAX_W;
 }
 static void drawName(const char *name) {
   const FontPair &s = FP_NAME[2];
-  if (mixWidth(*s.a, *s.j, name) <= NAME_MAX_W) {
+  if (nameOneLine(name)) {
     fitTextC(FP_NAME, 3, NAME_MAX_W, 233, 184, name, C_LABEL2);
     return;
   }
   char l1[64], l2[64];
-  const size_t cut = nameCut(name);
+  size_t next = 0;
+  const size_t cut = nameCut(name, &next);
   snprintf(l1, sizeof(l1), "%.*s", (int)cut, name);
-  snprintf(l2, sizeof(l2), "%s", name + cut);
+  snprintf(l2, sizeof(l2), "%s", name + next);
   mixDraw(*s.a, *s.j, 233 - mixWidth(*s.a, *s.j, l1) * 0.5f, 161, l1, C_LABEL2);
   mixDraw(*s.a, *s.j, 233 - mixWidth(*s.a, *s.j, l2) * 0.5f, 200, l2, C_LABEL2);
 }
@@ -2248,7 +2399,8 @@ static void drawBigValue(const char *v, const char *unit, float base, uint16_t c
     for (int i = 0; i <= b; i++) {
       const float dx = (float)i - b * 0.5f;
       if (ascii && gfx::textWidth(FONT_NUM600_96, v) <= maxW) textC(FONT_NUM600_96, 233 + dx, base, v, c);
-      else if (!ascii && mixWidth(FONT_NUM600_96, FONT_JP600_100, v) <= maxW) mixDraw(FONT_NUM600_96, FONT_JP600_100, 233 - mixWidth(FONT_NUM600_96, FONT_JP600_100, v) * 0.5f + dx, base, v, c);
+      else if (!ascii && mixHas(FONT_NUM600_96, FONT_JP600_100, v) && mixWidth(FONT_NUM600_96, FONT_JP600_100, v) <= maxW)  // 2.12.0: 字が無ければ小さい書体
+        mixDraw(FONT_NUM600_96, FONT_JP600_100, 233 - mixWidth(FONT_NUM600_96, FONT_JP600_100, v) * 0.5f + dx, base, v, c);
       else fitTextC(FP_VALUE, 3, maxW + 50, 233 + dx, base - 10, v, c);
     }
     return;
@@ -2262,23 +2414,38 @@ static void drawBigValue(const char *v, const char *unit, float base, uint16_t c
   for (int i = 0; i <= b; i++) gfx::drawText(vf, x + (float)i - b * 0.5f, base, v, c);
   gfx::drawText(uf, x + wv + 8, base, unit, C_LABEL2);
 }
-// ▲ 3000 / ▼ 3000 と累計時間の 2 行(設定の「時間の記録」とリセットの確認)
+// ▲ 3000 / ▼ 3000 と累計時間の 2 行(設定の累積時間 リセットと確認。2.12.0: 回転数は設定の過負荷 回転数。メンテナンスが切でなければ
+// 下の行はデータ画面と同じくメンテナンスまでの残りか「メンテナンス」)
 static void drawTwoTimes(int y1, int y2, uint16_t labc) {
   char t[16], n[8];
-  snprintf(n, sizeof(n), "%d", TIME_RPM);
+  snprintf(n, sizeof(n), "%d", g_set->loadRpm);
   triUp(96, (float)(y1 - 12), 24, C_TIME_UP);
   gfx::drawText(FONT_NUM600_30, 114, (float)y1, n, labc);
   fmtTime(t, sizeof(t), trip::aboveMs());
   textR(FONT_NUM600_44, 384, (float)(y1 + 4), t, C_TIME_UP);
+  if (maintDue()) {
+    textC(FONT_JP600_34, 233, (float)(y2 + 2), "メンテナンス", C_ALARM);
+    return;
+  }
+  if (maintOn()) {
+    const float lx = gfx::drawText(FONT_JP500_24, 84, (float)(y2 - 2), "メンテまで", labc);
+    fmtTime(t, sizeof(t), maintRemainMs());
+    const FontData &f = gfx::textWidth(FONT_NUM600_44, t) <= 384 - (lx + 10) ? FONT_NUM600_44 : FONT_NUM600_34;
+    textR(f, 384, (float)(y2 + 4), t, C_WHITE);
+    return;
+  }
   triDown(96, (float)(y2 - 12), 24, labc);
   gfx::drawText(FONT_NUM600_30, 114, (float)y2, n, labc);
   fmtTime(t, sizeof(t), trip::belowMs());
   textR(FONT_NUM600_44, 384, (float)(y2 + 4), t, C_WHITE);
 }
 // 「デフォルトに戻す」の説明の 2 行(設定の項目の画面と確認の画面。2.10.0)
-static void drawDefaultsDesc(int y1, int y2) {
-  mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "設定をすべて初期値に") * 0.5f, (float)y1, "設定をすべて初期値に", C_LABEL2);
-  mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "記録と向きはそのまま") * 0.5f, (float)y2, "記録と向きはそのまま", C_LABEL2);
+// 2.12.0: 3 行(過負荷時間も 0 にする。本人 10/28「デモで過負荷時間が増えてしまうとそのあと消せません。デフォルト値に設定する場合には
+// クリアしてください」)。y = 1 行目のベースライン(行の間隔 34)
+static void drawDefaultsDesc(int y) {
+  static const char *const L[] = { "設定をすべて初期値に", "過負荷時間は 0 に", "累積時間と向きは残す" };
+  for (int i = 0; i < 3; i++)
+    mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, L[i]) * 0.5f, (float)(y + 34 * i), L[i], C_LABEL2);
 }
 // ---- 受信の状態・本体の状態(2.4.0: 分け直した。本人の指示 10/24「表示内容などのカテゴライズ」)
 // 受信の状態 = データの出どころと行き先ごとのグループ: CAN(車 → CANリーダー → 表示器)・GPS・IMU・RaceChrono(表示器 → スマホ)。
@@ -2567,9 +2734,18 @@ static void linkPages(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
 // 2.4.0: 受信の状態の次に「本体の状態」(受信と関係ない FPS・起動を受信の状態から出した)。
 // 2.9.0: 明るさの次に「イルミネーションの明るさ」(ライトのスイッチが入の間の明るさ。仕様書 light_dimming_spec.md 第 3 版)
 // 2.10.0: 水温の警告の次に「高負荷時間 黄」「高負荷時間 赤」「クールダウン時間」「高負荷時間 リセット」(仕様書 circuit_screen_spec.md
-// 第 3 版 6 章)、最後に「デフォルトに戻す」(本人 10/27「デフォルト設定を作り、デフォルトに戻すを入れたい」)。14 項目
-enum Unit : uint8_t { U_NONE, U_RPM, U_MIN, U_PCT, U_DEGC, U_ONOFF, U_MIN_OFF };  // U_MIN_OFF: 分。0 は「切」(2.10.0)
-enum ItemKind : uint8_t { K_VALUE, K_TIME, K_LINK, K_SYS, K_DEFAULTS };
+// 第 3 版 6 章)、最後に「デフォルトに戻す」(本人 10/27「デフォルト設定を作り、デフォルトに戻すを入れたい」)。14 項目。
+// 2.12.0: シフトポイントの次に「回転数の輪」(両側・片側)。15 項目。
+// 2.12.0(同じ版で): カテゴリにまとめた(本人 10/28「設定の項目が長くなったのでカテゴリにまとめて」「過負荷のは高負荷メニューとして水温、
+// 高負荷のしたに」「シフトと言うメニューの名前はシフトポイントに」)。設定の段(SC_SET_LIST)= 1 画面 1 カテゴリ(CATS)。長押しでカテゴリの
+// 中(SC_SET_CAT)= 1 画面 1 項目(ITEMS の first から count 個)。受信の状態・本体の状態は 1 項目だけのカテゴリで、設定の段から長押しで
+// そのまま中へ(今までどおり)
+// 2.12.0(同じ版で): 水温・過負荷を 水温の警告・過負荷 回転数・過負荷時間 黄・赤・過負荷がリセットされる時間・メンテナンスまでの累積時間・累積時間 リセット に
+// (本人「過負荷は短期的な上昇によりクールダウンが必要になるという考え方と、それの累積によりメンテナンスの期間を推測する」)。「クールダウン時間」は
+// なくした(クールダウンは黄に達したあとの冷ましている途中の表示にした。config.h の LOAD_COOL_SHOW_MS)。累積時間 リセットは値を入れてから
+// リセットする(本人「今の累積走行時間を入れる入力を」「累積時間の入力はリセットと同じ画面に」)。16 項目
+enum Unit : uint8_t { U_NONE, U_RPM, U_MIN, U_PCT, U_DEGC, U_ONOFF, U_MIN_OFF, U_SIDE, U_HOUR_OFF };  // U_MIN_OFF: 分。0 は「切」(2.10.0)。U_SIDE: 両側・片側(2.12.0)。U_HOUR_OFF: 時間。0 は「切」(2.12.0)
+enum ItemKind : uint8_t { K_VALUE, K_TIME, K_LINK, K_SYS, K_DEFAULTS };  // K_TIME: 累積時間 リセット(2.12.0: 変更の画面で値を入れる。値は秒)
 struct Item {
   const char *label;  // 項目の名前
   int Settings::*field;
@@ -2578,29 +2754,68 @@ struct Item {
   ItemKind kind;
 };
 static const Item ITEMS[] = {
+  // 画面
   { "明るさ", &Settings::brightnessPct, SET_BRIGHT_MIN, SET_BRIGHT_MAX, SET_BRIGHT_STEP, U_PCT, K_VALUE },
   { "イルミネーションの明るさ", &Settings::illumPct, SET_ILLUM_MIN, SET_ILLUM_MAX, SET_ILLUM_STEP, U_PCT, K_VALUE },  // 2.9.0
+  { "自動で戻る", &Settings::autoReturnMin, SET_AUTORET_MIN, SET_AUTORET_MAX, SET_AUTORET_STEP, U_MIN, K_VALUE },
+  // シフト
+  { "シフトポイント", &Settings::shiftRpm, SET_SHIFT_MIN, SET_SHIFT_MAX, SET_SHIFT_STEP, U_RPM, K_VALUE },
+  { "回転数の輪", &Settings::ringOne, 0, 1, 1, U_SIDE, K_VALUE },  // 2.12.0: 両側・片側(本人 10/28「片方だけのを実装したい」)
+  // 水温・過負荷
+  { "水温の警告", &Settings::warnTempC, SET_WARN_MIN, SET_WARN_MAX, SET_WARN_STEP, U_DEGC, K_VALUE },
+  // 2.12.0: 過負荷時間・累積時間・サーキットの ▼ の境目の回転数(今までは 3000 固定)
+  { "過負荷 回転数", &Settings::loadRpm, SET_LOADRPM_MIN, SET_LOADRPM_MAX, SET_LOADRPM_STEP, U_RPM, K_VALUE },
+  // 2.12.0: 「高負荷時間」は「過負荷時間」に(本人 10/28「過負荷に統一して今の過負荷計測を累積時間に」)
+  { "過負荷時間 黄", &Settings::loadYellowMin, SET_LOAD_MIN, SET_LOAD_MAX, SET_LOAD_STEP, U_MIN_OFF, K_VALUE },  // 2.10.0
+  { "過負荷時間 赤", &Settings::loadRedMin, SET_LOAD_MIN, SET_LOAD_MAX, SET_LOAD_STEP, U_MIN_OFF, K_VALUE },
+  // 2.12.0: 名前は本人 10/28「過負荷時間リセットも過負荷がリセットされる時間はどうですか？」「言葉の修正を入れてください」。空白は 2 行に分ける所(描かない)
+  { "過負荷が リセットされる時間", &Settings::loadResetMin, SET_LOADRS_MIN, SET_LOADRS_MAX, SET_LOADRS_STEP, U_MIN, K_VALUE },
+  // 累積時間(2.12.0: 2.11.0 までの「時間の記録」。累積時間がこの時間に達したらメンテナンス。リセットはメンテナンスのあとに)
+  // 2.12.0: 名前は本人 10/28「設定の累積時間 メンテナンスがわかりにくいのでメンテナンスまでの累積時間にできますか？」。空白は 2 行に分ける所
+  { "メンテナンスまでの 累積時間", &Settings::maintHours, SET_MAINT_MIN, SET_MAINT_MAX, SET_MAINT_STEP, U_HOUR_OFF, K_VALUE },
+  // 2.12.0: 値を入れてからリセット(0:00:00 から 30 分ずつ。本人 10/28「累積時間の入力はリセットと同じ画面に」「最初0:00:00が出て
+  // ＋ーボタンで３０分ずつ」)。設定ではなく累積時間そのものを変える
+  { "累積時間 リセット", nullptr, 0, TRIP_IN_MAX_H * 3600, TRIP_IN_STEP_MIN * 60, U_NONE, K_TIME },
+  // 受信の状態・本体の状態(1 項目だけのカテゴリ)
   { "受信の状態", nullptr, 0, 0, 0, U_NONE, K_LINK },
   { "本体の状態", nullptr, 0, 0, 0, U_NONE, K_SYS },
-  { "シフトポイント", &Settings::shiftRpm, SET_SHIFT_MIN, SET_SHIFT_MAX, SET_SHIFT_STEP, U_RPM, K_VALUE },
-  { "水温の警告", &Settings::warnTempC, SET_WARN_MIN, SET_WARN_MAX, SET_WARN_STEP, U_DEGC, K_VALUE },
-  { "高負荷時間 黄", &Settings::loadYellowMin, SET_LOAD_MIN, SET_LOAD_MAX, SET_LOAD_STEP, U_MIN_OFF, K_VALUE },  // 2.10.0
-  { "高負荷時間 赤", &Settings::loadRedMin, SET_LOAD_MIN, SET_LOAD_MAX, SET_LOAD_STEP, U_MIN_OFF, K_VALUE },
-  { "クールダウン時間", &Settings::coolMin, SET_LOAD_MIN, SET_LOAD_MAX, SET_LOAD_STEP, U_MIN_OFF, K_VALUE },
-  { "高負荷時間 リセット", &Settings::loadResetMin, SET_LOADRS_MIN, SET_LOADRS_MAX, SET_LOADRS_STEP, U_MIN, K_VALUE },
-  { "時間の記録", nullptr, 0, 0, 0, U_NONE, K_TIME },
-  { "自動で戻る", &Settings::autoReturnMin, SET_AUTORET_MIN, SET_AUTORET_MAX, SET_AUTORET_STEP, U_MIN, K_VALUE },
+  // その他
   { "デモ", &Settings::demoOn, 0, 1, 1, U_ONOFF, K_VALUE },
   { "デフォルトに戻す", nullptr, 0, 0, 0, U_NONE, K_DEFAULTS },  // 2.10.0
 };
 static const int N_ITEMS = sizeof(ITEMS) / sizeof(ITEMS[0]);
+// 2.12.0: カテゴリ(設定の段に 1 画面ずつ)。中の項目は ITEMS の first から count 個
+struct Cat {
+  const char *name;
+  uint8_t first, count;
+};
+enum { CAT_SCREEN, CAT_SHIFT, CAT_WARN, CAT_LINK, CAT_SYS, CAT_OTHER };
+static const Cat CATS[] = {
+  { "画面", 0, 3 },            // 明るさ・イルミネーションの明るさ・自動で戻る
+  { "シフトポイント", 3, 2 },  // シフトポイント・回転数の輪(本人「シフトと言うメニューの名前はシフトポイントに」)
+  { "水温・過負荷", 5, 7 },    // 水温の警告・過負荷 回転数・過負荷時間 黄・赤・過負荷がリセットされる時間・メンテナンスまでの累積時間・累積時間 リセット
+  { "受信の状態", 12, 1 },
+  { "本体の状態", 13, 1 },
+  { "その他", 14, 2 },         // デモ・デフォルトに戻す
+};
+static const int N_CATS = sizeof(CATS) / sizeof(CATS[0]);
+static bool catDirect(int c) {  // 設定の段から長押しでそのまま中へ(受信の状態・本体の状態)
+  const ItemKind k = ITEMS[CATS[c].first].kind;
+  return k == K_LINK || k == K_SYS;
+}
+static int catOf(int item) {  // 項目のカテゴリ
+  for (int c = 0; c < N_CATS; c++)
+    if (item >= CATS[c].first && item < CATS[c].first + CATS[c].count) return c;
+  return 0;
+}
 // 画面の明るさの項目(変えたその場で反映し、変更の画面を出している間はその値で表示する。2.9.0: イルミネーションの明るさも)
 static bool isBrightField(int Settings::*f) {
   return f == &Settings::brightnessPct || f == &Settings::illumPct;
 }
 // 受信の状態 → RaceChrono の 1 ページ目「送信」(変えると次の起動から効く)
 static const Item RC_SEND_ITEM = { "RaceChrono 送信", &Settings::rcOn, 0, 1, 1, U_ONOFF, K_VALUE };
-static int g_setItem = 0;          // 設定で見ている項目(電源を切るまで覚える。フラッシュには書かない)
+static int g_setItem = 0;          // カテゴリの中で見ている項目(ITEMS の番号)
+static int g_setCat = 0;           // 設定の段で見ているカテゴリ(電源を切るまで覚える。フラッシュには書かない。2.12.0)
 static int g_infoPage = 0;         // 受信の状態で見ているグループ
 static int g_grp = G_CAN;          // グループの中の画面のグループ
 static int g_grpPage = 0;          // そのページ
@@ -2612,21 +2827,41 @@ static bool g_saveTried = false;   // 今の値で保存を試した(失敗し�
 static bool g_saveFailed = false;  // 「保存できませんでした」を出している
 static uint32_t g_infoMs = 0;
 static char g_setKey[64];          // 設定の項目の画面に描いてある値(変わったら描き直す)
+static int g_tripEditSec = 0;      // 累積時間 リセットで入れている値 [秒](2.12.0。0:00:00 から。下「リセット」で累積時間にする。
+                                   // 「‹ 戻る」・時間で戻るときは捨てる)
+static int editGet() {  // 変更の画面で変えている値(累積時間 リセットは g_tripEditSec、ほかは設定)
+  return g_editItem->kind == K_TIME ? g_tripEditSec : g_set->*(g_editItem->field);
+}
+static void editSet(int v) {
+  if (g_editItem->kind == K_TIME) g_tripEditSec = v;
+  else g_set->*(g_editItem->field) = v;
+}
+static void fmtHms(char *out, size_t n, int sec) {  // 累積時間 リセットの値は 0:00:00 の形(本人「最初0:00:00が出て」)
+  snprintf(out, n, "%d:%02d:%02d", sec / 3600, (sec / 60) % 60, sec % 60);
+}
 
 static const char *unitText(Unit u) {
-  return u == U_RPM ? "rpm" : u == U_PCT ? "%" : u == U_DEGC ? "°C" : (u == U_MIN || u == U_MIN_OFF) ? "分" : "";
+  return u == U_RPM ? "rpm" : u == U_PCT ? "%" : u == U_DEGC ? "°C" : (u == U_MIN || u == U_MIN_OFF) ? "分" : u == U_HOUR_OFF ? "時間" : "";
+}
+static bool isChoice(Unit u) {  // 2 つから選ぶ項目(入・切、両側・片側)。左半分・右半分のタップで選ぶ
+  return u == U_ONOFF || u == U_SIDE;
+}
+static const char *choiceText(Unit u, int v) {  // その言葉(0 = 左、1 = 右)
+  return u == U_SIDE ? (v ? "片側" : "両側") : (v ? "入" : "切");
 }
 static void valueText(const Item &it, int v, char *out, size_t n) {
-  if (it.unit == U_ONOFF || (it.unit == U_MIN_OFF && v == 0)) snprintf(out, n, "%s", v ? "入" : "切");
+  if (isChoice(it.unit)) snprintf(out, n, "%s", choiceText(it.unit, v));
+  else if ((it.unit == U_MIN_OFF || it.unit == U_HOUR_OFF) && v == 0) snprintf(out, n, "%s", "切");
   else snprintf(out, n, "%d", v);
 }
-static const char *unitFor(const Item &it, int v) {  // 値の右に出す単位(入・切と「切」には出さない)
-  return (it.unit == U_ONOFF || (it.unit == U_MIN_OFF && v == 0)) ? "" : unitText(it.unit);
+static const char *unitFor(const Item &it, int v) {  // 値の右に出す単位(入・切、両側・片側と「切」には出さない)
+  return (isChoice(it.unit) || ((it.unit == U_MIN_OFF || it.unit == U_HOUR_OFF) && v == 0)) ? "" : unitText(it.unit);
 }
 static void startEdit(const Item *it, Screen from) {
   g_editItem = it;
   g_editFrom = from;
-  g_editOrig = g_set->*(it->field);
+  if (it->kind == K_TIME) g_tripEditSec = 0;  // 2.12.0: 累積時間 リセットは 0:00:00 から
+  g_editOrig = editGet();
   g_saveTried = false;
   g_saveFailed = false;
   go(SC_SET_EDIT);
@@ -2642,8 +2877,8 @@ static void setItemValue(const Item &it, const LinkStats &ls, const PerfStats &p
   *col = C_WHITE;
   if (it.kind == K_VALUE) {
     valueText(it, g_set->*(it.field), v, n);
-  } else if (it.kind == K_TIME) {
-    snprintf(v, n, "%u|%u", (unsigned)(trip::aboveMs() / 1000), (unsigned)(trip::belowMs() / 1000));
+  } else if (it.kind == K_TIME) {  // 2.12.0: ▲▼ の横の回転数(設定の過負荷 回転数)とメンテナンスの設定も描いた内容に入れる
+    snprintf(v, n, "%u|%u|%d|%d", (unsigned)(trip::aboveMs() / 1000), (unsigned)(trip::belowMs() / 1000), g_set->loadRpm, g_set->maintHours);
   } else if (it.kind == K_LINK) {
     linkSummary(ls, ps, si, now, v, n, col);
   } else if (it.kind == K_DEFAULTS) {
@@ -2652,14 +2887,35 @@ static void setItemValue(const Item &it, const LinkStats &ls, const PerfStats &p
     groupSummary(G_SYS, ls, ps, si, now, v, n, col);
   }
 }
+// 2.12.0: カテゴリの段に出す、中の主な値(1 行。受信の状態・本体の状態は setItemValue)。水温・過負荷は、累積時間がメンテナンスの
+// 時間に達していたら赤の「メンテナンス」
+static void catSummary(int c, char *v, size_t n, uint16_t *col) {
+  *col = C_LABEL2;
+  switch (c) {
+    case CAT_SCREEN: snprintf(v, n, "明るさ %d %%", g_set->brightnessPct); break;
+    case CAT_SHIFT: snprintf(v, n, "%d rpm・%s", g_set->shiftRpm, choiceText(U_SIDE, g_set->ringOne)); break;
+    case CAT_WARN:
+      if (maintDue()) {
+        snprintf(v, n, "%s", "メンテナンス");
+        *col = C_ALARM;
+      } else {
+        snprintf(v, n, "水温 %d °C", g_set->warnTempC);
+      }
+      break;
+    default: snprintf(v, n, "デモ %s", g_set->demoOn ? "入" : "切"); break;
+  }
+}
+// 設定の段(2.12.0): 1 画面 1 カテゴリ。上の帯「‹ 設定」で元の画面、左右で前・次、下の帯の長押しでカテゴリの中(受信の状態・本体の状態はその中)
 static void updSetList(const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now) {
-  if (g_setItem < 0 || g_setItem >= N_ITEMS) g_setItem = 0;
-  const Item &it = ITEMS[g_setItem];
+  if (g_setCat < 0 || g_setCat >= N_CATS) g_setCat = 0;
+  const Cat &ct = CATS[g_setCat];
+  const bool direct = catDirect(g_setCat);
   char v[48];
-  uint16_t col;
-  setItemValue(it, ls, ps, si, now, v, sizeof(v), &col);
+  uint16_t col = C_LABEL2;
+  if (direct) setItemValue(ITEMS[ct.first], ls, ps, si, now, v, sizeof(v), &col);
+  else catSummary(g_setCat, v, sizeof(v), &col);
   char key[64];
-  snprintf(key, sizeof(key), "%d|%04X|%s", g_setItem, col, v);
+  snprintf(key, sizeof(key), "L%d|%04X|%s", g_setCat, col, v);
   if (!g_full && strcmp(key, g_setKey) == 0) return;
   g_full = false;
   strncpy(g_setKey, key, sizeof(g_setKey) - 1);
@@ -2667,14 +2923,39 @@ static void updSetList(const LinkStats &ls, const PerfStats &ps, const SysInfo &
   gfx::fillAll(C_BG);
   g_tagsDirty = true;
   drawTopSet();
+  drawName(ct.name);
+  if (direct) drawBigValue(v, "", 290, col);
+  else fitTextC(FP_VALUE + 1, 2, 330, 233, 280, v, col);  // 中の主な値(44 px。入らなければ 34 px)
+  drawSideArrows();
+  drawDots(N_CATS, g_setCat, nullptr, 330);
+  drawOpenBand();
+}
+// カテゴリの中(2.12.0。2.11.0 までの設定の 1 項目の画面と同じ): 上の帯「‹ カテゴリ名」で設定の段、左右でカテゴリの中の前・次
+static void updSetCat(const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now) {
+  if (g_setCat < 0 || g_setCat >= N_CATS) g_setCat = 0;
+  const Cat &ct = CATS[g_setCat];
+  if (g_setItem < ct.first || g_setItem >= ct.first + ct.count) g_setItem = ct.first;
+  const Item &it = ITEMS[g_setItem];
+  char v[48];
+  uint16_t col;
+  setItemValue(it, ls, ps, si, now, v, sizeof(v), &col);
+  char key[64];
+  snprintf(key, sizeof(key), "C%d|%04X|%s", g_setItem, col, v);
+  if (!g_full && strcmp(key, g_setKey) == 0) return;
+  g_full = false;
+  strncpy(g_setKey, key, sizeof(g_setKey) - 1);
+  g_setKey[sizeof(g_setKey) - 1] = 0;
+  gfx::fillAll(C_BG);
+  g_tagsDirty = true;
+  drawTopBack(ct.name);
   drawName(it.label);
   if (it.kind == K_VALUE) drawBigValue(v, unitFor(it, g_set->*(it.field)), 290, C_WHITE);
   else if (it.kind == K_TIME) drawTwoTimes(250, 304, C_LABEL2);
-  else if (it.kind == K_DEFAULTS) drawDefaultsDesc(258, 298);
+  else if (it.kind == K_DEFAULTS) drawDefaultsDesc(242);  // 3 行目と下の点の間を空ける
   else drawBigValue(v, "", 290, col);
   drawSideArrows();
-  drawDots(N_ITEMS, g_setItem, nullptr, 330);
-  drawOpenBand();  // 2.4.4: どの項目も下の帯の長押しで開く(値の項目は変更の画面、時間の記録はリセットの確認)
+  drawDots(ct.count, g_setItem - ct.first, nullptr, 330);
+  drawOpenBand();  // 2.4.4: どの項目も下の帯の長押しで開く(値の項目・累積時間 リセットは変更の画面、デフォルトに戻すは確認の画面)
 }
 
 // ---- 設定: 変更の画面(項目の名前のまま、左右が − +(入・切は 切・入)、下「決定」= 保存、上「‹ 戻る」= 変えずに戻る)。
@@ -2685,12 +2966,18 @@ static void updSetList(const LinkStats &ls, const PerfStats &ps, const SysInfo &
 static bool g_saveFlash = false;     // 「決定」を押したあとの点滅の途中(この間は操作を受けない)
 static uint32_t g_saveFlashT0 = 0;   // 点滅を始めた時刻
 static int g_saveFlashPhase = -1;    // 描いてある段階(-1 = 点滅なし、偶数 = 帯を消す、奇数 = 水色の帯)
+static int g_editDrawnV = 0;  // 変更の画面に描いてある値(2.12.0: 値がほかから変わったら描き直す)
 static void drawEditValue() {
   const Item &it = *g_editItem;
-  gfx::fillRect(80, 206, 306, 98, C_BG);  // 〜303。下の刻みの消す範囲(304〜)と隙間を作らない
+  // 〜303。下の刻みの消す範囲(304〜)と隙間を作らない。2.12.0: 名前が 1 行なら上は 196 から(100 px の「両」「片」の上の横線が
+  // 204 まで来る。名前の下端は 188)。2 行の名前は 2 行目が 206 の近くまで来るので 206 から
+  const int top = nameOneLine(it.label) ? 196 : 206;
+  gfx::fillRect(80, top, 306, 304 - top, C_BG);
+  g_editDrawnV = editGet();
   char v[16];
-  valueText(it, g_set->*(it.field), v, sizeof(v));
-  drawBigValue(v, unitFor(it, g_set->*(it.field)), 290, C_ACCENT, 290, g_saveFlash);
+  if (it.kind == K_TIME) fmtHms(v, sizeof(v), g_tripEditSec);  // 2.12.0: 累積時間 リセット
+  else valueText(it, g_editDrawnV, v, sizeof(v));
+  drawBigValue(v, it.kind == K_TIME ? "" : unitFor(it, g_editDrawnV), 290, C_ACCENT, 290, g_saveFlash);
 }
 static void drawEditDesc() {  // 刻み(または「保存できませんでした」)
   const Item &it = *g_editItem;
@@ -2699,20 +2986,24 @@ static void drawEditDesc() {  // 刻み(または「保存できませんでし�
     textC(FONT_JP600_30, 233, 334, "保存できませんでした", C_ALARM);
     return;
   }
-  if (it.unit == U_ONOFF) return;  // 入・切には刻みを出さない
+  if (isChoice(it.unit)) return;  // 入・切、両側・片側には刻みを出さない
   char t[8];
-  snprintf(t, sizeof(t), "%d", it.step);
-  float w1 = gfx::textWidth(FONT_NUM600_28, t), w2 = gfx::textWidth(FONT_JP600_30, "ずつ");
+  snprintf(t, sizeof(t), "%d", it.kind == K_TIME ? TRIP_IN_STEP_MIN : it.step);
+  const char *u = it.kind == K_TIME ? "分ずつ" : "ずつ";  // 2.12.0: 累積時間 リセットは「30 分ずつ」
+  float w1 = gfx::textWidth(FONT_NUM600_28, t), w2 = gfx::textWidth(FONT_JP600_30, u);
   float x = 233 - (w1 + 4 + w2) * 0.5f;
   x = gfx::drawText(FONT_NUM600_28, x, 332, t, C_LABEL2) + 4;
-  gfx::drawText(FONT_JP600_30, x, 332, "ずつ", C_LABEL2);
+  gfx::drawText(FONT_JP600_30, x, 332, u, C_LABEL2);
 }
 // 下の「決定」の帯(phase: -1 = ふだんの水色の帯、偶数 = 消す(暗い帯に水色の字)、奇数 = 水色の帯)。帯の行を背景で消してから描く
 // (円の縁のなめらかな画素を 2 度塗りしない。最初から描いた絵と同じにする)
 static void drawEditBottom(int phase) {
   gfx::fillRect(0, ZONE_BOT_Y, gfx::W, gfx::H - ZONE_BOT_Y, C_BG);
-  if (phase >= 0 && (phase % 2) == 0) drawBottom("決定");
-  else drawBottom("決定", C_ACCENT, C_BG);
+  const bool tr = g_editItem->kind == K_TIME;  // 2.12.0: 累積時間 リセットは赤い帯の「リセット」(今までのリセットの確認と同じ)
+  const char *t = tr ? "リセット" : "決定";
+  if (phase >= 0 && (phase % 2) == 0) drawBottom(t);
+  else if (tr) drawBottom(t, C_BAND_RED, C_WHITE);
+  else drawBottom(t, C_ACCENT, C_BG);
 }
 static int saveFlashPhase(uint32_t now) {  // 今の点滅の段階。-1 = 点滅なし、2 × SAVED_FLASH_COUNT 以上 = 終わった
   return g_saveFlash ? (int)((uint32_t)(now - g_saveFlashT0) / SAVED_FLASH_MS) : -1;
@@ -2730,6 +3021,7 @@ static void updSetEdit(uint32_t now) {
       drawEditBottom(ph);
       g_saveFlashPhase = ph;
     }
+    if (editGet() != g_editDrawnV) drawEditValue();  // 2.12.0: 値がタップ以外で変わった(乱数試験)
     return;
   }
   g_full = false;
@@ -2742,6 +3034,9 @@ static void updSetEdit(uint32_t now) {
   if (it.unit == U_ONOFF) {
     textC(FONT_JP600_44, 44, 280, "切", C_ACCENT);
     textC(FONT_JP600_44, 422, 280, "入", C_ACCENT);
+  } else if (it.unit == U_SIDE) {  // 2.12.0: 2 文字なので小さく。値を消す四角(x 80〜386)に掛からない所
+    textC(FONT_JP600_30, 46, 274, choiceText(U_SIDE, 0), C_ACCENT);
+    textC(FONT_JP600_30, 420, 274, choiceText(U_SIDE, 1), C_ACCENT);
   } else {
     gfx::fillRectF(28, 259, 76, 270, C_ACCENT);    // −
     gfx::fillRectF(390, 259, 438, 270, C_ACCENT);  // +
@@ -2753,29 +3048,21 @@ static void updSetEdit(uint32_t now) {
 }
 
 // ---- 設定: 消す操作の確認(上「‹ 戻る」= 消さずに戻る、下の赤い帯 = 消して戻る)。2.4.3: 時間の記録のリセットと、IMU の向きの取り直し。
-// 2.10.0: 設定の「デフォルトに戻す」(設定を全部 config.h の *_DEFAULT にして保存。時間の記録・IMU の向き・高負荷時間の値は戻さない。
-// RaceChrono 送信は次の起動から効く)
-enum ResetKind : uint8_t { RK_TIME, RK_IMU, RK_DEFAULTS };
-static ResetKind g_resetKind = RK_TIME;
-static Screen g_resetFrom = SC_SET_LIST;  // 戻る画面(時間の記録 = 設定、向きの補正 = IMU の中)
-static uint64_t g_resetKey = 0;  // 描いてある 2 つの時間(秒)
+// 2.10.0: 設定の「デフォルトに戻す」(設定を全部 config.h の *_DEFAULT にして保存。累積時間・IMU の向きは戻さない。2.12.0: 過負荷時間は 0 にする。
+// RaceChrono 送信は次の起動から効く)。2.12.0: 累積時間のリセットは変更の画面(値を入れてからリセット)にしたので、ここは向きの補正と
+// デフォルトに戻すだけ
+enum ResetKind : uint8_t { RK_IMU, RK_DEFAULTS };
+static ResetKind g_resetKind = RK_DEFAULTS;
+static Screen g_resetFrom = SC_SET_CAT;  // 戻る画面(デフォルトに戻す = カテゴリの中、向きの補正 = IMU の中)
 static void updSetReset() {
-  // 時間の記録: 時間はこの画面にいる間も進むので、秒が変わったら描き直す
-  const uint64_t k = g_resetKind == RK_TIME ? (((uint64_t)(trip::aboveMs() / 1000) << 32) | (trip::belowMs() / 1000)) : 0;
-  if (!g_full && k == g_resetKey) return;
-  g_resetKey = k;
+  if (!g_full) return;
   g_full = false;
   gfx::fillAll(C_BG);
   g_tagsDirty = true;
   drawTopBack();
-  if (g_resetKind == RK_TIME) {
-    drawName("時間の記録");
-    drawTwoTimes(246, 298, C_LABEL);
-    mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, "2 つとも 0 に戻す") * 0.5f, 334, "2 つとも 0 に戻す", C_LABEL2);
-    drawBottom("リセット", C_BAND_RED, C_WHITE);
-  } else if (g_resetKind == RK_DEFAULTS) {
+  if (g_resetKind == RK_DEFAULTS) {
     drawName("デフォルトに戻す");
-    drawDefaultsDesc(262, 304);
+    drawDefaultsDesc(252);
     drawBottom("戻す", C_BAND_RED, C_WHITE);
   } else {
     drawName("向きの補正");
@@ -3195,16 +3482,16 @@ static void openRing(int rpmV, int lit, bool withBg) {
     g_openBg = bgT;
     g_bgCol = bgT;
     gfx::fillAll(bgT);
-    for (int k = 0; k < RING_SEGS; k++) g_segCol[k] = 0;
+    for (int k = 0; k < RING_SLOTS; k++) g_segCol[k] = 0;
     g_openArcs = false;
   }
-  for (int k = 0; k < RING_SEGS; k++) {
+  for (int k = 0; k < RING_SLOTS; k++) {
     uint16_t c = segLit(k, lit) ? litC : bgT;
     if (c != g_segCol[k]) drawSeg(k, c);
   }
 }
-static void openSegs(const uint16_t want[RING_SEGS]) {  // 色が変わったマスだけ描く
-  for (int k = 0; k < RING_SEGS; k++) {
+static void openSegs(const uint16_t want[RING_SLOTS]) {  // 色が変わったマスだけ描く
+  for (int k = 0; k < RING_SLOTS; k++) {
     if (want[k] != g_segCol[k]) drawSeg(k, want[k]);
   }
 }
@@ -3240,17 +3527,22 @@ static float openWaterP(const Signals &s) {  // 今の水温の弧の長さ(0〜
 static float openFuelP(const Signals &s) {  // 今の燃料の弧の長さ(0〜1。信号なしは 0)
   return s.fuelOk ? clampf(s.fuelPct / 100.0f, 0.0f, 1.0f) : 0.0f;
 }
-static int scanSeg(int p) {  // 走る光の位置 p(0 = 真下、1〜12 = 片側の 1〜12 マス目、13 = 真上)のマス
+static int scanCount() {  // 走る光の位置の数(両側: 真下・1〜12 マス目・真上の 14、片側の輪: マスの数。2.12.0)
+  return g_ringOne ? RING_ONE_SEGS : 14;
+}
+static int scanSeg(int p) {  // 走る光の位置 p(0 = 真下、1〜12 = 片側の 1〜12 マス目、13 = 真上。片側の輪は 0〜 = 4 時から右回り)のマス
+  if (g_ringOne) return p < RING_ONE_SEGS ? p : RING_ONE_SEGS - 1;
   return p == 0 ? RING_SEG_BOTTOM : (p >= 13 ? RING_SEG_TOP : p - 1);
 }
 static void openDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, uint32_t t, uint32_t now) {
   const int sp = g_set->shiftRpm;
   const int rLo = sp - 11 * RING_STEP_RPM;  // 1 マス目が点く回転数
   const int rHi = sp + RING_RED_OFFSET;     // 全部が赤
-  uint16_t want[RING_SEGS];
-  if (t < OPC_T_RISE) {  // 1・2: 白い光が下から上へ走り(左右とも)、真上で止まる。通ったマスは暗い灰
-    const int h = t < OPC_T_FLASH ? (int)(14u * t / OPC_SCAN_MS) : 13;
-    for (int k = 0; k < RING_SEGS; k++) want[k] = C_BG;
+  uint16_t want[RING_SLOTS];
+  if (t < OPC_T_RISE) {  // 1・2: 白い光が下から上へ走り(左右とも。片側の輪は 4 時から右回り)、真上で止まる。通ったマスは暗い灰
+    const int ns = scanCount();
+    const int h = t < OPC_T_FLASH ? (int)((uint32_t)ns * t / OPC_SCAN_MS) : ns - 1;
+    for (int k = 0; k < RING_SLOTS; k++) want[k] = C_BG;
     for (int p = 0; p <= h; p++) want[scanSeg(p)] = p == h ? C_WHITE : ((p == h - 1 && t < OPC_T_FLASH) ? C_SEG_TAIL : C_SEG_GHOST);
     openSegs(want);
     if (t >= OPC_T_FLASH) openPanels(0.0f, 0.0f);  // 2: 弧の地とアイコン
@@ -3259,9 +3551,9 @@ static void openDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, 
   if (t < OPC_T_LIMIT) {  // 3: 回転数を上げるように点いていく(はじめはゆっくり)。弧も一杯まで伸びる
     const float e = easeIn(stepU(t, OPC_T_RISE, OPC_RISE_MS));
     const int rpm = rLo + (int)lroundf((float)(rHi - rLo) * e);
-    const int n = litPerSide(rpm, sp);
+    const int n = ringLit(rpm, sp);
     const uint16_t lit = to565(colorAt(RING_C, rpm, sp));
-    for (int k = 0; k < RING_SEGS; k++) want[k] = segLit(k, n) ? lit : C_SEG_GHOST;
+    for (int k = 0; k < RING_SLOTS; k++) want[k] = segLit(k, n) ? lit : C_SEG_GHOST;
     openSegs(want);
     openPanels(e, e);
     blinkRun(true, rpm, true, now);
@@ -3270,7 +3562,7 @@ static void openDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, 
   if (t < OPC_T_FALL) {  // 4: 全部点いて背景も赤、最大輝度(リミッター)
     if (g_openPhase < 1) {
       g_openPhase = 1;
-      openRing(rHi, 12, true);  // 背景の色が変わるので全部を描き直す(弧も)
+      openRing(rHi, ringFull(), true);  // 背景の色が変わるので全部を描き直す(弧も)
     }
     openPanels(1.0f, 1.0f);  // 水温の警告の点滅が進む
     blinkRun(true, rHi, true, now);
@@ -3281,16 +3573,16 @@ static void openDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, 
     g_openBg = C_BG;
     g_bgCol = C_BG;
     gfx::fillAll(C_BG);
-    for (int k = 0; k < RING_SEGS; k++) g_segCol[k] = C_BG;
+    for (int k = 0; k < RING_SLOTS; k++) g_segCol[k] = C_BG;
     g_openArcs = false;
   }
   // 5: 回転数を下げるように消えていく(はじめは速く。今の回転数まで。信号なしは全部消える)。弧は今の値まで縮む
   const int rEnd = s.rpmOk ? s.rpm : rLo - RING_STEP_RPM;
   const float e = easeOut(stepU(t, OPC_T_FALL, OPC_FALL_MS));
   const int rpm = rHi + (int)lroundf((float)(rEnd - rHi) * e);
-  const int n = litPerSide(rpm, sp);
+  const int n = ringLit(rpm, sp);
   const uint16_t lit = to565(colorAt(RING_C, rpm, sp));
-  for (int k = 0; k < RING_SEGS; k++) want[k] = segLit(k, n) ? lit : C_BG;
+  for (int k = 0; k < RING_SLOTS; k++) want[k] = segLit(k, n) ? lit : C_BG;
   openSegs(want);
   if (t < OPC_T_CLOCK) {
     openPanels(1.0f + (openWaterP(s) - 1.0f) * e, 1.0f + (openFuelP(s) - 1.0f) * e);
@@ -3509,6 +3801,7 @@ static void updOpening(const Signals &s, const LinkStats &ls, const SysInfo &si,
     g_openNg = false;
     blinkReset();
     if (g_openKind == OPK_DRIVE) {
+      g_ringOne = g_set->ringOne != 0;  // 2.12.0: 輪の形はここで決める(走行画面は設定が変わったら描き直す)
       g_openBg = 0xFFFF;  // 必ず塗る
       g_openArcs = false;
       g_openClockA = -1;
@@ -3687,6 +3980,7 @@ static void drawHoldProgress(float frac) {
 static bool menuOpenable() {
   switch (g_sc) {
     case SC_SET_LIST:
+    case SC_SET_CAT:  // 2.12.0
     case SC_SET_INFO:
       return true;
     case SC_SET_GRP:
@@ -3697,29 +3991,34 @@ static bool menuOpenable() {
       return false;
   }
 }
+// 設定の項目を開く(値の項目は変更の画面、累積時間 リセットとデフォルトに戻すは確認の画面、受信の状態・本体の状態はその中)。
+// from = 戻る画面(2.12.0: カテゴリの中、受信の状態・本体の状態は設定の段)
+static void itemOpen(const Item &it, Screen from) {
+  if (it.kind == K_VALUE || it.kind == K_TIME) {  // 2.12.0: 累積時間 リセットも変更の画面(値を入れてからリセット)
+    startEdit(&it, from);
+  } else if (it.kind == K_LINK) {
+    g_infoPage = 0;
+    go(SC_SET_INFO);
+  } else if (it.kind == K_DEFAULTS) {  // 2.10.0: 確かめてから戻す
+    g_resetKind = RK_DEFAULTS;
+    g_resetFrom = from;
+    go(SC_SET_RESET);
+  } else {
+    openGroup(G_SYS, from);
+  }
+}
 // 下の帯「長押しで開く」の長押し(2.4.4。2.4.3 までは帯のタップで開いていた)
 static void menuOpen() {
   switch (g_sc) {
-    case SC_SET_LIST: {
-      const Item &it = ITEMS[g_setItem];
-      if (it.kind == K_VALUE) {
-        startEdit(&it, SC_SET_LIST);
-      } else if (it.kind == K_TIME) {
-        g_resetKind = RK_TIME;
-        g_resetFrom = SC_SET_LIST;
-        go(SC_SET_RESET);
-      } else if (it.kind == K_LINK) {
-        g_infoPage = 0;
-        go(SC_SET_INFO);
-      } else if (it.kind == K_DEFAULTS) {  // 2.10.0: 確かめてから戻す
-        g_resetKind = RK_DEFAULTS;
-        g_resetFrom = SC_SET_LIST;
-        go(SC_SET_RESET);
-      } else {
-        openGroup(G_SYS, SC_SET_LIST);
-      }
+    case SC_SET_LIST:  // 2.12.0: カテゴリの中へ(受信の状態・本体の状態はその中へ)
+      if (g_setCat < 0 || g_setCat >= N_CATS) g_setCat = 0;
+      g_setItem = CATS[g_setCat].first;
+      if (catDirect(g_setCat)) itemOpen(ITEMS[g_setItem], SC_SET_LIST);
+      else go(SC_SET_CAT);
       break;
-    }
+    case SC_SET_CAT:
+      itemOpen(ITEMS[g_setItem], SC_SET_CAT);
+      break;
     case SC_SET_INFO:
       openGroup(g_infoPage, SC_SET_INFO);
       break;
@@ -3879,7 +4178,7 @@ void begin(Settings *settings, uint8_t home) {
   g_set = settings;
   gfx::setTabularDigits(DIGITS_TABULAR != 0);
   buildRing();
-  for (int k = 0; k < RING_SEGS; k++) g_segCol[k] = 0;
+  for (int k = 0; k < RING_SLOTS; k++) g_segCol[k] = 0;
   g_homeSaved = isMain((Screen)home) ? (Screen)home : SC_DRIVE;
   g_homeCur = g_homeSaved;
   go(OPENING_ON ? SC_OPENING : g_homeSaved);
@@ -3896,7 +4195,11 @@ int previewPct() {  // 2.9.0
 // 2.4.5: 変えていないとき・保存に失敗したあとの 2 回目も点滅させる(本人「決定のフラッシュが消えました」。2.4.3 は保存したときだけだった)
 static void leaveEdit(uint32_t now) {
   const Item &it = *g_editItem;
-  if (g_set->*(it.field) != g_editOrig && !g_saveTried) {
+  if (it.kind == K_TIME) {  // 2.12.0: 累積時間 リセット: 入れた値(0:00:00 なら 0)を累積時間(▲)にし、▼ は 0 にして、すぐ保存
+    trip::setTimes((uint32_t)g_tripEditSec * 1000u, 0);
+    load::capMs((uint32_t)g_tripEditSec * 1000u);  // 過負荷時間も入れた値以下に(過負荷時間は累積時間を超えない)
+    platSaveTimes();
+  } else if (g_set->*(it.field) != g_editOrig && !g_saveTried) {
     g_saveTried = true;
     if (!platSaveSettings(*g_set)) {  // 保存に失敗: 1 回目はここに留まって知らせる。もう一度「決定」で抜ける
       g_saveFailed = true;
@@ -3913,6 +4216,10 @@ static void leaveEdit(uint32_t now) {
 }
 static void cancelEdit() {  // 変えずに元の画面へ
   const Item &it = *g_editItem;
+  if (it.kind == K_TIME) {  // 2.12.0: 累積時間 リセット: 入れた値は捨てる(リセットしない)
+    go(g_editFrom);
+    return;
+  }
   const bool changed = g_set->*(it.field) != g_editOrig;
   if (changed) g_set->*(it.field) = g_editOrig;
   go(g_editFrom);
@@ -3939,6 +4246,13 @@ void tap(int x, int y, uint32_t nowMs) {
         swipe(z == Z_RIGHT ? 1 : -1, nowMs);
       }
       break;
+    case SC_SET_CAT:  // 2.12.0: 上の帯「‹ カテゴリ名」で設定の段(そのカテゴリ)
+      if (z == Z_TOP) {
+        go(SC_SET_LIST);
+      } else if (z == Z_LEFT || z == Z_RIGHT) {
+        swipe(z == Z_RIGHT ? 1 : -1, nowMs);
+      }
+      break;
     case SC_SET_EDIT: {
       const Item &it = *g_editItem;
       if (g_saveFlash) break;  // 保存したあとの点滅の間は受けない(終わったら元の画面へ)
@@ -3948,12 +4262,13 @@ void tap(int x, int y, uint32_t nowMs) {
         leaveEdit(nowMs);
       } else {
         int v;
-        if (it.unit == U_ONOFF) v = z == Z_RIGHT ? 1 : 0;
+        if (isChoice(it.unit)) v = z == Z_RIGHT ? 1 : 0;
+        else if (it.kind == K_TIME) v = g_tripEditSec + (z == Z_RIGHT ? 1 : -1) * it.step;  // 2.12.0: 累積時間 リセット(30 分ずつ)
         else v = g_set->*(it.field) + (z == Z_RIGHT ? 1 : -1) * it.step;
         if (v < it.minV) v = it.minV;
         if (v > it.maxV) v = it.maxV;
-        if (v != g_set->*(it.field)) {
-          g_set->*(it.field) = v;
+        if (v != editGet()) {
+          editSet(v);
           g_saveTried = false;
           g_saveFailed = false;
           if (isBrightField(it.field)) platSetBrightness(v);  // 明るさは変えたその場で反映(2.9.0: イルミネーションの明るさも)
@@ -3967,12 +4282,11 @@ void tap(int x, int y, uint32_t nowMs) {
       if (z == Z_TOP) {
         go(g_resetFrom);
       } else if (z == Z_BOT) {
-        if (g_resetKind == RK_TIME) {
-          trip::resetTimes();
-          platSaveTimes();
-        } else if (g_resetKind == RK_DEFAULTS) {  // 2.10.0
+        if (g_resetKind == RK_DEFAULTS) {  // 2.10.0
           settingsDefaults(g_set);
           platSaveSettings(*g_set);
+          load::capMs(0);   // 2.12.0: 過負荷時間も 0 に(デモで増えた分を消せるように)してすぐ保存
+          platSaveTimes();
           platSetBrightness(g_set->brightnessPct);  // 基板は明るさを決め直す(ライトのスイッチで、明るさかイルミネーションの明るさ)
         } else {
           platResetImuCal();
@@ -4068,10 +4382,16 @@ void swipe(int dir, uint32_t nowMs) {
     case SC_DATA:
       go(d > 0 ? nextMain(g_sc) : prevMain(g_sc));
       break;
-    case SC_SET_LIST:
-      g_setItem = (g_setItem + N_ITEMS + d) % N_ITEMS;
+    case SC_SET_LIST:  // 2.12.0: カテゴリ
+      g_setCat = (g_setCat + N_CATS + d) % N_CATS;
       g_full = true;
       break;
+    case SC_SET_CAT: {  // 2.12.0: カテゴリの中の項目
+      const Cat &ct = CATS[g_setCat >= 0 && g_setCat < N_CATS ? g_setCat : 0];
+      g_setItem = ct.first + (g_setItem - ct.first + ct.count + d) % ct.count;
+      g_full = true;
+      break;
+    }
     case SC_SET_INFO:
       g_infoPage = (g_infoPage + N_LINK_GROUPS + d) % N_LINK_GROUPS;
       g_full = true;
@@ -4165,9 +4485,10 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
   else if (s.fuelPct >= FUEL_ALARM_PCT + FUEL_ALARM_HYST_PCT) g_fuelAlarm = false;
 
   // 設定から時間で戻る(2.3)。戻る先は覚えている画面。CAN確認は戻らない(操作を待っていることがある)
-  if (g_sc == SC_SET_LIST || g_sc == SC_SET_EDIT || g_sc == SC_SET_INFO || g_sc == SC_SET_GRP || g_sc == SC_SET_RESET) {
+  if (g_sc == SC_SET_LIST || g_sc == SC_SET_CAT || g_sc == SC_SET_EDIT || g_sc == SC_SET_INFO || g_sc == SC_SET_GRP || g_sc == SC_SET_RESET) {
     if (!g_touch.down && (uint32_t)(now - g_lastActMs) >= (uint32_t)g_set->autoReturnMin * 60000u) {
-      if (g_sc == SC_SET_EDIT && g_set->*(g_editItem->field) != g_editOrig) platSaveSettings(*g_set);
+      // 変えた設定は保存する。累積時間 リセットは「リセット」を押していないので捨てる(2.12.0)
+      if (g_sc == SC_SET_EDIT && g_editItem->kind != K_TIME && g_set->*(g_editItem->field) != g_editOrig) platSaveSettings(*g_set);
       g_homeCur = g_homeSaved;
       go(g_homeSaved);
     }
@@ -4217,6 +4538,7 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
       case SC_CAN_REDO: updCanRedo(); break;
       case SC_CAN_PP: updCanPp(now); break;
       case SC_SET_LIST: updSetList(ls, ps, si, now); break;
+      case SC_SET_CAT: updSetCat(ls, ps, si, now); break;  // 2.12.0
       case SC_SET_EDIT: updSetEdit(now); break;
       case SC_SET_RESET: updSetReset(); break;
       case SC_SET_INFO: updSetInfo(ls, ps, si, now); break;
@@ -4246,28 +4568,37 @@ void testShow(Screen sc, int a, int b) {
     g_detEntry = a;
     g_detByte = b;
   } else if (sc == SC_SET_EDIT) {
-    g_editItem = b == 1 ? &RC_SEND_ITEM : &ITEMS[(a >= 0 && a < N_ITEMS && ITEMS[a].field) ? a : 0];
-    g_editFrom = b == 1 ? SC_SET_GRP : SC_SET_LIST;
+    g_editItem = b == 1 ? &RC_SEND_ITEM : &ITEMS[(a >= 0 && a < N_ITEMS && (ITEMS[a].field || ITEMS[a].kind == K_TIME)) ? a : 0];
+    g_editFrom = b == 1 ? SC_SET_GRP : SC_SET_CAT;  // 2.12.0: カテゴリの中から
     if (b == 1) {
       g_grp = G_RC;
       g_grpPage = P_RC_SEND;
       g_grpFrom = SC_SET_INFO;
     } else {
       g_setItem = (int)(g_editItem - ITEMS);
+      g_setCat = catOf(g_setItem);
     }
-    g_editOrig = g_set->*(g_editItem->field);
+    if (g_editItem->kind == K_TIME) g_tripEditSec = 0;  // 2.12.0: 累積時間 リセットは 0:00:00 から
+    g_editOrig = editGet();
     g_saveTried = false;
     g_saveFailed = false;
     g_saveFlash = false;
-  } else if (sc == SC_SET_LIST) {
-    g_setItem = a;
+  } else if (sc == SC_SET_LIST) {  // 2.12.0: a = カテゴリ
+    g_setCat = a;
+  } else if (sc == SC_SET_CAT) {  // 2.12.0: a = 項目(ITEMS の番号)。カテゴリはその項目の
+    g_setItem = (a >= 0 && a < N_ITEMS) ? a : 0;
+    g_setCat = catOf(g_setItem);
   } else if (sc == SC_SET_RESET) {
-    g_resetKind = a == 1 ? RK_IMU : (a == 2 ? RK_DEFAULTS : RK_TIME);
-    g_resetFrom = a == 1 ? SC_SET_GRP : SC_SET_LIST;
+    g_resetKind = a == 1 ? RK_IMU : RK_DEFAULTS;  // 2.12.0: 累積時間 リセットは変更の画面になった(a = 0 もデフォルトに戻す)
+    g_resetFrom = a == 1 ? SC_SET_GRP : SC_SET_CAT;  // デフォルトに戻すはカテゴリの中へ戻る
     if (a == 1) {
       g_grp = G_IMU;
       g_grpPage = P_IMU_CAL;
       g_grpFrom = SC_SET_INFO;
+    } else {  // デフォルトに戻すの項目(カテゴリの中へ戻る)
+      for (int i = 0; i < N_ITEMS; i++)
+        if (ITEMS[i].kind == K_DEFAULTS) g_setItem = i;
+      g_setCat = catOf(g_setItem);
     }
   } else if (sc == SC_SET_INFO) {
     g_infoPage = a;
@@ -4299,6 +4630,9 @@ void testTouch(uint32_t nowMs) {
 }
 int testSetItem() {
   return g_setItem;
+}
+int testSetCat() {
+  return g_setCat;
 }
 int testPage() {
   return g_sc == SC_SET_INFO ? g_infoPage : g_sc == SC_SET_GRP ? g_grpPage : g_setItem;

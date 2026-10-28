@@ -10,7 +10,7 @@ enum Screen : uint8_t {
   SC_DATA,        // データ
   SC_CAN,         // CAN確認(件数・記録の回数。2.4.0: 受信の状態 → CAN の「C-CAN・B-CAN」の下「CAN確認」)
   SC_CAN_DETAIL,  // CAN確認:詳細(バイトを選んで値とグラフ)
-  SC_SET_LIST,    // 設定(1 画面 1 項目。2.4.0: 8 項目、2.10.0: 14 項目)
+  SC_SET_LIST,    // 設定(1 画面 1 項目。2.4.0: 8 項目、2.10.0: 14 項目。2.12.0: カテゴリの段 = 1 画面 1 カテゴリ、中は SC_SET_CAT)
   SC_SET_EDIT,    // 設定:値の変更
   SC_SET_INFO,    // 設定:受信の状態の中(2.4.0: 1 ページ 1 グループ。CAN・GPS・IMU・RaceChrono のまとめ)
   SC_SET_GRP,     // 設定:グループの中(2.4.0: 受信の状態の CAN・GPS・IMU・RaceChrono と、設定の本体の状態。1 ページ 1 項目)
@@ -19,6 +19,7 @@ enum Screen : uint8_t {
   SC_CAN_REDO,    // CAN確認:やり直すの確認
   SC_SET_RESET,   // 設定:リセットの確認(時間の記録。2.4.3: IMU の向きの補正も。2.10.0: デフォルトに戻すも)
   SC_CAN_PP,      // CAN確認:前後で比べる(2.6.0。給油などの前後で、ゆっくり変わる値のバイトを見つける)
+  SC_SET_CAT,     // 設定:カテゴリの中(2.12.0。1 画面 1 項目。SC_SET_LIST はカテゴリの段)
   SC_COUNT
 };
 
@@ -79,14 +80,15 @@ struct BlinkStats {
 void blinkStats(BlinkStats *out, bool reset);  // reset = true なら回数と最大を 0 に戻す
 
 // 試験用(PC 上で各画面を描いてキャンバスの絵と比べるのに使う)
-// a: 設定・変更 = 設定の項目、受信の状態・グループの中 = ページ(グループの中は b = グループ: 0 CAN、1 GPS、2 IMU、3 RaceChrono、
+// a: 設定 = カテゴリ(2.12.0)、カテゴリの中・変更 = 設定の項目(ITEMS の番号)、受信の状態・グループの中 = ページ(グループの中は b = グループ: 0 CAN、1 GPS、2 IMU、3 RaceChrono、
 // 4 本体の状態)、CAN確認の一覧 = 何件目、CAN確認の詳細 = 表の番号(b = バイト)。変更で b = 1 なら、RaceChrono の「送信」(a は使わない)。
 // リセットの確認は a = 1 なら IMU の向きの補正(2.4.3。0 = 時間の記録)、2 ならデフォルトに戻す(2.10.0)。オープニングは a = 種類(0 サーキット、1 タコ、2 データ。
 // 覚えた画面もそれにする。2.5.0)。CAN確認の一覧は b = 1、やり直すは a = 1 なら「前後で比べる」の候補(2.6.0)
 void testShow(Screen sc, int a = 0, int b = 0);
 void testTouch(uint32_t nowMs);  // 試験用: 「操作した」ことにして、自動で戻るのを先延ばしにする
 void testRedraw();  // 次の update で、今の画面を最初から描き直す(少しずつ描いた結果と比べるため)
-int testSetItem();  // 試験用: 設定で見ている項目
+int testSetItem();  // 試験用: 設定で見ている項目(ITEMS の番号)
+int testSetCat();   // 試験用: 設定で見ているカテゴリ(2.12.0)
 int testPage();     // 試験用: 受信の状態・グループの中で見ているページ(ほかの画面では設定の項目)
 int testGroup();    // 試験用: グループの中の画面のグループ(0 CAN、1 GPS、2 IMU、3 RaceChrono、4 本体の状態)
 bool testHolding(); // 試験用: 長押しの表示を出している

@@ -295,12 +295,12 @@ int main() {
   ui::update(live, ls, ps, si, t + HOLD_MS - 10);
   CHECK(ui::testHolding() && ui::screen() == ui::SC_BOOST, "長押し: HOLD_MS の手前ではまだタコ");
   ui::update(live, ls, ps, si, t + HOLD_MS);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "長押し HOLD_MS で設定の 1 項目目(明るさ)");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "長押し HOLD_MS で設定の 1 つ目のカテゴリ(画面。2.12.0)");
   ui::update(live, ls, ps, si, t + 3 * HOLD_MS);
   CHECK(ui::screen() == ui::SC_SET_LIST, "押したままでも設定のまま(画面は回らない)");
   ui::touchUp(t += 3 * HOLD_MS + 50);
   upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0 && !ui::testHolding(), "離してもタップにしない(設定の項目はそのまま)");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0 && !ui::testHolding(), "離してもタップにしない(設定のカテゴリはそのまま)");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_BOOST, "設定: 上の帯「‹ 設定」で来た画面(タコ)へ");
   // 長押しの取り消し(2.4.0): 長押しの途中で HOLD_CANCEL_PX 以上動いたら、外周を消し(描き直す)、案内のまま長押しの札を灰。設定に入らない
@@ -329,37 +329,36 @@ int main() {
   upd(live, t);
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_BOOST, "設定: 上の帯「‹ 設定」でタコへ");
-  // 設定(長押しで入る。前回見ていた項目から)。並び(2.4.0。2.9.0: 2 番目にイルミネーションの明るさ): 明るさ・イルミネーションの明るさ・
-  // 受信の状態・本体の状態・シフトポイント・水温の警告・時間の記録・自動で戻る・デモ
+  // 設定(長押しで入る。前回見ていたカテゴリから)。2.12.0: 6 カテゴリ(画面・シフトポイント・水温・過負荷・受信の状態・本体の状態・その他)
   longPress(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "長押しで設定へ");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "長押しで設定へ");
   // 項目の送り: スワイプ(2.4.0。本人「設定の項目移動もスワイプにしないとオペレーションがあわない」。左へ = 次、右へ = 前)と、
   // 左右の「‹」「›」(左半分・右半分)のタップ(2.4.1: 2.4.0 でやめたのを戻した。本人「ボタンの方がわかりやすい」)
   next(t); next(t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "設定: 左へスワイプで次の項目(サーキット → タコと同じ向き)");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "設定: 左へスワイプで次のカテゴリ(サーキット → タコと同じ向き)");
   ui::tap(RX, MY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 3, "設定: 右の「›」(右半分)のタップで次(2.4.1)");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 3, "設定: 右の「›」(右半分)のタップで次(2.4.1)");
   ui::tap(LX, MY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "設定: 左の「‹」(左半分)のタップで前");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "設定: 左の「‹」(左半分)のタップで前");
   ui::touchDown(RX, MY, t += 100);
   ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
-  CHECK(ui::testSetItem() == 2, "設定: 右半分を押している間はまだ送らない(離したときに決める)");
+  CHECK(ui::testSetCat() == 2, "設定: 右半分を押している間はまだ送らない(離したときに決める)");
   ui::touchUp(t += TOUCH_CONFIRM_MS + 30);
   upd(live, t);
-  CHECK(ui::testSetItem() == 3, "設定: 右半分を押して離したら次");
+  CHECK(ui::testSetCat() == 3, "設定: 右半分を押して離したら次");
   ui::touchDown(LX, MY, t += 100);
   ui::touchMove(LX + 30, MY, t + 50);
   ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
   ui::touchUp(t += TOUCH_CONFIRM_MS + 30);
   upd(live, t);
-  CHECK(ui::testSetItem() == 2, "設定: 動きが HOLD_CANCEL_PX 未満なら、触れた側(左半分)のタップ = 前");
+  CHECK(ui::testSetCat() == 2, "設定: 動きが HOLD_CANCEL_PX 未満なら、触れた側(左半分)のタップ = 前");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   longPress(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "設定は前回見ていた項目から(電源を切るまで覚える)");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "設定は前回見ていたカテゴリから(電源を切るまで覚える)");
   prev(t); prev(t); prev(t);
-  CHECK(ui::testSetItem() == 13, "右へスワイプで前へ(最初から最後のデフォルトに戻すに回る。2.10.0: 14 項目)");
+  CHECK(ui::testSetCat() == 5, "右へスワイプで前へ(最初から最後のその他に回る。2.12.0: 6 カテゴリ)");
   next(t);
-  CHECK(ui::testSetItem() == 0, "左へスワイプ(最後の次は最初の明るさ)");
+  CHECK(ui::testSetCat() == 0, "左へスワイプ(最後の次は最初の画面)");
   // 指で押す(2.4.0: 離したときにタップ)。短いタッチと、HOLD_CANCEL_PX 以上動いたタッチは何もしない
   ui::touchDown(BOTX, BOTY, t += 100);
   ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS - 10);
@@ -371,7 +370,7 @@ int main() {
   ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
   ui::touchUp(t += TOUCH_CONFIRM_MS + 30);
   upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "設定: HOLD_CANCEL_PX 以上動いて離したタッチ(スワイプ未満)は何もしない");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "設定: HOLD_CANCEL_PX 以上動いて離したタッチ(スワイプ未満)は何もしない");
   // 2.4.4: 下の帯「長押しで開く」は、タップでは開かず、長押し(HOLD_MS)で開く。2.5.0: HOLD_SHOW_MS で帯が水色になり外周が回る
   // (決まっただけでは帯を変えない)。動いたら取り消し(帯の字は灰、外周は消す)
   {
@@ -417,7 +416,7 @@ int main() {
     CHECK(!ui::testGuide() && countIn(ACC, 100, 380, 366, 466) < 6000, "右の矢印を押している間(HOLD_SHOW_MS の前)も、下の帯は変えない(2.5.0)");
     ui::touchUp(t += TOUCH_CONFIRM_MS + 80);
     upd(live, t);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1 && !ui::testGuide(), "右の矢印を押してすぐ離したのはタップ(次)");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1 && !ui::testGuide(), "右の矢印を押してすぐ離したのはタップ(次)");
     {
       bool band = true;
       ui::touchDown(RX, MY, t += 100);
@@ -431,7 +430,7 @@ int main() {
       band = band && countIn(ACC, 100, 380, 366, 466) < 6000 && countIn(DIM, 100, 380, 366, 466) == 0 && !ui::testGuide();
       ui::touchUp(t += TOUCH_CONFIRM_MS + 100);
       upd(live, t);
-      CHECK(band && ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "スワイプ(次)の途中も、下の帯は水色にも灰にもしない(2.5.0)");
+      CHECK(band && ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "スワイプ(次)の途中も、下の帯は水色にも灰にもしない(2.5.0)");
     }
     prev(t);
     prev(t);
@@ -443,7 +442,7 @@ int main() {
     ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 30);
     ui::touchUp(t += HOLD_SHOW_MS + 40);
     upd(live, t);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0 && !ui::testGuide() && countIn(ACC, 100, 380, 366, 466) < 6000 && countIn(TRACK, 0, 0, 466, 30) == 0,
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0 && !ui::testGuide() && countIn(ACC, 100, 380, 366, 466) < 6000 && countIn(TRACK, 0, 0, 466, 30) == 0,
           "取り消して離したら、帯と外周は元に戻る");
     // 2.7.0: 外周が出たあと(HOLD_SHOW_MS から)HOLD_MS の前に、動かさずに離したら何もしない(本人「長押しを認識して、アニメーションが
     // 出た後に指を離した場合は何も動作しないほうがいい」。2.6.0 までは、その所のタップになって次・前・戻るに移っていた)
@@ -452,19 +451,19 @@ int main() {
     ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 10);
     ui::touchUp(t += HOLD_SHOW_MS + 200);
     upd(live, t);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0 && !ui::testGuide() && countIn(ACC, 100, 380, 366, 466) < 6000 && countIn(TRACK, 0, 0, 466, 30) == 0,
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0 && !ui::testGuide() && countIn(ACC, 100, 380, 366, 466) < 6000 && countIn(TRACK, 0, 0, 466, 30) == 0,
           "外周が出てから HOLD_MS の前に離したら何もしない(次へ動かない。帯と外周は元に戻る。2.7.0)");
     ui::touchDown(TOPX, TOPY, t += 100);
     ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
     ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 10);
     ui::touchUp(t += HOLD_MS - 100);
     upd(live, t);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "上の帯でも、外周が出てから離したら戻らない(2.7.0)");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "上の帯でも、外周が出てから離したら戻らない(2.7.0)");
     ui::touchDown(RX, MY, t += 100);
     ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
     ui::touchUp(t += HOLD_SHOW_MS - 50);
     upd(live, t);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1, "外周が出る前(HOLD_SHOW_MS より前)に離したのはタップ(次)");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1, "外周が出る前(HOLD_SHOW_MS より前)に離したのはタップ(次)");
     prev(t);
     for (int k = 0; k < 3; k++) {  // 上の帯・真ん中・左半分の長押しでも開く
       static const int px[3] = { TOPX, MY, LX }, py[3] = { TOPY, MY, MY };
@@ -472,28 +471,39 @@ int main() {
       ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
       ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 10);
       ui::update(live, ls, ps, si, t + HOLD_MS);
-      CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testSetItem() == 0, k == 0 ? "上の帯の長押しで開く(2.4.5)" : k == 1 ? "真ん中の長押しで開く(2.4.5)" : "左半分の長押しで開く(2.4.5)");
+      CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetCat() == 0 && ui::testSetItem() == 0,
+            k == 0 ? "上の帯の長押しで開く(カテゴリの中の明るさ。2.4.5・2.12.0)" : k == 1 ? "真ん中の長押しで開く(2.4.5)" : "左半分の長押しで開く(2.4.5)");
       ui::touchUp(t += HOLD_MS + 20);
       upd(live, t);
-      CHECK(ui::screen() == ui::SC_SET_EDIT, "開いたあとに離しても、タップにはならない");
+      CHECK(ui::screen() == ui::SC_SET_CAT, "開いたあとに離しても、タップにはならない");
       ui::tap(TOPX, TOPY, t += 100); upd(live, t);
     }
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "変更の画面の上「‹ 戻る」で明るさの項目へ");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "カテゴリの中の上「‹ 画面」で設定の段の画面へ(2.12.0)");
   }
+  holdOpen(live, t);
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 0, "設定の段の長押しでカテゴリの中(画面 → 明るさ。2.12.0)");
   ui::touchDown(BOTX, BOTY, t += 100);
   ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
   ui::update(live, ls, ps, si, t + HOLD_MS);
-  CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testSetItem() == 0, "設定: 下の帯を HOLD_MS 押し続けても開く(明るさの変更へ)");
+  CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testSetItem() == 0, "カテゴリの中: 下の帯を HOLD_MS 押し続けても開く(明るさの変更へ)");
   ui::update(live, ls, ps, si, t + 3 * HOLD_MS);
   ui::touchUp(t += 3 * HOLD_MS + 10);
   upd(live, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT, "開いたあとに離しても、変更の画面の「決定」にはならない");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 0, "変更: 上「‹ 戻る」で明るさの項目へ");
-  // 受信の状態(3 項目目。2.4.0。2.9.0 で 2 → 3 項目目): CAN・GPS・IMU・RaceChrono の 4 グループ(まとめ。下「開く」で中へ)。中は 1 ページ 1 項目
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 0, "変更: 上「‹ 戻る」で明るさの項目へ");
   next(t); next(t);
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 2, "画面の中: 明るさ・イルミネーションの明るさ・自動で戻る");
+  next(t);
+  CHECK(ui::testSetItem() == 0, "カテゴリの中: 最後の次は最初(カテゴリの中で回る)");
+  prev(t);
+  CHECK(ui::testSetItem() == 2, "カテゴリの中: 最初の前は最後");
+  ui::tap(TOPX, TOPY, t += 100); upd(live, t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "カテゴリの中: 上「‹ 画面」で設定の段");
+  // 受信の状態(2.12.0: 4 つ目のカテゴリ): CAN・GPS・IMU・RaceChrono の 4 グループ(まとめ。下「開く」で中へ)。中は 1 ページ 1 項目
+  next(t); next(t); next(t);
   holdOpen(live, t);
-  CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 0, "3 項目目の下「長押しで開く」で受信の状態(1 ページ目 = CAN)");
+  CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 0, "4 つ目のカテゴリ(受信の状態)の下「長押しで開く」で受信の状態(1 ページ目 = CAN)");
   next(t);
   CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 1, "受信の状態: 左へスワイプで次のグループ(GPS)");
   ui::tap(RX, MY, t += 100); upd(live, t);
@@ -559,23 +569,25 @@ int main() {
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 0, "CAN の中: 上「‹ CAN」で受信の状態の CAN のページ");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 2, "受信の状態: 上「‹ 受信の状態」で設定の受信の状態");
-  // 本体の状態(4 項目目。2.4.0: 受信と関係ない FPS・起動を受信の状態から出した): 下「開く」で中。上の帯で設定へ
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 3, "受信の状態: 上「‹ 受信の状態」で設定の受信の状態");
+  // 本体の状態(2.12.0: 5 つ目のカテゴリ。2.4.0: 受信と関係ない FPS・起動を受信の状態から出した): 下「開く」で中。上の帯で設定へ
   next(t);
   holdOpen(live, t);
-  CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 4 && ui::testPage() == 0, "4 項目目 = 本体の状態。下「長押しで開く」で中(1 ページ目 = FPS)");
+  CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 4 && ui::testPage() == 0, "5 つ目のカテゴリ = 本体の状態。下「長押しで開く」で中(1 ページ目 = FPS)");
   next(t);
   CHECK(ui::testPage() == 1, "本体の状態: 2 ページ目 = CPU(2.4.3)");
   prev(t); prev(t);
   CHECK(ui::testPage() == 7, "本体の状態: 最初の前は最後の 起動(8 ページ。2.4.3)");
   next(t);
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 3, "本体の状態: 上「‹ 本体の状態」で設定の本体の状態");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 4, "本体の状態: 上「‹ 本体の状態」で設定の本体の状態");
 
   // ---------------- 7. 設定の変更(下「変更」→ 左右の半分で − +、下「決定」で保存して戻り、値が緑で点滅する(2.3.1)。上「‹ 戻る」で変えずに戻る)
   //                  2.4.0: 変更の画面は値を枠で囲み、下の「決定」を水色の帯にした(項目の画面と見た目が同じで、移ったのが分からなかった)
-  next(t);
-  CHECK(ui::testSetItem() == 4, "5 項目目 = シフトポイント");
+  prev(t); prev(t); prev(t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1, "2 つ目のカテゴリ = シフトポイント");
+  holdOpen(live, t);
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 3, "シフトポイントの中の 1 項目目 = シフトポイント");
   auto countIn = [&](uint16_t c, int x0, int y0, int x1, int y1) {
     int n = 0;
     for (int y = y0; y < y1; y++)
@@ -643,7 +655,7 @@ int main() {
     ui::update(live, ls, ps, si, t0 + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
     ui::update(live, ls, ps, si, t0 + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 70);
     ui::update(live, ls, ps, si, t0 + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 130);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 4 && !ui::testFlashing(), "点滅が終わったら項目の画面へ");
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 3 && !ui::testFlashing(), "点滅が終わったら項目の画面へ");
     CHECK(areaCount(GREEN) == 0 && areaCount(WHITE) > 100 && countIn(ACCENT, 80, 196, 386, 304) == 0 && countIn(ACCENT, 100, 380, 366, 466) < 6000,
           "戻った画面: 値はふだんの白(緑の点滅はやめた)、水色の帯も無い");
     t = t0 + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 100;
@@ -655,22 +667,22 @@ int main() {
   ui::update(live, ls, ps, si, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testFlashing() && g_hostSaves == saves0 + 1, "変えずに決定しても、押した帯が点滅する(保存はしない。2.4.5)");
   upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
-  CHECK(ui::screen() == ui::SC_SET_LIST && !ui::testFlashing() && g_hostSaves == saves0 + 1, "点滅が終わったら項目の画面へ(保存はしない)");
+  CHECK(ui::screen() == ui::SC_SET_CAT && !ui::testFlashing() && g_hostSaves == saves0 + 1, "点滅が終わったら項目の画面へ(保存はしない)");
   holdOpen(live, t);
   ui::tap(RX, MY, t += 100); ui::tap(RX, MY, t += 100);
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && set.shiftRpm == SET_SHIFT_DEFAULT - 100 && g_hostSaves == saves0 + 1, "上「‹ 戻る」は変えずに戻る(保存しない)");
+  CHECK(ui::screen() == ui::SC_SET_CAT && set.shiftRpm == SET_SHIFT_DEFAULT - 100 && g_hostSaves == saves0 + 1, "上「‹ 戻る」は変えずに戻る(保存しない)");
   // もう一度変えて決定: 点滅が終わると項目の画面。送るのは戻ってから
   holdOpen(live, t);
   ui::tap(RX, MY, t += 100);
   ui::tap(BOTX, BOTY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT && g_hostSaves == saves0 + 2 && ui::testFlashing(), "もう一度変えて決定(点滅の間は変更の画面)");
   upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS);
-  CHECK(ui::screen() == ui::SC_SET_LIST && !ui::testFlashing() && set.shiftRpm == SET_SHIFT_DEFAULT, "点滅が終わって項目の画面");
+  CHECK(ui::screen() == ui::SC_SET_CAT && !ui::testFlashing() && set.shiftRpm == SET_SHIFT_DEFAULT, "点滅が終わって項目の画面");
   next(t);
-  CHECK(ui::testSetItem() == 5, "左へスワイプで次へ");
+  CHECK(ui::testSetItem() == 4, "左へスワイプで次へ(シフトポイントの中の回転数の輪)");
   prev(t);
-  CHECK(ui::testSetItem() == 4 && !ui::testFlashing(), "戻る");
+  CHECK(ui::testSetItem() == 3 && !ui::testFlashing(), "戻る");
   // 上下限
   holdOpen(live, t);
   for (int i = 0; i < 60; i++) ui::tap(RX, MY, t += 10);
@@ -686,23 +698,26 @@ int main() {
   ui::update(live, ls, ps, si, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testFlashing(), "もう一度「決定」で、押した帯が点滅してから抜ける(保存はしない。2.4.5)");
   upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
-  CHECK(ui::screen() == ui::SC_SET_LIST && !ui::testFlashing(), "点滅が終わったら項目の画面へ");
+  CHECK(ui::screen() == ui::SC_SET_CAT && !ui::testFlashing(), "点滅が終わったら項目の画面へ");
   g_hostSaveOk = true;
   set.shiftRpm = SET_SHIFT_DEFAULT;
-  // 明るさ(1 項目目): 変えたその場で反映、「‹ 戻る」で元に戻る
-  prev(t); prev(t); prev(t); prev(t);
+  // 明るさ(画面の中の 1 項目目): 変えたその場で反映、「‹ 戻る」で元に戻る
+  ui::tap(TOPX, TOPY, t += 100); upd(live, t);
+  prev(t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "設定の段に戻って 1 つ目のカテゴリ(画面)");
   holdOpen(live, t);
-  CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testSetItem() == 0, "1 項目目(明るさ)の変更");
+  holdOpen(live, t);
+  CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testSetItem() == 0, "画面の中の 1 項目目(明るさ)の変更");
   CHECK(ui::previewPct() == SET_BRIGHT_DEFAULT, "明るさの変更の画面の間は、その値で表示する(2.9.0)");
   ui::tap(LX, MY, t += 100); upd(live, t);
   CHECK(set.brightnessPct == SET_BRIGHT_DEFAULT - SET_BRIGHT_STEP && g_hostBrightness == set.brightnessPct && ui::previewPct() == set.brightnessPct, "明るさは左半分でその場で変わる");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(set.brightnessPct == SET_BRIGHT_DEFAULT && g_hostBrightness == SET_BRIGHT_DEFAULT, "上「‹ 戻る」で明るさも元に戻る");
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::previewPct() == -1, "変更の画面を出たら、明るさはライトのスイッチで決まる値に戻る(previewPct = -1。2.9.0)");
-  // イルミネーションの明るさ(2 項目目。2.9.0: ライトのスイッチが入の間の明るさ。初期値 30 %、10〜100 % / 10)。明るさと同じく
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::previewPct() == -1, "変更の画面を出たら、明るさはライトのスイッチで決まる値に戻る(previewPct = -1。2.9.0)");
+  // イルミネーションの明るさ(画面の中の 2 項目目。2.9.0: ライトのスイッチが入の間の明るさ。初期値 30 %、10〜100 % / 10)。明るさと同じく
   // 変えたその場で反映し、変更の画面の間はライトに関係なくその値で表示する
   next(t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1, "2 項目目 = イルミネーションの明るさ(2.9.0)");
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 1, "画面の中の 2 項目目 = イルミネーションの明るさ(2.9.0)");
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testSetItem() == 1 && set.illumPct == SET_ILLUM_DEFAULT && ui::previewPct() == SET_ILLUM_DEFAULT,
         "イルミネーションの明るさの変更: 変更の画面の間はその値(初期値 30 %)で表示する");
@@ -710,7 +725,7 @@ int main() {
   CHECK(set.illumPct == SET_ILLUM_DEFAULT - SET_ILLUM_STEP && g_hostBrightness == set.illumPct && ui::previewPct() == set.illumPct && set.brightnessPct == SET_BRIGHT_DEFAULT,
         "イルミネーションの明るさは左半分でその場で変わる(明るさは変えない)");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && set.illumPct == SET_ILLUM_DEFAULT && g_hostBrightness == SET_ILLUM_DEFAULT && ui::previewPct() == -1,
+  CHECK(ui::screen() == ui::SC_SET_CAT && set.illumPct == SET_ILLUM_DEFAULT && g_hostBrightness == SET_ILLUM_DEFAULT && ui::previewPct() == -1,
         "上「‹ 戻る」で元の値に戻し、変更の画面を出る(previewPct = -1)");
   {
     const int saves0 = g_hostSaves;
@@ -726,21 +741,122 @@ int main() {
     upd(live, t);
     CHECK(ui::screen() == ui::SC_SET_EDIT && g_hostSaves == saves0 + 1 && ui::testFlashing() && ui::previewPct() == 20, "下「決定」で保存(点滅の間はまだ変更の画面で、その値のまま)");
     upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1 && set.illumPct == 20 && ui::previewPct() == -1, "点滅が終わったら項目の画面へ(20 % を保存。previewPct = -1)");
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 1 && set.illumPct == 20 && ui::previewPct() == -1, "点滅が終わったら項目の画面へ(20 % を保存。previewPct = -1)");
     set.illumPct = SET_ILLUM_DEFAULT;
   }
-  // 時間の記録(11 項目目。2.9.0 で 6 → 7 項目目、2.10.0 で 7 → 11 項目目)
-  for (int i = 0; i < 9; i++) next(t);
-  CHECK(ui::testSetItem() == 10, "11 項目目 = 時間の記録");
-  trip::setTimes(5000, 7000);
-  holdOpen(live, t);
-  CHECK(ui::screen() == ui::SC_SET_RESET, "下「長押しで開く」で確認の画面(2.4.4)");
+  // 水温・過負荷(2.12.0: 3 つ目のカテゴリ): 水温の警告・過負荷 回転数・過負荷時間 黄・赤・過負荷がリセットされる時間・
+  // メンテナンスまでの累積時間・累積時間 リセット(2.11.0 までの「時間の記録」)
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && trip::aboveMs() == 5000, "確認: 上「‹ 戻る」は消さない");
-  int ts0 = g_hostTimeSaves;
+  next(t); next(t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "3 つ目のカテゴリ = 水温・過負荷");
   holdOpen(live, t);
-  ui::tap(BOTX, BOTY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && trip::aboveMs() == 0 && trip::belowMs() == 0 && g_hostTimeSaves == ts0 + 1, "確認: 下「リセット」で 0 に戻して、すぐ保存");
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 5, "水温・過負荷の中の 1 項目目 = 水温の警告");
+  next(t);
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 6, "水温・過負荷の中の 2 項目目 = 過負荷 回転数(2.12.0)");
+  {
+    const int saves1 = g_hostSaves;
+    holdOpen(live, t);
+    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadRpm == SET_LOADRPM_DEFAULT, "過負荷 回転数の変更(初期値 3000)");
+    ui::tap(RX, MY, t += 100); ui::tap(RX, MY, t += 100); ui::tap(RX, MY, t += 100); ui::tap(RX, MY, t += 100); ui::tap(RX, MY, t += 100);
+    CHECK(set.loadRpm == SET_LOADRPM_DEFAULT + 5 * SET_LOADRPM_STEP, "過負荷 回転数: 右半分で 100 ずつ上がる(3500)");
+    for (int i = 0; i < 60; i++) ui::tap(RX, MY, t += 10);
+    CHECK(set.loadRpm == SET_LOADRPM_MAX, "過負荷 回転数: 上限 6000 で止まる");
+    for (int i = 0; i < 60; i++) ui::tap(LX, MY, t += 10);
+    CHECK(set.loadRpm == SET_LOADRPM_MIN, "過負荷 回転数: 下限 2000 で止まる");
+    for (int i = 0; i < 15; i++) ui::tap(RX, MY, t += 10);
+    ui::tap(BOTX, BOTY, t += 100);
+    upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+    CHECK(ui::screen() == ui::SC_SET_CAT && set.loadRpm == 3500 && g_hostSaves == saves1 + 1, "過負荷 回転数: 「決定」で保存して項目の画面へ(3500)");
+  }
+  prev(t); prev(t);
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 11, "水温・過負荷の中: 最初の前は最後 = 累積時間 リセット(7 項目目)");
+  prev(t);
+  CHECK(ui::testSetItem() == 10, "その前がメンテナンスまでの累積時間(6 項目目。2.12.0)");
+  {
+    const int saves1 = g_hostSaves;
+    holdOpen(live, t);
+    CHECK(ui::screen() == ui::SC_SET_EDIT && set.maintHours == SET_MAINT_DEFAULT, "メンテナンスまでの累積時間の変更(初期値 5 時間)");
+    ui::tap(RX, MY, t += 100);
+    CHECK(set.maintHours == SET_MAINT_DEFAULT + SET_MAINT_STEP, "メンテナンスまでの累積時間: 右半分で 1 時間ずつ上がる(6)");
+    for (int i = 0; i < 20; i++) ui::tap(LX, MY, t += 10);
+    CHECK(set.maintHours == SET_MAINT_MIN && SET_MAINT_MIN == 0, "メンテナンスまでの累積時間: 0(「切」)で止まる");
+    for (int i = 0; i < 120; i++) ui::tap(RX, MY, t += 10);
+    CHECK(set.maintHours == SET_MAINT_MAX, "メンテナンスまでの累積時間: 上限 99 時間で止まる");
+    for (int i = 0; i < 87; i++) ui::tap(LX, MY, t += 10);
+    ui::tap(BOTX, BOTY, t += 100);
+    upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+    CHECK(ui::screen() == ui::SC_SET_CAT && set.maintHours == 12 && g_hostSaves == saves1 + 1, "メンテナンスまでの累積時間: 「決定」で保存して項目の画面へ(12 時間)");
+  }
+  next(t);
+  CHECK(ui::testSetItem() == 11, "水温・過負荷の中の 7 項目目 = 累積時間 リセット(2.11.0 までの時間の記録)");
+  {  // ▲ の横の数字は設定の過負荷 回転数(3500 と 3000 で絵が違う)
+    static uint16_t fbT[gfx::W * gfx::H];
+    ui::testRedraw();
+    upd(live, t);
+    memcpy(fbT, fb, sizeof(fbT));
+    set.loadRpm = 3000;
+    ui::testRedraw();
+    upd(live, t);
+    int diff = 0, diffTime = 0;
+    for (int y = 200; y < 320; y++)
+      for (int x = 100; x < 200; x++) diff += fb[y * gfx::W + x] != fbT[y * gfx::W + x];
+    for (int y = 200; y < 320; y++)
+      for (int x = 240; x < 390; x++) diffTime += fb[y * gfx::W + x] != fbT[y * gfx::W + x];
+    set.loadRpm = 3500;
+    ui::testRedraw();
+    upd(live, t);
+    CHECK(diff > 20 && diffTime == 0, "累積時間 リセットの項目の ▲ の横の回転数は設定の過負荷 回転数(時間はそのまま)");
+  }
+  {  // 累積時間 リセット(2.12.0: 本人 10/28「累積時間の入力はリセットと同じ画面に」「最初0:00:00が出て＋ーボタンで３０分ずつ」):
+     // 変更の画面で 0:00:00 から 30 分ずつ値を入れ、下「リセット」で ▲ をその値、▼ を 0 にしてすぐ保存
+    trip::setTimes(5025000, 7000);
+    const int ts1 = g_hostTimeSaves, saves1 = g_hostSaves;
+    holdOpen(live, t);
+    CHECK(ui::screen() == ui::SC_SET_EDIT, "累積時間 リセット: 下「長押しで開く」で変更の画面(値を入れてからリセット)");
+    ui::tap(TOPX, TOPY, t += 100); upd(live, t);
+    CHECK(ui::screen() == ui::SC_SET_CAT && trip::aboveMs() == 5025000 && trip::belowMs() == 7000 && g_hostTimeSaves == ts1,
+          "累積時間 リセット: 上「‹ 戻る」は消さない(水温・過負荷の中へ戻る)");
+    holdOpen(live, t);
+    load::testSet(49 * 60000 + 33000, true);  // 過負荷時間 49:33(本人 10/28「累積時間が０なのに過負荷４９：３３と表示されています」)
+    ui::tap(BOTX, BOTY, t += 100);
+    CHECK(trip::aboveMs() == 0 && trip::belowMs() == 0 && g_hostTimeSaves == ts1 + 1 && g_hostSaves == saves1,
+          "累積時間 リセット: 0:00:00 のまま下「リセット」で 2 つとも 0 にして、すぐ保存(今までのリセットと同じ)");
+    CHECK(load::valueMs() == 0, "累積時間 リセット: 過負荷時間も 0 に(過負荷時間は累積時間を超えない)");
+    upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 11, "累積時間 リセット: 点滅が終わったら項目の画面へ");
+    trip::setTimes(5025000, 7000);
+    holdOpen(live, t);
+    ui::tap(RX, MY, t += 100); ui::tap(RX, MY, t += 100); ui::tap(RX, MY, t += 100); ui::tap(LX, MY, t += 100);  // 0:30:00 → 1:00:00 → 1:30:00 → 1:00:00
+    CHECK(trip::aboveMs() == 5025000, "累積時間 リセット: 「リセット」を押すまで累積時間は変えない");
+    load::testSet(49 * 60000 + 33000, true);
+    ui::tap(BOTX, BOTY, t += 100);
+    CHECK(trip::aboveMs() == 3600000 && trip::belowMs() == 0 && g_hostTimeSaves == ts1 + 2,
+          "累積時間 リセット: + − で 30 分ずつ(1:00:00)。下「リセット」で ▲ をその値、▼ を 0 にして、すぐ保存");
+    CHECK(load::valueMs() == 49 * 60000 + 33000, "累積時間 リセット: 過負荷時間 49:33 は 1:00:00 以下なのでそのまま");
+    upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+    holdOpen(live, t);
+    ui::tap(RX, MY, t += 100);
+    ui::tap(BOTX, BOTY, t += 100);
+    CHECK(trip::aboveMs() == 1800000 && load::valueMs() == 1800000, "累積時間 リセット: 0:30:00 なら過負荷時間 49:33 も 30:00 に");
+    load::testReset();
+    upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+    holdOpen(live, t);
+    ui::tap(LX, MY, t += 100); ui::tap(LX, MY, t += 100);
+    ui::tap(BOTX, BOTY, t += 100);
+    upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+    CHECK(trip::aboveMs() == 0 && g_hostTimeSaves == ts1 + 4, "累積時間 リセット: 0:00:00 より下がらない(開くたびに 0:00:00 から)");
+    holdOpen(live, t);
+    for (int i = 0; i < TRIP_IN_MAX_H * 2 + 20; i++) ui::tap(RX, MY, t += 10);
+    ui::tap(BOTX, BOTY, t += 100);
+    upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+    CHECK(ui::screen() == ui::SC_SET_CAT && trip::aboveMs() == (uint32_t)TRIP_IN_MAX_H * 3600000u && g_hostTimeSaves == ts1 + 5,
+          "累積時間 リセット: 上限 99:00:00 で止まる");
+    trip::resetTimes();
+  }
+  set.loadRpm = SET_LOADRPM_DEFAULT;
+  set.maintHours = SET_MAINT_DEFAULT;
+  ui::tap(TOPX, TOPY, t += 100); upd(live, t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "カテゴリの中: 上「‹ 水温・過負荷」で設定の段");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_BOOST, "設定: 上の帯「‹ 設定」で来た画面へ");
 
@@ -761,7 +877,7 @@ int main() {
   t += 3 * 60000 + 1000;
   set.autoReturnMin = 1;
   longPress(live, t);
-  ui::testShow(ui::SC_SET_LIST, 4);
+  ui::testShow(ui::SC_SET_CAT, 3);
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT, "設定の変更画面へ(シフトポイント)");
   ui::tap(RX, MY, t += 100); upd(live, t);
@@ -1252,15 +1368,15 @@ int main() {
     gfx::dirtyClear();
   }
 
-  // ---------------- 13. 設定の「デモ」(2.4.0: 最後の 8 項目目。2.9.0: 9 項目目。2.10.0: 13 項目目)
+  // ---------------- 13. 設定の「デモ」(2.4.0: 最後の 8 項目目。2.9.0: 9 項目目。2.10.0: 13 項目目。2.12.0: その他の中の 1 項目目 = ITEMS の 15 番目)
   {
     Signals d;
     memset(&d, 0, sizeof(d));
     uint32_t td = 50000000;
     set.demoOn = 0;
-    ui::testShow(ui::SC_SET_LIST, 12);
+    ui::testShow(ui::SC_SET_CAT, 14);
     holdOpen(d, td);  // 触れた時刻を操作した時刻にする(先に update すると、前の操作から時間がたっていて自動で戻る)
-    CHECK(ui::screen() == ui::SC_SET_EDIT, "設定 13 項目目で「デモ」の変更画面へ");
+    CHECK(ui::screen() == ui::SC_SET_EDIT, "その他の中の 1 項目目で「デモ」の変更画面へ");
     ui::tap(366, 233, td += 100);
     CHECK(set.demoOn == 1, "右半分(入)でデモが入");
     ui::tap(366, 233, td += 100);
@@ -1270,7 +1386,7 @@ int main() {
     ui::update(d, ls, ps, si, td);
     CHECK(ui::screen() == ui::SC_SET_EDIT && g_hostSaves == sv + 1 && ui::testFlashing(), "「決定」で保存し、下の帯が点滅(2.4.3)");
     ui::update(d, ls, ps, si, td + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 12 && !ui::testFlashing(), "点滅が終わったらデモの項目へ");
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 14 && !ui::testFlashing(), "点滅が終わったらデモの項目へ");
     set.demoOn = 0;
     gfx::dirtyClear();
   }
@@ -1999,19 +2115,28 @@ int main() {
     n.gear = '1';
     ui::update(n, ls, ps, si, ti + IDLE_SHOW_AFTER_N_MS + 16000);
     gfx::dirtyClear();
-    // 3000rpm 超・以下の累計(trip)
+    // 3000rpm 以上・未満の累計(trip。2.12.0: 過負荷時間とそろえて「超・以下」→「以上・未満」)
     trip::resetTimes();
     Signals r;
     memset(&r, 0, sizeof(r));
     trip::update(r, 1000);  // 信号なし(前の試験からの間は数えない)
     r.rpmOk = true;
-    r.rpm = 3001;
-    trip::update(r, 1400);
     r.rpm = 3000;
+    trip::update(r, 1400);
+    r.rpm = 2999;
     trip::update(r, 1800);
     r.rpmOk = false;
     trip::update(r, 2200);
-    CHECK(trip::aboveMs() == 400 && trip::belowMs() == 400, "3000rpm 超・以下の時間を数える(信号が無い間は数えない)");
+    CHECK(trip::aboveMs() == 400 && trip::belowMs() == 400, "3000rpm 以上・未満の時間を数える(3000 ちょうどは以上。信号が無い間は数えない)");
+    // 2.12.0: 分ける回転数は設定の過負荷 回転数(基板は trip::update に g_set.loadRpm を渡す)
+    trip::resetTimes();
+    r.rpmOk = true;
+    r.rpm = 3400;
+    trip::update(r, 2600, 3500);  // 前の回(2200)から 400 ms、3400 は以下
+    r.rpm = 3600;
+    trip::update(r, 3000, 3500);  // 400 ms、3600 は超
+    CHECK(trip::aboveMs() == 400 && trip::belowMs() == 400, "過負荷 回転数 3500: 3400 は以下、3600 は超");
+    trip::resetTimes();
   }
 
   // ---------------- 22. 車の CAN の生データから値を作る(2.0.0。c6_can_link 2.0.0 は値のフレームを送らず、生データだけを送る)
@@ -3129,7 +3254,7 @@ int main() {
     CHECK(top(ACC) < 6000 && bot(ACC) < 6000, "矢印(左右の半分)を押しても帯は反転しない");
     ui::touchUp(tq += 150);
     upd(d, tq);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1, "矢印のタップは今までどおり(次)");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1, "矢印のタップは今までどおり(次)");
     ui::touchDown(TOPX, TOPY, tq += 100);
     ui::update(d, ls, ps, si, tq + TOUCH_CONFIRM_MS + 10);
     CHECK(top(ACC) > 10000 && top(gfx::rgb(0x000000)) > 100 && bot(ACC) < 6000, "設定の上の帯「‹ 設定」: 押して決まったら反転(版の字も地の色)");
@@ -3137,7 +3262,7 @@ int main() {
     CHECK(ui::testHolding() && top(ACC) < 6000 && bot(ACC) > 10000, "長押しの表示が出たら上の帯の反転をやめる(下の帯「長押しで開く」が水色になり外周)");
     ui::touchUp(tq += HOLD_SHOW_MS + 100);
     upd(d, tq);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 1 && top(ACC) < 6000 && bot(ACC) < 6000, "そのまま離したら何もしない(戻らない。帯は元に戻る)");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1 && top(ACC) < 6000 && bot(ACC) < 6000, "そのまま離したら何もしない(戻らない。帯は元に戻る)");
     // 「決定」(変更の画面)は今までどおり: 押しても反転しない(ふだんが水色の帯)。離したらすぐ点滅
     ui::testShow(ui::SC_SET_EDIT, 0);
     upd(d, tq += 100);
@@ -3150,7 +3275,7 @@ int main() {
     CHECK(ui::testFlashing(), "「決定」は離したらすぐ点滅(今までどおり)");
     ui::update(d, ls, ps, si, tq + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
     upd(d, tq += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 100);
-    CHECK(ui::screen() == ui::SC_SET_LIST, "点滅が終わったら項目の画面へ");
+    CHECK(ui::screen() == ui::SC_SET_CAT, "点滅が終わったら項目の画面へ");
     // 赤い帯(CAN確認の「やり直す」): 白い帯に赤の字。PRESS_FLASH_MS 見せてから消して戻る
     ui::testShow(ui::SC_CAN);
     upd(d, tq += 100);
@@ -3228,17 +3353,22 @@ int main() {
     load::testReset();
     load::update(rpmSig(5000, true), lset, T);
     run(5000, 600000, true);
-    run(3000, 299000, true);
-    CHECK(load::valueMs() > 0, "リセット: 3000 rpm 以下が 4:59 では 0 にならない");
-    run(3000, 1020, true);  // 最初に 3000 rpm 以下になった回から 5:00
+    run(2999, 299000, true);
+    CHECK(load::valueMs() > 0, "リセット: 3000 rpm 未満が 4:59 では 0 にならない");
+    run(2999, 1020, true);  // 最初に 3000 rpm 未満になった回から 5:00
     CHECK(load::valueMs() == 0, "リセット: 5:00 で 0");
+    load::testReset();
+    load::update(rpmSig(5000, true), lset, T);
+    run(5000, 600000, true);
+    run(3000, 400000, true);
+    CHECK(load::valueMs() == 1000000, "2.12.0: 3000 rpm ちょうどは過負荷(増える。リセットも数えない。2.11.0 までは増えながらリセットも数えていた)");
     load::testReset();
     load::update(rpmSig(5000, true), lset, T);
     run(5000, 900000, true);
     run(1000, 240000, true);
-    run(3500, 1000, true);
+    run(3000, 1000, true);
     run(1000, 240000, true);
-    CHECK(load::valueMs() > 0, "リセット: 途中で 3000 rpm を超えたら数え直し");
+    CHECK(load::valueMs() > 0, "リセット: 途中で 3000 rpm 以上になったら数え直し");
     lset.loadResetMin = 1;
     load::testReset();
     load::update(rpmSig(5000, true), lset, T);
@@ -3267,7 +3397,7 @@ int main() {
     load::testReset();
     load::restore(600000, 1793065338u, 120000);
     load::onTime(1793065338u + 180 + 20, lset, 20000);
-    CHECK(load::valueMs() == 0, "保存した 3000 rpm 以下の経過 2 分 + 切れていた 3 分 で 0");
+    CHECK(load::valueMs() == 0, "保存した 3000 rpm 未満の経過 2 分 + 切れていた 3 分 で 0");
     load::testReset();
     load::restore(600000, 0, 0);
     load::onTime(1793065338u, lset, 20000);
@@ -3276,11 +3406,11 @@ int main() {
     load::restore(600000, 1793065338u, 0);
     load::onTime(1793065338u - 100, lset, 20000);
     CHECK(load::valueMs() == 600000, "差が負のときは引かない");
-    // 色(黄 15・赤 30)
-    load::testSet(14 * 60000 + 59000, false);
-    CHECK(load::level(lset) == 0, "色: 14:59 は白");
-    load::testSet(15 * 60000, false);
-    CHECK(load::level(lset) == 1, "色: 15:00 で黄");
+    // 色(黄 10・赤 30。2.12.0: 黄の初期値 15 → 10)
+    load::testSet(9 * 60000 + 59000, false);
+    CHECK(load::level(lset) == 0, "色: 9:59 は白");
+    load::testSet(10 * 60000, false);
+    CHECK(load::level(lset) == 1, "色: 10:00 で黄");
     load::testSet(30 * 60000, false);
     CHECK(load::level(lset) == 2, "色: 30:00 で赤");
     load::testSet(29 * 60000 + 59000, false);
@@ -3299,23 +3429,48 @@ int main() {
     load::update(rpmSig(5000, true), lset, T += 20);
     CHECK(load::valueMs() == 0, "機能が切: 数えず 0");
     settingsDefaults(&lset);
-    // クールダウン 30 分
-    load::testSet(29 * 60000 + 59000, false);
-    load::update(rpmSig(5000, true), lset, T += 20);
-    run(5000, 960, true);
-    CHECK(!load::coolDown(), "クールダウン: 29:59 は「高負荷時間」");
-    run(5000, 60, true);
-    CHECK(load::coolDown(), "クールダウン: 30:00 で「クールダウン」");
-    run(1000, 5000, true);
-    CHECK(load::coolDown(), "クールダウン: 減って 29:59 より下になってもそのまま");
-    load::testSet(1000, true);
+    // クールダウン(2.12.0。本人 10/28「黄色以上の過負荷累積がある場合…クールダウンという表示にリセット時間までのカウントダウンがはじまる」
+    // 「カウントダウンの表示は回転数が落ちて１分以上過負荷にならなければ」「減らして大丈夫です」): リセットのあとに一度でも黄になっていて、
+    // 3000 rpm 未満が 1 分続いたら。リセットまでの残りを出す
+    load::testReset();
+    load::update(rpmSig(5000, true), lset, T);
+    run(5000, 599000, true);
+    run(1000, 60000, true);
+    CHECK(!load::coolDown(T) && load::valueMs() > 0, "クールダウン: 黄(10:00)に届いていなければ、3000 rpm 未満が 1 分続いても出さない");
+    load::testReset();
+    load::update(rpmSig(5000, true), lset, T);
+    run(5000, 600000, true);
+    CHECK(load::level(lset) == 1 && !load::coolDown(T), "クールダウン: 黄になっても 3000 rpm 以上の間は出さない(過負荷)");
+    run(1000, 59000, true);
+    CHECK(!load::coolDown(T), "クールダウン: 3000 rpm 未満が 0:59 ではまだ出さない");
+    run(1000, 1020, true);
+    CHECK(load::coolDown(T) && load::coolLeftMs(lset, T) == 240000 && load::level(lset) == 0,
+          "クールダウン: 1:00 で出す。リセットまでの残り 4:00(5:00 − 1:00)。値は減って黄より下(9:00)でも出す");
+    run(3000, 1000, true);
+    CHECK(!load::coolDown(T) && load::lowMs(T) == 0, "クールダウン: 3000 rpm 以上になったら過負荷に戻る(リセットの数えも 0 から)");
+    run(2999, 60020, true);
+    CHECK(load::coolDown(T), "クールダウン: また 1 分続いたら出す(黄になったことは 0 になるまで覚えている)");
+    run(2999, 240000, true);
+    CHECK(load::valueMs() == 0 && !load::coolDown(T), "クールダウン: リセットまでの残りが 0 になったら 0 にして消す");
+    run(5000, 60000, true);
+    run(1000, 61000, true);
+    CHECK(!load::coolDown(T), "クールダウン: 0 になったら黄になったことは忘れる(1:00 では出さない)");
+    lset.loadYellowMin = 0;
+    load::testReset();
+    load::update(rpmSig(5000, true), lset, T);
+    run(5000, 1799000, true);
+    run(1000, 61000, true);
+    CHECK(!load::coolDown(T), "黄 0: 赤(30:00)に届いていなければ出さない");
+    load::testReset();
+    load::update(rpmSig(5000, true), lset, T);
+    run(5000, 1800000, true);
+    run(1000, 61000, true);
+    CHECK(load::coolDown(T), "黄 0: 赤(30:00)になっていたら出す");
+    settingsDefaults(&lset);
+    load::testSet(3 * 60000, true);
     load::update(rpmSig(1000, true), lset, T += 20);
-    run(1000, 1100, true);
-    CHECK(load::valueMs() == 0 && !load::coolDown(), "クールダウン: 0 になったら戻る");
-    lset.coolMin = 0;
-    load::testSet(60 * 60000, false);
-    load::update(rpmSig(5000, true), lset, T += 20);
-    CHECK(!load::coolDown(), "クールダウン時間 0: 替えない");
+    run(1000, 61000, true);
+    CHECK(load::coolDown(T), "testSet(値, 黄になった): 1 分で出す");
     load::testReset();
 
     // ---- GPS の時刻(gtime)
@@ -3518,62 +3673,65 @@ int main() {
       ui::update(c, lc, ps, sc, tc += 1000);
       CHECK(waitInk() == 0 && same(c, tc), "高負荷時間: GPS の時刻になったら「時刻 待ち」を消す");
     }
-    c.rpm = 4500;  // 背景が緑: 黒い円が見える(回転が上がってもピークを出さないよう、ピークの記録を消してから)
+    c.rpm = 5600;  // 背景が黄: 黒い円が見える(回転が上がってもピークを出さないよう、ピークの記録を消してから。2.12.0: 緑の背景はやめた)
     load::testSet(16 * 60000, false);
     ui::update(c, lc, ps, sc, tc += 1000);
     ui::testPeakReset();
     ui::update(c, lc, ps, sc, tc += 1000);
     ui::update(c, lc, ps, sc, tc += 1000);
-    CHECK(px(233, 233 - (int)LOAD_DISC_R + 8) == gfx::rgb(0x000000) && px(233, 233 + 140) != gfx::rgb(0x000000), "背景が緑でも高負荷時間は黒い円の上");
-    CHECK(same(c, tc), "高負荷時間 黄(背景が緑)の絵 = 最初から描いた絵");
+    CHECK(px(233, 233 - (int)LOAD_DISC_R + 8) == gfx::rgb(0x000000) && px(233, 233 + 140) != gfx::rgb(0x000000), "背景が黄でも高負荷時間は黒い円の上");
+    CHECK(same(c, tc), "高負荷時間 黄(背景が黄)の絵 = 最初から描いた絵");
     load::testReset();
     c.rpm = 850;
     ui::update(c, lc, ps, sc, tc += 1000);
     CHECK(ui::testCenter() == 4, "高負荷時間が 0 になったらデジタル時計(接続の状態が変わってから STATUS_SHOW_MS たっている)");
     gfx::dirtyClear();
 
-    // ---- 設定: 高負荷時間の 4 項目(7〜10 項目目)とデフォルトに戻す(14 項目目)
+    // ---- 設定: 過負荷時間の 3 項目(2.12.0: 水温・過負荷の中の 3〜5 項目目。クールダウン時間はなくした)とデフォルトに戻す(その他の中の 2 項目目)
     Signals d;
     memset(&d, 0, sizeof(d));
     uint32_t td = 130000000;
-    ui::testShow(ui::SC_SET_LIST, 6);
+    ui::testShow(ui::SC_SET_CAT, 7);
     holdOpen(d, td);
-    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadYellowMin == SET_LOADY_DEFAULT, "7 項目目 = 高負荷時間 黄(15 分)の変更");
+    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadYellowMin == SET_LOADY_DEFAULT, "水温・過負荷の中の 3 項目目 = 過負荷時間 黄(10 分)の変更");
     for (int k = 0; k < 4; k++) ui::tap(LX, MY, td += 100);
     CHECK(set.loadYellowMin == 0, "高負荷時間 黄: 5 分ずつ下げて 0(「切」)で止まる");
     ui::tap(RX, MY, td += 100);
     CHECK(set.loadYellowMin == SET_LOAD_STEP, "高負荷時間 黄: 右半分で 5 分");
     ui::tap(TOPX, TOPY, td += 100);
     ui::update(d, ls, ps, si, td);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 6 && set.loadYellowMin == SET_LOADY_DEFAULT, "上「‹ 戻る」で変えずに戻る");
-    ui::testShow(ui::SC_SET_LIST, 9);
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 7 && set.loadYellowMin == SET_LOADY_DEFAULT, "上「‹ 戻る」で変えずに戻る");
+    ui::testShow(ui::SC_SET_CAT, 9);
     holdOpen(d, td);
-    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadResetMin == SET_LOADRS_DEFAULT, "10 項目目 = 高負荷時間 リセット(5 分)の変更");
+    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadResetMin == SET_LOADRS_DEFAULT, "水温・過負荷の中の 5 項目目 = 過負荷がリセットされる時間(5 分)の変更");
     for (int k = 0; k < 6; k++) ui::tap(LX, MY, td += 100);
     CHECK(set.loadResetMin == SET_LOADRS_MIN, "高負荷時間 リセット: 1 分で止まる(0 はない)");
     ui::tap(TOPX, TOPY, td += 100);
     ui::update(d, ls, ps, si, td);
     // デフォルトに戻す: 確認の画面(上「‹ 戻る」は戻さない、下「戻す」で全部初期値にして保存)。時間の記録・IMU の向き・高負荷時間は戻さない
     set.shiftRpm = 6500; set.brightnessPct = 40; set.illumPct = 70; set.warnTempC = 100; set.autoReturnMin = 9; set.demoOn = 1; set.rcOn = 0;
-    set.loadYellowMin = 0; set.loadRedMin = 60; set.coolMin = 0; set.loadResetMin = 12;
+    set.loadYellowMin = 0; set.loadRedMin = 60; set.loadResetMin = 12; set.ringOne = 1; set.loadRpm = 4500;
+    set.maintHours = 30;
     trip::setTimes(5000, 7000);
     load::testSet(600000, false);
-    const int resets0 = g_hostImuResets, saves0 = g_hostSaves;
-    ui::testShow(ui::SC_SET_LIST, 13);
+    const int resets0 = g_hostImuResets, saves0 = g_hostSaves, tsaves0 = g_hostTimeSaves;
+    ui::testShow(ui::SC_SET_CAT, 15);
     holdOpen(d, td);
-    CHECK(ui::screen() == ui::SC_SET_RESET, "14 項目目 = デフォルトに戻す。下「長押しで開く」で確認の画面");
+    CHECK(ui::screen() == ui::SC_SET_RESET, "その他の中の 2 項目目 = デフォルトに戻す。下「長押しで開く」で確認の画面");
     ui::tap(TOPX, TOPY, td += 100);
     ui::update(d, ls, ps, si, td);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 13 && set.shiftRpm == 6500 && g_hostSaves == saves0, "確認: 上「‹ 戻る」は戻さない");
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 15 && set.shiftRpm == 6500 && g_hostSaves == saves0, "確認: 上「‹ 戻る」は戻さない");
     holdOpen(d, td);
     ui::tap(BOTX, BOTY, td += 100);
     ui::update(d, ls, ps, si, td);
     Settings def;
     settingsDefaults(&def);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetItem() == 13 && memcmp(&set, &def, sizeof(Settings)) == 0 && g_hostSaves == saves0 + 1,
-          "確認: 下「戻す」で設定を全部初期値にして保存し、設定の項目へ");
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 15 && memcmp(&set, &def, sizeof(Settings)) == 0 && g_hostSaves == saves0 + 1,
+          "確認: 下「戻す」で設定を全部初期値にして保存し、設定の項目へ(過負荷 回転数も 3000、メンテナンスまでの累積時間も 5 時間に)");
     CHECK(g_hostBrightness == SET_BRIGHT_DEFAULT, "明るさも初期値で決め直す");
-    CHECK(trip::aboveMs() == 5000 && trip::belowMs() == 7000 && g_hostImuResets == resets0 && load::valueMs() == 600000, "時間の記録・IMU の向き・高負荷時間は戻さない");
+    CHECK(trip::aboveMs() == 5000 && trip::belowMs() == 7000 && g_hostImuResets == resets0, "累積時間と IMU の向きは戻さない");
+    CHECK(load::valueMs() == 0 && g_hostTimeSaves == tsaves0 + 1,
+          "2.12.0: 過負荷時間は 0 にして、すぐ保存(本人 10/28「デモで過負荷時間が増えてしまうとそのあと消せません。デフォルト値に設定する場合にはクリアしてください」)");
     load::testReset();
     trip::resetTimes();
     settingsDefaults(&set);
@@ -3659,6 +3817,520 @@ int main() {
     // 2.11.0: 値の書体は、字の無い大きい書体を選ばない(乱数試験で「前を記録した」を 64 px で描いて「を」「た」が無かった)
     CHECK(!gfx::hasGlyphs(FONT_JP600_64, "前を記録した") && gfx::hasGlyphs(FONT_JP600_44, "前を記録した") && gfx::hasGlyphs(FONT_JP600_64, "受信なし"),
           "書体: 字があるかを見られる(「前を記録した」は 64 px に無く 44 px にある)");
+  }
+
+  // ---------------- 31. 2.12.0: 回転数の輪 = 片側(本人 10/28「片方だけのを実装したい」「シフトタイミングが天井で」「設定で変更するように」
+  //                  「なんで左回り？」「右の水平から天井までの回転角で表すように」「回転数の始まりは４時の位置から」): 4 時から右回りに真上まで
+  {
+    Signals r;
+    memset(&r, 0, sizeof(r));
+    r.linkUp = r.rpmOk = r.waterOk = r.fuelOk = r.gearOk = true;
+    r.waterC = 85; r.fuelPct = 60; r.gear = '3';
+    LinkStats lr;
+    memset(&lr, 0, sizeof(lr));
+    lr.locked = true;
+    SysInfo sr;
+    memset(&sr, 0, sizeof(sr));
+    uint32_t tr = 400000000;
+    const int N1 = RING_ONE_SEGS;
+    const float PITCH1 = (270.0f - RING_ONE_START_DEG + RING_GAP_DEG * 0.5f) / ((float)N1 - 0.5f);  // 片側のマスの間隔(ui.cpp と同じ式)
+    auto oneDeg = [&](int k) { return 270.0f - PITCH1 * (float)(N1 - 1 - k); };  // 片側のマス k の真ん中の角度(最後 = 真上)
+    auto ringAt = [&](float deg, float rad) {  // 角度 deg(3 時が 0°、時計回り)・半径 rad の画素
+      const float a = deg * 3.14159265f / 180.0f;
+      return fb[(int)lroundf(233 + rad * sinf(a)) * gfx::W + (int)lroundf(233 + rad * cosf(a))];
+    };
+    const float RM = (RING_R_IN + RING_R_OUT) * 0.5f;
+    static uint16_t fbR[gfx::W * gfx::H];
+    auto sameR = [&](const Signals &x, uint32_t at) {  // 少しずつ描いた絵 = 同じ時刻に最初から描いた絵
+      memcpy(fbR, fb, sizeof(fbR));
+      ui::testRedraw();
+      ui::update(x, lr, ps, sr, at);
+      gfx::dirtyClear();
+      return memcmp(fbR, fb, sizeof(fbR)) == 0;
+    };
+    const uint16_t LIT_Y = gfx::rgb(0xFFDC00), BG_Y = gfx::rgb(0xC4A000);  // 5800 rpm(シフト点)の輪と背景
+    CHECK(N1 == 23 && fabsf(oneDeg(0) - (RING_ONE_START_DEG + (PITCH1 - RING_GAP_DEG) * 0.5f)) < 0.01f && fabsf(oneDeg(N1 - 1) - 270.0f) < 0.01f,
+          "片側: 23 マス(200 rpm ごと)。1 マス目の外の端が 4 時(RING_ONE_START_DEG = 30°)、最後のマスの真ん中が真上");
+    ui::testPeakReset();
+    set.ringOne = 1;
+    r.rpm = 5800;
+    ui::testShow(ui::SC_DRIVE);
+    ui::update(r, lr, ps, sr, tr);
+    gfx::dirtyClear();
+    bool all = true;
+    for (int k = 0; k < N1; k++) all = all && ringAt(oneDeg(k), RM) == LIT_Y;
+    CHECK(all, "片側: シフト点で 4 時から右回りに真上まで全部のマスが点く");
+    CHECK(RING_ONE_START_DEG == 30.0f && ringAt(RING_ONE_START_DEG + 1.0f, RM) == LIT_Y && ringAt(RING_ONE_START_DEG - 1.0f + 360.0f, RM) == BG_Y,
+          "片側: 1 マス目の外の端が 4 時");
+    CHECK(ringAt(270.0f, RM) == LIT_Y && ringAt(270.0f + PITCH1 * 0.5f + 1.0f, RM) == BG_Y, "片側: 最後のマス(シフト点)の真ん中が真上");
+    bool none = true;
+    for (float a = 278.0f; a < 359.0f + RING_ONE_START_DEG; a += 2.0f) none = none && ringAt(a, RM) == BG_Y;
+    CHECK(none, "片側: 真上から 4 時まで(右上〜右)には何も出さない(背景のまま)");
+    CHECK(sameR(r, tr), "片側(シフト点)の絵 = 最初から描いた絵");
+    // 回転数を下げる: 点き始め 1400(両側と同じ)、200 rpm ごとに 1 マス。3000 rpm で 9 マス(4 時から右回りに真下の先まで)
+    ui::testPeakReset();
+    r.rpm = 3000;
+    ui::update(r, lr, ps, sr, tr += 100);
+    ui::update(r, lr, ps, sr, tr += 100);
+    gfx::dirtyClear();
+    const uint16_t LIT_B = gfx::rgb(0x2B7BFF);
+    bool nine = true;
+    for (int k = 0; k < N1; k++) nine = nine && ((ringAt(oneDeg(k), RM) == LIT_B) == (k < 9));
+    CHECK(nine, "片側: 3000 rpm で 4 時から右回りに 9 マス(青)");
+    CHECK(ringAt(45.0f, RM) == LIT_B && ringAt(90.0f, RM) == LIT_B && ringAt(315.0f, RM) != LIT_B && ringAt(180.0f, RM) != LIT_B && ringAt(15.0f, RM) != LIT_B,
+          "片側: 右回り(右下・真下が先に点き、左・右上はまだ。4 時より上の右は点かない)");
+    CHECK(sameR(r, tr), "片側(9 マス)の絵 = 最初から描いた絵");
+    // ピークの三角は 1 つ(ピーク 5000 = 19 マス目の真ん中の外。左上)
+    r.rpm = 5000;
+    ui::update(r, lr, ps, sr, tr += 100);
+    r.rpm = 4200;
+    ui::update(r, lr, ps, sr, tr += 100);
+    gfx::dirtyClear();
+    const uint16_t PEAKC = gfx::rgb(0xFFD000);
+    CHECK(ui::testPeakDrawn() && ringAt(oneDeg(18), 222.0f) == PEAKC && ringAt(180.0f - oneDeg(18), 222.0f) != PEAKC,
+          "片側: ピークの三角は 19 マス目の所の 1 つだけ(左右反転の所には無い)");
+    CHECK(sameR(r, tr), "片側(ピークの三角)の絵 = 最初から描いた絵");
+    for (int k = 0; k < 30; k++) {  // 三角が下がりながらマスが変わる(三角に掛かるマスを描き直す)
+      r.rpm = 4200 + 60 * (k % 7);
+      ui::update(r, lr, ps, sr, tr += 100);
+      gfx::dirtyClear();
+    }
+    CHECK(sameR(r, tr), "片側(三角が下がる・マスが変わる)の絵 = 最初から描いた絵");
+    // 設定を両側に戻す: 走行画面のまま変わっても全部を描き直す(右上も点く)
+    set.ringOne = 0;
+    r.rpm = 5800;
+    ui::testPeakReset();
+    ui::update(r, lr, ps, sr, tr += 100);
+    gfx::dirtyClear();
+    CHECK(ringAt(315.0f, RM) == LIT_Y && ringAt(90.0f, RM) == LIT_Y && ringAt(270.0f, RM) == LIT_Y, "両側に戻すと右上も点く");
+    CHECK(sameR(r, tr), "両側に戻した絵 = 最初から描いた絵");
+    set.ringOne = 1;
+    ui::update(r, lr, ps, sr, tr += 100);
+    gfx::dirtyClear();
+    CHECK(ringAt(315.0f, RM) == BG_Y && ringAt(90.0f, RM) == LIT_Y && sameR(r, tr), "片側にすると右上を消して描き直す");
+    // オープニング: 白い光は 4 時から右回りに真上へ
+    {
+      const uint16_t WH = gfx::rgb(0xFFFFFF), BK = gfx::rgb(0x000000);
+      ui::testShow(ui::SC_OPENING, 0);
+      uint32_t to = tr + 100000;
+      ui::update(r, lr, ps, sr, to);
+      ui::update(r, lr, ps, sr, to + OPC_SCAN_MS / 2);
+      const int h = N1 * (OPC_SCAN_MS / 2) / OPC_SCAN_MS;  // 半分の時刻の光の位置
+      CHECK(ringAt(oneDeg(h), RM) == WH && ringAt(oneDeg(0), RM) != BK && ringAt(oneDeg(h + 3), RM) == BK && ringAt(315.0f, RM) == BK,
+            "片側のオープニング: 白い光は 4 時から右回りに走る(半分の時刻で左下、通ったマスは灰、右上には出ない)");
+      ui::update(r, lr, ps, sr, to + OPC_SCAN_MS + OPC_FLASH_MS / 2);
+      CHECK(ringAt(270.0f, RM) == WH && ringAt(oneDeg(0), RM) != BK && ringAt(315.0f, RM) == BK, "片側のオープニング: 光は真上で止まる");
+    }
+    set.ringOne = 0;
+    ui::testPeakReset();
+    ui::testShow(ui::SC_DRIVE);
+    gfx::dirtyClear();
+    // 設定: シフトポイントの中の 2 項目目「回転数の輪」(2.12.0)。左半分 = 両側、右半分 = 片側
+    {
+      Signals d;
+      memset(&d, 0, sizeof(d));
+      uint32_t td = 410000000;
+      ui::testShow(ui::SC_SET_CAT, 4);
+      holdOpen(d, td);
+      CHECK(ui::screen() == ui::SC_SET_EDIT && set.ringOne == 0, "シフトポイントの中の 2 項目目 = 回転数の輪(既定は両側)の変更");
+      ui::tap(RX, MY, td += 100);
+      CHECK(set.ringOne == 1, "回転数の輪: 右半分で片側");
+      ui::tap(RX, MY, td += 100);
+      CHECK(set.ringOne == 1, "回転数の輪: もう一度押しても片側のまま");
+      ui::tap(LX, MY, td += 100);
+      CHECK(set.ringOne == 0, "回転数の輪: 左半分で両側");
+      ui::update(d, lr, ps, sr, td);
+      CHECK(sameR(d, td), "回転数の輪: 値を変えた絵 = 最初から描いた絵(左右の「両側」「片側」が欠けない)");
+      set.ringOne = 1;  // タップ以外で変わっても描き直す(乱数試験で設定を直接変える)
+      ui::update(d, lr, ps, sr, td += 100);
+      CHECK(sameR(d, td), "回転数の輪: 値がほかから変わっても描き直す");
+      set.ringOne = 0;
+      ui::update(d, lr, ps, sr, td += 100);
+      ui::tap(RX, MY, td += 100);
+      const int sv = g_hostSaves;
+      ui::tap(233, 400, td += 100);
+      ui::update(d, ls, ps, si, td);
+      CHECK(g_hostSaves == sv + 1 && set.ringOne == 1, "回転数の輪: 「決定」で片側を保存");
+      ui::update(d, ls, ps, si, td + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+      CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 4, "点滅が終わったら回転数の輪の項目へ");
+      set.ringOne = 0;
+      ui::testShow(ui::SC_DRIVE);
+      gfx::dirtyClear();
+    }
+  }
+
+  // ---------------- 32. 2.12.0(同じ版で): 設定のカテゴリ(本人 10/28「設定の項目が長くなったのでカテゴリにまとめて」「過負荷のは高負荷
+  //                  メニューとして水温、高負荷のしたに」)
+  {
+    Signals d;
+    memset(&d, 0, sizeof(d));
+    d.linkUp = d.rpmOk = true;
+    d.rpm = 2500;
+    uint32_t tc = 420000000;
+    static uint16_t fbK[gfx::W * gfx::H];
+    auto sameK = [&](uint32_t at) {  // 少しずつ描いた絵 = 同じ時刻に最初から描いた絵
+      memcpy(fbK, fb, sizeof(fbK));
+      ui::testRedraw();
+      ui::update(d, ls, ps, si, at);
+      gfx::dirtyClear();
+      return memcmp(fbK, fb, sizeof(fbK)) == 0;
+    };
+    const uint32_t miss0 = gfx::missingGlyphs();
+    // カテゴリを順に送り、それぞれの中を開いて全部の項目を見る(受信の状態・本体の状態はそのまま中へ)
+    static const int CAT_N[6] = { 3, 2, 7, 1, 1, 2 };
+    static const int CAT_FIRST[6] = { 0, 3, 5, 12, 13, 14 };
+    ui::testShow(ui::SC_SET_LIST, 0);
+    ui::testTouch(tc);
+    ui::update(d, ls, ps, si, tc);
+    gfx::dirtyClear();
+    bool cats = true, items = true, same = true;
+    int seen = 0;
+    for (int c = 0; c < 6; c++) {
+      cats = cats && ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == c;
+      same = same && sameK(tc);
+      holdOpen(d, tc);
+      if (c == 3) {
+        items = items && ui::screen() == ui::SC_SET_INFO;
+        seen++;
+      } else if (c == 4) {
+        items = items && ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 4;
+        seen++;
+      } else {
+        for (int k = 0; k < CAT_N[c]; k++) {
+          items = items && ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == CAT_FIRST[c] + k;
+          same = same && sameK(tc);
+          seen++;
+          ui::tap(366, 233, tc += 100);
+          ui::update(d, ls, ps, si, tc);
+          gfx::dirtyClear();
+        }
+        items = items && ui::testSetItem() == CAT_FIRST[c];  // カテゴリの中で 1 周
+      }
+      ui::tap(233, 60, tc += 100);  // 上の帯で設定の段へ
+      ui::update(d, ls, ps, si, tc);
+      gfx::dirtyClear();
+      cats = cats && ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == c;
+      ui::tap(366, 233, tc += 100);  // 次のカテゴリ
+      ui::update(d, ls, ps, si, tc);
+      gfx::dirtyClear();
+    }
+    CHECK(cats && ui::testSetCat() == 0, "カテゴリ: 6 つを左右で送り、最後の次は最初(上の帯でカテゴリの中から設定の段へ戻る)");
+    CHECK(items && seen == 16, "カテゴリの中: 画面 3・シフトポイント 2・水温・過負荷 7(過負荷 回転数・累積時間を含む)・その他 2 の項目(受信の状態・本体の状態はそのまま中へ)");
+    CHECK(same, "カテゴリの段・カテゴリの中の絵 = 最初から描いた絵");
+    CHECK(gfx::missingGlyphs() == miss0, "カテゴリの名前・中の主な値・項目の名前の字はどれもある");
+    // カテゴリの段の中の主な値: 値が変わったら描き直す
+    ui::testShow(ui::SC_SET_LIST, 1);
+    ui::update(d, ls, ps, si, tc += 100);
+    gfx::dirtyClear();
+    set.shiftRpm = 6200;
+    ui::update(d, ls, ps, si, tc += 100);
+    CHECK(gfx::dirtyCount() > 0 && sameK(tc), "シフトポイントのカテゴリ: シフトポイントが変わったら中の主な値を描き直す");
+    set.shiftRpm = SET_SHIFT_DEFAULT;
+    // データ画面の ▲▼ の横の数字は過負荷 回転数(変わったら描き直す)
+    ui::testShow(ui::SC_DATA);
+    ui::update(d, ls, ps, si, tc += 100);
+    ui::update(d, ls, ps, si, tc += 100);
+    gfx::dirtyClear();
+    set.loadRpm = 4200;
+    ui::update(d, ls, ps, si, tc += 100);
+    CHECK(gfx::dirtyCount() > 0 && sameK(tc), "データ画面: 過負荷 回転数が変わったら ▲ の行を描き直す");
+    set.loadRpm = SET_LOADRPM_DEFAULT;
+    ui::update(d, ls, ps, si, tc += 100);
+    ui::testShow(ui::SC_DRIVE);
+    gfx::dirtyClear();
+  }
+
+  // ---------------- 33. 2.12.0(同じ版で): 過負荷 回転数とメンテナンスまでの累積時間(本人 10/28「過負荷は短期的な上昇によりクールダウンが
+  //                  必要になるという考え方と、それの累積によりメンテナンスの期間を推測する」「メンテナンス時間を含み実装してください」)
+  {
+    Signals d;
+    memset(&d, 0, sizeof(d));
+    d.linkUp = d.rpmOk = true;
+    d.rpm = 3500;
+    uint32_t tm = 440000000;
+    static uint16_t fbM[gfx::W * gfx::H], fbR[gfx::W * gfx::H];
+    auto sameM = [&](const Signals &sg, uint32_t at) {  // 少しずつ描いた絵 = 同じ時刻に最初から描いた絵
+      memcpy(fbM, fb, sizeof(fbM));
+      ui::testRedraw();
+      ui::update(sg, ls, ps, si, at);
+      gfx::dirtyClear();
+      return memcmp(fbM, fb, sizeof(fbM)) == 0;
+    };
+    auto countIn = [&](int x0, int y0, int x1, int y1, uint16_t col) {
+      int n = 0;
+      for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) n += fb[y * gfx::W + x] == col;
+      return n;
+    };
+    auto diffIn = [&](int x0, int y0, int x1, int y1) {  // fbR との違い
+      int n = 0;
+      for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) n += fb[y * gfx::W + x] != fbR[y * gfx::W + x];
+      return n;
+    };
+    const uint16_t RED = gfx::rgb(0xE3241B);
+    const uint32_t miss0 = gfx::missingGlyphs();
+    settingsDefaults(&set);
+    CHECK(set.loadRpm == 3000 && set.maintHours == 5, "初期値: 過負荷 回転数 3000(今までと同じ)、メンテナンスまでの累積時間 5 時間(本人「時間は５時間」)");
+    // 過負荷時間は過負荷 回転数以上で増える
+    load::testReset();
+    set.loadRpm = 4000;
+    load::update(d, set, tm);
+    load::update(d, set, tm + 400);
+    const uint32_t v1 = load::valueMs();
+    d.rpm = 4000;
+    load::update(d, set, tm + 800);
+    CHECK(v1 == 0 && load::valueMs() == 400, "過負荷時間: 過負荷 回転数 4000 なら 3500 では増えず、4000 以上で増える");
+    load::testReset();
+    // サーキットの ▼ の見出しは過負荷 回転数(変わったら描き直す)
+    Signals n = d;
+    n.gearOk = true;
+    n.rpm = 850;
+    n.gear = '1';
+    set.loadYellowMin = 0; set.loadRedMin = 0;  // 過負荷時間の機能を切: 大きい ▼ と経過時間
+    ui::testPeakReset();
+    ui::testShow(ui::SC_DRIVE);
+    ui::update(n, ls, ps, si, tm - 1000);
+    n.gear = 'N';
+    ui::update(n, ls, ps, si, tm);
+    ui::update(n, ls, ps, si, tm + IDLE_SHOW_AFTER_N_MS + 1000);
+    gfx::dirtyClear();
+    memcpy(fbR, fb, sizeof(fbR));
+    set.loadRpm = 4500;
+    ui::update(n, ls, ps, si, tm + IDLE_SHOW_AFTER_N_MS + 1000);
+    CHECK(ui::testCenter() == 2 && gfx::dirtyCount() > 0 && diffIn(150, 160, 316, 210) > 20 && sameM(n, tm + IDLE_SHOW_AFTER_N_MS + 1000),
+          "サーキット: 過負荷 回転数を変えたら ▼ の数字を描き直す(= 最初から描いた絵)");
+    settingsDefaults(&set);
+    ui::update(n, ls, ps, si, tm + IDLE_SHOW_AFTER_N_MS + 2000);
+    gfx::dirtyClear();
+    // データ画面の下の行: メンテナンスが入ならメンテナンスまでの残り(▼ はやめる)。達したら赤の「メンテナンス」。切なら今までどおり ▼
+    ui::testShow(ui::SC_DATA);
+    set.maintHours = 0;
+    trip::setTimes(5000, 7000);
+    ui::update(d, ls, ps, si, tm += 100);
+    ui::update(d, ls, ps, si, tm += 100);
+    gfx::dirtyClear();
+    memcpy(fbR, fb, sizeof(fbR));
+    trip::setTimes(5000, 9000);
+    ui::update(d, ls, ps, si, tm += 100);
+    const bool offBelow = diffIn(40, 330, 426, 386) > 20;
+    CHECK(offBelow && sameM(d, tm), "データ画面: メンテナンスが切なら下の行は ▼(以下の時間が変わったら描き直す)");
+    set.maintHours = 5;
+    ui::update(d, ls, ps, si, tm += 100);
+    memcpy(fbR, fb, sizeof(fbR));
+    CHECK(gfx::dirtyCount() > 0 && countIn(40, 330, 426, 386, RED) == 0 && sameM(d, tm), "データ画面: メンテナンスを入にしたら下の行を描き直す(残り。赤ではない)");
+    trip::setTimes(5000, 20000);
+    ui::update(d, ls, ps, si, tm += 100);
+    CHECK(gfx::dirtyCount() == 0 && diffIn(0, 0, gfx::W, gfx::H) == 0, "データ画面: メンテナンスが入なら以下の時間が変わっても描き直さない(▼ を出していない)");
+    trip::setTimes(6000, 20000);
+    ui::update(d, ls, ps, si, tm += 100);
+    CHECK(gfx::dirtyCount() > 0 && diffIn(40, 330, 426, 386) > 20 && sameM(d, tm), "データ画面: 累積時間が増えたら残りが減る(下の行を描き直す)");
+    trip::setTimes(5u * 3600000u - 1000u, 0);
+    ui::update(d, ls, ps, si, tm += 100);
+    CHECK(countIn(40, 330, 426, 386, RED) == 0 && sameM(d, tm), "データ画面: 残り 1 秒(0:01)はまだ赤ではない");
+    trip::setTimes(5u * 3600000u, 0);
+    ui::update(d, ls, ps, si, tm += 100);
+    CHECK(countIn(40, 330, 426, 386, RED) > 300 && sameM(d, tm), "データ画面: 累積時間が 5 時間に達したら赤の「メンテナンス」");
+    set.maintHours = 6;
+    ui::update(d, ls, ps, si, tm += 100);
+    CHECK(countIn(40, 330, 426, 386, RED) == 0 && sameM(d, tm), "データ画面: メンテナンスの時間を延ばしたら残り(1:00:00)に戻る");
+    set.maintHours = 5;
+    ui::update(d, ls, ps, si, tm += 100);
+    gfx::dirtyClear();
+    // 設定の段: 水温・過負荷のカテゴリは、達していたら中の主な値が赤の「メンテナンス」
+    ui::testShow(ui::SC_SET_LIST, 2);
+    ui::testTouch(tm);
+    ui::update(d, ls, ps, si, tm += 100);
+    CHECK(countIn(40, 236, 426, 300, RED) > 300 && sameM(d, tm), "設定の段: 水温・過負荷はメンテナンスに達したら赤の「メンテナンス」");
+    // 累積時間 リセットの項目: 下の行はデータ画面と同じ
+    ui::testShow(ui::SC_SET_CAT, 11);
+    ui::testTouch(tm);
+    ui::update(d, ls, ps, si, tm += 100);
+    CHECK(countIn(40, 270, 426, 320, RED) > 200 && sameM(d, tm), "累積時間 リセットの項目: 達していたら下の行は赤の「メンテナンス」");
+    trip::setTimes(5000, 7000);
+    ui::update(d, ls, ps, si, tm += 100);
+    CHECK(countIn(40, 270, 426, 320, RED) == 0 && sameM(d, tm), "累積時間 リセットの項目: 達していなければ残り");
+    set.maintHours = 0;
+    ui::update(d, ls, ps, si, tm += 100);
+    CHECK(gfx::dirtyCount() > 0 && sameM(d, tm), "累積時間 リセットの項目: メンテナンスを切にしたら ▼ に描き直す");
+    set.maintHours = 5;
+    ui::testShow(ui::SC_SET_LIST, 2);
+    ui::testTouch(tm);
+    ui::update(d, ls, ps, si, tm += 100);
+    CHECK(countIn(40, 236, 426, 300, RED) == 0 && sameM(d, tm), "設定の段: 達していなければ水温・過負荷の中の主な値は今までどおり");
+    // 累積時間 リセットの変更の画面: 0:00:00 から。値を変えた絵 = 最初から描いた絵。時間で戻ったら入れた値は捨てる(リセットしない)
+    trip::setTimes(5026000, 7000);
+    {
+      const int ts0 = g_hostTimeSaves;
+      ui::testShow(ui::SC_SET_EDIT, 11);
+      ui::testTouch(tm);
+      ui::update(d, ls, ps, si, tm += 100);
+      CHECK(ui::screen() == ui::SC_SET_EDIT && sameM(d, tm), "累積時間 リセットの変更の画面(0:00:00)= 最初から描いた絵");
+      ui::tap(366, 233, tm += 100);
+      ui::update(d, ls, ps, si, tm += 100);
+      CHECK(ui::screen() == ui::SC_SET_EDIT && sameM(d, tm), "累積時間 リセットの変更の画面: + で 0:30:00 にした絵 = 最初から描いた絵");
+      ui::update(d, ls, ps, si, tm + (uint32_t)set.autoReturnMin * 60000u + 1000);
+      tm += (uint32_t)set.autoReturnMin * 60000u + 1000;
+      CHECK(ui::screen() != ui::SC_SET_EDIT && trip::aboveMs() == 5026000 && trip::belowMs() == 7000 && g_hostTimeSaves == ts0,
+            "累積時間 リセット: 時間で戻ったら入れた値は捨てる(「リセット」を押していない)");
+    }
+    CHECK(gfx::missingGlyphs() == miss0, "「メンテまで」「メンテナンス」「過負荷 回転数」「メンテナンスまでの累積時間」「リセット」「分ずつ」の字はどれもある");
+    trip::resetTimes();
+    settingsDefaults(&set);
+    ui::testShow(ui::SC_DRIVE);
+    ui::update(d, ls, ps, si, tm += 100);
+    gfx::dirtyClear();
+  }
+
+  // ---------------- 34. 2.12.0(同じ版で): メンテナンスの印をサーキット・タコにも(本人 10/28「メンテナンスの表示は全ての画面で表示してください」)。
+  //                  サーキットは真ん中の下に「メンテナンス」(「SIM」は上の場面番号の所へ)、タコは水温・燃料の札の次の段に札(点滅しない)
+  {
+    Signals d;
+    memset(&d, 0, sizeof(d));
+    d.linkUp = d.rpmOk = d.waterOk = d.fuelOk = true;
+    d.rpm = 2500;
+    d.waterC = 90;
+    d.fuelPct = 60;
+    uint32_t tq = 460000000;
+    static uint16_t fbQ[gfx::W * gfx::H];
+    auto sameQ = [&](const Signals &sg, uint32_t at) {  // 少しずつ描いた絵 = 同じ時刻に最初から描いた絵
+      memcpy(fbQ, fb, sizeof(fbQ));
+      ui::testRedraw();
+      ui::update(sg, ls, ps, si, at);
+      gfx::dirtyClear();
+      return memcmp(fbQ, fb, sizeof(fbQ)) == 0;
+    };
+    auto countIn = [&](int x0, int y0, int x1, int y1, uint16_t col) {
+      int n = 0;
+      for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) n += fb[y * gfx::W + x] == col;
+      return n;
+    };
+    const uint16_t RED = gfx::rgb(0xE3241B), WHITE = gfx::rgb(0xFFFFFF);
+    const uint32_t miss0 = gfx::missingGlyphs();
+    settingsDefaults(&set);
+    load::testReset();
+    ui::testPeakReset();
+    trip::setTimes(0, 0);
+    ui::testShow(ui::SC_DRIVE);
+    ui::update(d, ls, ps, si, tq += 100);
+    ui::update(d, ls, ps, si, tq += 100);
+    gfx::dirtyClear();
+    CHECK(countIn(170, 294, 296, 318, RED) == 0, "サーキット: メンテナンスに達していなければ印なし");
+    trip::setTimes(5u * 3600000u, 0);
+    ui::update(d, ls, ps, si, tq += 100);
+    CHECK(gfx::dirtyCount() > 0 && countIn(170, 294, 296, 318, RED) > 80 && sameQ(d, tq), "サーキット: 達したら真ん中の下に赤の「メンテナンス」(= 最初から描いた絵)");
+    Signals f = d;
+    f.fuelPct = 5;
+    ui::update(f, ls, ps, si, tq += 100);
+    CHECK(countIn(170, 294, 296, 318, WHITE) > 80 && sameQ(f, tq), "サーキット: 燃料の警告の赤の上では白");
+    ui::update(f, ls, ps, si, tq += ALARM_BLINK_HALF_MS);
+    CHECK(countIn(170, 294, 296, 318, WHITE) > 80 && sameQ(f, tq), "サーキット: 燃料の警告の点滅の消灯側でも白");
+    Signals m = d;
+    m.sim = true;
+    m.scene = 7;
+    ui::update(m, ls, ps, si, tq += 100);
+    CHECK(countIn(170, 294, 296, 318, RED) > 80 && sameQ(m, tq), "サーキット(デモ): 「SIM 7」は上、「メンテナンス」は下");
+    trip::setTimes(0, 0);
+    ui::update(d, ls, ps, si, tq += 100);
+    CHECK(countIn(170, 294, 296, 318, RED) == 0 && sameQ(d, tq), "サーキット: 累積時間をリセットしたら印を消す");
+    // タコ: 札の段(水温・燃料の札の次)
+    trip::setTimes(5u * 3600000u, 0);
+    ui::testShow(ui::SC_BOOST);
+    ui::update(d, ls, ps, si, tq += 100);
+    ui::update(d, ls, ps, si, tq += 100);
+    CHECK(countIn(AN_BADGE_X, AN_BADGE_Y, AN_BADGE_X + AN_BADGE_W, AN_BADGE_Y + AN_BADGE_H, RED) > 3000 && sameQ(d, tq),
+          "タコ: 達したら札の 1 段目に赤の「メンテナンス」(= 最初から描いた絵)");
+    ui::update(d, ls, ps, si, tq += ALARM_BLINK_HALF_MS);
+    CHECK(gfx::dirtyCount() == 0, "タコ: メンテナンスの札は点滅しない");
+    Signals w = d;
+    w.waterC = 112;
+    ui::update(w, ls, ps, si, tq += 100);
+    CHECK(countIn(AN_BADGE_X, AN_BADGE_Y + AN_BADGE_PITCH, AN_BADGE_X + AN_BADGE_W, AN_BADGE_Y + AN_BADGE_PITCH + AN_BADGE_H, RED) > 3000 && sameQ(w, tq),
+          "タコ: 水温の札があれば、メンテナンスはその下の段");
+    Signals b2 = w;
+    b2.fuelPct = 5;
+    ui::update(b2, ls, ps, si, tq += 100);
+    CHECK(sameQ(b2, tq), "タコ: 水温・燃料の札が 2 段なら、メンテナンスの札は出さない(= 最初から描いた絵)");
+    trip::setTimes(0, 0);
+    ui::update(b2, ls, ps, si, tq += 100);
+    CHECK(sameQ(b2, tq), "タコ: 累積時間をリセットしても水温・燃料の札はそのまま(= 最初から描いた絵)");
+    CHECK(gfx::missingGlyphs() == miss0, "「メンテナンス」(18 px)の字がある");
+    trip::resetTimes();
+    settingsDefaults(&set);
+    ui::testShow(ui::SC_DRIVE);
+    ui::update(d, ls, ps, si, tq += 100);
+    gfx::dirtyClear();
+  }
+
+  // ---------------- 35. 2.12.0(同じ版で): サーキットのクールダウン(本人 10/28「タイトルは今何をしているのかを表示しているので、これをしろという
+  //                  タイトルはわかりにくく」「黄色以上の過負荷累積がある場合…クールダウンという表示にリセット時間までのカウントダウンが
+  //                  はじまる」「カウントダウンの表示は回転数が落ちて１分以上過負荷にならなければ」「減らして大丈夫です」)
+  {
+    Signals d;
+    memset(&d, 0, sizeof(d));
+    d.linkUp = d.rpmOk = d.gearOk = true;
+    d.rpm = 2000;
+    d.gear = 'N';
+    uint32_t tc = 480000000;
+    static uint16_t fbC[gfx::W * gfx::H];
+    auto sameC = [&](const Signals &sg, uint32_t at) {  // 少しずつ描いた絵 = 同じ時刻に最初から描いた絵
+      memcpy(fbC, fb, sizeof(fbC));
+      ui::testRedraw();
+      ui::update(sg, ls, ps, si, at);
+      gfx::dirtyClear();
+      return memcmp(fbC, fb, sizeof(fbC)) == 0;
+    };
+    auto step = [&](const Signals &sg, uint32_t ms) {  // 基板と同じく update のたびに過負荷時間も進める
+      for (uint32_t k = 0; k < ms; k += 100) {
+        tc += 100;
+        load::update(sg, set, tc);
+        ui::update(sg, ls, ps, si, tc);
+      }
+      gfx::dirtyClear();
+    };
+    auto countIn = [&](int x0, int y0, int x1, int y1, uint16_t col) {
+      int n = 0;
+      for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) n += fb[y * gfx::W + x] == col;
+      return n;
+    };
+    auto nonBlack = [&](int x0, int y0, int x1, int y1) {
+      int n = 0;
+      for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) n += fb[y * gfx::W + x] != 0;
+      return n;
+    };
+    const uint16_t ACC = gfx::rgb(0x5FD0FF);
+    settingsDefaults(&set);
+    trip::resetTimes();
+    load::testReset();
+    ui::testPeakReset();
+    ui::testShow(ui::SC_DRIVE);
+    load::testSet(10 * 60000, true);  // 黄(10:00)に達した所で 3000 rpm 未満(N)
+    load::update(d, set, tc);
+    ui::update(d, ls, ps, si, tc);
+    step(d, 59000);
+    CHECK(ui::testCenter() == 1 && !load::coolDown(tc) && countIn(140, 180, 326, 262, ACC) == 0, "クールダウン: 3000 rpm 未満が 1 分たつまでは「過負荷」");
+    step(d, 1000);
+    CHECK(ui::testCenter() == 1 && load::coolDown(tc) && countIn(140, 180, 326, 262, ACC) > 300 && sameC(d, tc),
+          "クールダウン: 1 分で「クールダウン」(水色)。時間の所はリセットまでの残り 4:00(= 最初から描いた絵)");
+    CHECK(nonBlack(150, 272, 316, 294) == 0, "クールダウン: ▼ 3000rpm の行は出さない(N が 1 分続いていても)");
+    step(d, 1000);
+    CHECK(load::coolLeftMs(set, tc) == 239000 && sameC(d, tc), "クールダウン: 残り 3:59 に描き直す(= 最初から描いた絵)");
+    Signals up = d;
+    up.rpm = 3000;
+    up.gear = '3';
+    step(up, 1000);
+    CHECK(!load::coolDown(tc) && countIn(140, 180, 326, 262, ACC) == 0 && sameC(up, tc), "クールダウン: 3000 rpm 以上で「過負荷」に戻る(= 最初から描いた絵)");
+    step(d, 60100);  // 最初の回で 3000 rpm 未満になった所から 1:00
+    CHECK(load::coolDown(tc) && sameC(d, tc), "クールダウン: また 1 分で「クールダウン」");
+    step(d, 240000);
+    CHECK(load::valueMs() == 0 && ui::testCenter() != 1 && sameC(d, tc), "クールダウン: 残りが 0 になったら過負荷時間を 0 にして消す(= 最初から描いた絵)");
+    load::testReset();
+    settingsDefaults(&set);
+    ui::update(d, ls, ps, si, tc += 100);
+    gfx::dirtyClear();
   }
 
   printf("単体試験: %d 個 OK、%d 個 NG、無かった文字 %u\n", passes, fails, (unsigned)gfx::missingGlyphs());

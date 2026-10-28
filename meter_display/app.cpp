@@ -882,7 +882,7 @@ static bool g_started = false;
 static uint32_t g_moving = 0, g_wot = 0;
 static uint32_t g_above = 0, g_below = 0;
 
-void update(const Signals &s, uint32_t nowMs) {
+void update(const Signals &s, uint32_t nowMs, int rpm) {
   uint32_t dt = g_started ? (uint32_t)(nowMs - g_lastMs) : 0;
   g_started = true;
   g_lastMs = nowMs;
@@ -892,7 +892,7 @@ void update(const Signals &s, uint32_t nowMs) {
     if (s.throttleOk && s.throttlePct >= WOT_THROTTLE_PCT) g_wot += dt;
   }
   if (s.rpmOk) {  // 停止・走行に関係なく数える
-    if (s.rpm > TIME_RPM) g_above += dt;
+    if (s.rpm >= rpm) g_above += dt;  // 2.12.0: 過負荷時間が増える所とそろえた(2.11.0 までは「超える」)
     else g_below += dt;
   }
 }
@@ -929,8 +929,10 @@ void settingsDefaults(Settings *s) {
   s->illumPct = SET_ILLUM_DEFAULT;
   s->loadYellowMin = SET_LOADY_DEFAULT;
   s->loadRedMin = SET_LOADR_DEFAULT;
-  s->coolMin = SET_LOADC_DEFAULT;
   s->loadResetMin = SET_LOADRS_DEFAULT;
+  s->ringOne = SET_RING_DEFAULT;
+  s->loadRpm = SET_LOADRPM_DEFAULT;
+  s->maintHours = SET_MAINT_DEFAULT;
 }
 
 // ================================================================ load(高負荷時間。2.10.0。説明は app.h)
@@ -939,11 +941,11 @@ namespace load {
 static uint32_t g_value = 0;       // 今の値 [ms]
 static uint32_t g_lastMs = 0;      // 前に update を呼んだ時刻
 static bool g_started = false;
-static uint32_t g_lowSince = 0;    // 回転数が LOAD_RPM 以下になった時刻(0 = 今は超えている・信号なし)
-static bool g_cool = false;        // タイトルを「クールダウン」にしている
+static uint32_t g_lowSince = 0;    // 回転数が過負荷 回転数未満になった時刻(0 = 今は以上・信号なし)
+static bool g_hot = false;         // リセットのあとに一度でも黄(黄が切なら赤)になった(2.12.0。クールダウンを出す条件)
 static bool g_haveSaved = false;   // restore で保存した値を受けた
 static uint32_t g_savedUtc = 0;    // 前の起動で最後に書いた時刻(0 = 分からなかった)
-static uint32_t g_savedLow = 0;    // そのときの LOAD_RPM 以下の経過 [ms]
+static uint32_t g_savedLow = 0;    // そのときの過負荷 回転数未満の経過 [ms]
 static bool g_timeDone = false;    // 起動してから時刻を受けた(電源が切れていた時間を引くのは 1 回だけ)
 
 static uint32_t minMs(int m) {
@@ -952,9 +954,9 @@ static uint32_t minMs(int m) {
 bool enabled(const Settings &set) {
   return set.loadYellowMin > 0 || set.loadRedMin > 0;
 }
-static void coolTrack(const Settings &set) {
-  if (g_value == 0) g_cool = false;
-  else if (set.coolMin > 0 && g_value >= minMs(set.coolMin)) g_cool = true;
+static void hotTrack(const Settings &set) {  // 2.12.0: 黄(黄が切なら赤)になったら覚え、0 になったら忘れる
+  if (g_value == 0) g_hot = false;
+  else if (level(set) >= 1) g_hot = true;
 }
 
 void update(const Signals &s, const Settings &set, uint32_t nowMs) {
@@ -962,22 +964,23 @@ void update(const Signals &s, const Settings &set, uint32_t nowMs) {
   g_started = true;
   g_lastMs = nowMs;
   if (dt > 500) dt = 500;  // 画面の切り替えなどで間が空いても、数えすぎない(trip と同じ)
-  // LOAD_RPM 以下が続いている時間(リセットの数え。▼ 3000rpm の経過時間と同じ数え方。信号なしは 0 から)
-  if (s.rpmOk && s.rpm <= LOAD_RPM) {
+  // 過負荷 回転数未満が続いている時間(リセットの数え。▼ 3000rpm の経過時間と同じ数え方。信号なしは 0 から)。2.12.0: 設定の過負荷 回転数。
+  // 境目は過負荷時間が増える所(以上)とそろえた(2.11.0 までは「以下」で、ちょうどのときは増えながらリセットも数えていた)
+  if (s.rpmOk && s.rpm < set.loadRpm) {
     if (!g_lowSince) g_lowSince = nowMs ? nowMs : 1;
   } else {
     g_lowSince = 0;
   }
   if (!enabled(set)) {  // 機能が切: 数えず 0
     g_value = 0;
-    g_cool = false;
+    g_hot = false;
     return;
   }
   if (!s.rpmOk) return;  // 信号がない間は変わらない
-  if (s.rpm >= LOAD_RPM) g_value = g_value + dt > LOAD_MAX_MS ? LOAD_MAX_MS : g_value + dt;
+  if (s.rpm >= set.loadRpm) g_value = g_value + dt > LOAD_MAX_MS ? LOAD_MAX_MS : g_value + dt;
   else g_value = g_value > dt ? g_value - dt : 0;
   if (g_lowSince && (uint32_t)(nowMs - g_lowSince) >= minMs(set.loadResetMin)) g_value = 0;  // リセット
-  coolTrack(set);
+  hotTrack(set);
 }
 uint32_t valueMs() {
   return g_value;
@@ -988,8 +991,12 @@ uint8_t level(const Settings &set) {
   if (set.loadYellowMin > 0 && g_value >= minMs(set.loadYellowMin)) return 1;
   return 0;
 }
-bool coolDown() {
-  return g_cool;
+bool coolDown(uint32_t nowMs) {
+  return g_hot && g_value > 0 && lowMs(nowMs) >= LOAD_COOL_SHOW_MS;
+}
+uint32_t coolLeftMs(const Settings &set, uint32_t nowMs) {
+  const uint32_t r = minMs(set.loadResetMin), l = lowMs(nowMs);
+  return l >= r ? 0 : r - l;
 }
 uint32_t lowMs(uint32_t nowMs) {
   return g_lowSince ? (uint32_t)(nowMs - g_lowSince) : 0;
@@ -1010,19 +1017,23 @@ void onTime(uint32_t utc, const Settings &set, uint32_t nowMs) {
   const int64_t offS = boot - (int64_t)g_savedUtc;
   if (offS <= 0) return;  // 差が負: 引かない
   const uint64_t offMs = (uint64_t)offS * 1000ULL;
-  if ((uint64_t)g_savedLow + offMs >= (uint64_t)minMs(set.loadResetMin)) g_value = 0;  // 切る前の LOAD_RPM 以下 + 切れていた時間でリセット
+  if ((uint64_t)g_savedLow + offMs >= (uint64_t)minMs(set.loadResetMin)) g_value = 0;  // 切る前の過負荷 回転数以下 + 切れていた時間でリセット
   else g_value = (uint64_t)g_value > offMs ? g_value - (uint32_t)offMs : 0;
-  coolTrack(set);
+  hotTrack(set);
 }
-void testSet(uint32_t valueMs, bool coolDown) {
+void capMs(uint32_t ms) {
+  if (g_value > ms) g_value = ms;
+  if (g_value == 0) g_hot = false;
+}
+void testSet(uint32_t valueMs, bool hot) {
   g_value = valueMs > LOAD_MAX_MS ? LOAD_MAX_MS : valueMs;
-  g_cool = coolDown && g_value > 0;
+  g_hot = hot && g_value > 0;
   g_lowSince = 0;
   g_started = false;
 }
 void testReset() {
   g_value = 0;
-  g_cool = false;
+  g_hot = false;
   g_lowSince = 0;
   g_started = false;
   g_haveSaved = false;

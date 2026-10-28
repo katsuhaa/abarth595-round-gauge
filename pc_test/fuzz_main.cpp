@@ -146,7 +146,7 @@ int main(int argc, char **argv) {
       }
       if (cur == ui::SC_SET_LIST && chance(10)) {  // 中の画面はタップの並びが長くて滅多に届かないので、たまに直接出す
         static const ui::Screen deep[] = { ui::SC_SET_GRP, ui::SC_SET_INFO, ui::SC_CAN, ui::SC_CAN_ID, ui::SC_SET_RESET, ui::SC_CAN_REDO, ui::SC_SET_EDIT, ui::SC_CAN_DETAIL,
-                                           ui::SC_CAN_PP };  // 2.6.0: 前後で比べる
+                                           ui::SC_CAN_PP, ui::SC_SET_CAT };  // 2.6.0: 前後で比べる。2.12.0: カテゴリの中
         cur = deep[rndN(sizeof(deep) / sizeof(deep[0]))];
         // 2.4.0: 設定 8 項目、受信の状態 4 グループ、グループの中は 2〜6 ページ(多すぎるページの番号も試す)。
         // 2.9.0: 設定 9 項目(イルミネーションの明るさ)、CAN は 9 ページ(ライト)
@@ -157,8 +157,9 @@ int main(int argc, char **argv) {
           const int pp = (int)rndN(2);
           ui::testShow(cur, cur == ui::SC_CAN_REDO ? pp : 0, cur == ui::SC_CAN_ID ? pp : 0);
         } else {
-          // 2.10.0: 設定 14 項目(高負荷時間の 4 項目とデフォルトに戻す)。リセットの確認は 3 種類(時間の記録・向きの補正・デフォルトに戻す)
-          ui::testShow(cur, cur == ui::SC_SET_EDIT ? (int)rndN(15) : (cur == ui::SC_SET_INFO ? (int)rndN(5) : (cur == ui::SC_SET_GRP ? (int)rndN(10) : (cur == ui::SC_SET_RESET ? (int)rndN(3) : 0))),
+          // 2.12.0: 設定の項目 17(ITEMS。カテゴリの中・変更は範囲外の番号も試す。累積時間 リセットは変更の画面)。リセットの確認は向きの補正・
+          // デフォルトに戻す
+          ui::testShow(cur, (cur == ui::SC_SET_EDIT || cur == ui::SC_SET_CAT) ? (int)rndN(19) : (cur == ui::SC_SET_INFO ? (int)rndN(5) : (cur == ui::SC_SET_GRP ? (int)rndN(10) : (cur == ui::SC_SET_RESET ? (int)rndN(3) : 0))),
                        cur == ui::SC_SET_EDIT ? (int)rndN(2) : (cur == ui::SC_SET_GRP ? (int)rndN(6) : 0));
         }
       }
@@ -203,16 +204,24 @@ int main(int argc, char **argv) {
       Signals s;
       mlink::getSignals(&s, now);
       mlink::getStats(&ls);
-      trip::update(s, now);
+      // 2.12.0: 累積時間(ときどき値を決める。メンテナンスの時間の前後・達したあとも)
+      if (chance(3)) {
+        const uint32_t near = (uint32_t)set.maintHours * 3600000u + rndN(4000) * 1000u;  // メンテナンスの時間の −2000 秒〜+2000 秒
+        trip::setTimes(chance(500) ? rndN(400) * 1000u : (near >= 2000000u ? near - 2000000u : near), rndN(400000) * 1000u);
+      }
+      trip::update(s, now, set.loadRpm);
       // 2.10.0: 高負荷時間(ときどき値・設定を決める)と時計(GPS の時刻。分からない間・飛ぶことも)
       if (chance(2)) load::testSet(rndN(40000) * 1000, chance(500));
       if (chance(2)) load::testReset();
       if (chance(3)) {
         set.loadYellowMin = chance(200) ? 0 : (int)rndN(19) * SET_LOAD_STEP;
         set.loadRedMin = chance(200) ? 0 : (int)rndN(19) * SET_LOAD_STEP;
-        set.coolMin = chance(200) ? 0 : (int)rndN(19) * SET_LOAD_STEP;
         set.loadResetMin = SET_LOADRS_MIN + (int)rndN(SET_LOADRS_MAX);
       }
+      if (chance(3)) set.ringOne = chance(500);  // 2.12.0: 回転数の輪(両側・片側)。走行画面のまま変わっても全部を描き直す
+      // 2.12.0: 過負荷 回転数(サーキットの ▼ の数字。走行画面のまま変わっても全部を描き直す)とメンテナンスまでの累積時間(0 = 切)
+      if (chance(3)) set.loadRpm = SET_LOADRPM_MIN + SET_LOADRPM_STEP * (int)rndN((SET_LOADRPM_MAX - SET_LOADRPM_MIN) / SET_LOADRPM_STEP + 1);
+      if (chance(3)) set.maintHours = chance(300) ? 0 : (chance(500) ? 1 + (int)rndN(3) : (int)rndN(SET_MAINT_MAX + 1));
       load::update(s, set, now);
       if (chance(5)) si.timeOk = chance(800);
       if (chance(5)) si.timeDemo = chance(300);  // 2.11.0: デモの時刻(高負荷時間は「時刻 待ち」のまま)
@@ -304,7 +313,7 @@ int main(int argc, char **argv) {
   mlink::getStats(&ls);
   printf("乱数試験: %u 回 × %u 歩  画面の更新 %llu 回  タップ %llu 回\n", runs, steps, (unsigned long long)updates, (unsigned long long)taps);
   static const char *const NM[] = { "サーキット", "タコ", "データ", "CAN", "CAN詳細", "設定", "変更", "受信の状態", "グループの中", "オープニング", "CAN一覧", "CANやり直す", "時間リセット",
-                                    "前後で比べる" };
+                                    "前後で比べる", "カテゴリの中" };
   printf("  画面ごとの更新回数 / 照合回数:");
   for (int k = 0; k < (int)(sizeof(NM) / sizeof(NM[0])); k++) printf(" %s %llu/%llu", NM[k], (unsigned long long)seenScreen[k], (unsigned long long)cmpByScreen[k]);
   printf("\n  最初から描いたものとの照合 %llu 回、不一致 %llu 回\n", (unsigned long long)compares, (unsigned long long)mismatches);
