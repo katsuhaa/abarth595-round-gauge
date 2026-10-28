@@ -991,6 +991,9 @@ uint8_t level(const Settings &set) {
   if (set.loadYellowMin > 0 && g_value >= minMs(set.loadYellowMin)) return 1;
   return 0;
 }
+bool warned(const Settings &set) {  // 黄になったのを覚えるのは update(設定を変えた直後は、次の update の前でも色で分かる)
+  return g_value > 0 && (g_hot || level(set) >= 1);
+}
 bool coolDown(uint32_t nowMs) {
   return g_hot && g_value > 0 && lowMs(nowMs) >= LOAD_COOL_SHOW_MS;
 }

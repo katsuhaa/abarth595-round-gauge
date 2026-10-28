@@ -165,7 +165,7 @@ int main(int argc, char **argv) {
     shot("DriveStatusCanNg", sig(850, 'N', 92, 62), ui::SC_DRIVE);  // CAN も受けていない(起動から INFO_LINK_GRACE_MS 後)
     ls.locked = true; ls.infoValid = true;
     si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 12; si.rc.enabled = true; si.rc.imuOk = true; si.rc.bleOk = true; si.rc.connected = true;
-    load::testSet(200000, false);  // C4: 電源を入れた直後(時刻なし)・高負荷時間 3:20(白)
+    load::testSet(200000, true);  // 時刻なし・黄になったあと減った過負荷時間 3:20(白。2.12.1: 黄になる前の白は出さない)
     shot("DriveLoadWait", sig(1800, '2', 92, 62), ui::SC_DRIVE);
     si.timeOk = true;
     load::testSet(920000, false);  // C2: 5600 rpm・高負荷時間 15:20(黄)
@@ -189,7 +189,7 @@ int main(int argc, char **argv) {
     g_keepPeak = true;
     shot("DrivePeak2", sig(4200, '3', 92, 62), ui::SC_DRIVE);
     now += 10000;
-    peakUp(6100);  // 2.11.0: 印が下がり始めたら、真ん中の数字は白
+    peakUp(6100);  // 2.12.1: 印が下がり始めても、真ん中の数字は黄のまま(2.11.0〜2.12.0 は白)
     now += TACH_PEAK_HOLD_MS + 500;
     g_keepPeak = true;
     shot("DrivePeakFall", sig(4200, '3', 92, 62), ui::SC_DRIVE);
@@ -269,7 +269,7 @@ int main(int argc, char **argv) {
       now += 20000;
     }
     si.timeOk = false;
-    load::testSet(200000, false);
+    load::testSet(740000, false);  // C4: 電源を入れた直後(時刻なし)・過負荷時間 12:20(黄。2.12.1: 黄になる前の白は出さない)
     shot("CanvasC4", sig(850, '2', 96, 55), ui::SC_DRIVE);
     load::testReset();
     si.timeOk = true; si.utc = base + 2542;  // 11:24:40

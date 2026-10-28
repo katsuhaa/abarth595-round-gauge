@@ -292,6 +292,9 @@ void update(const Signals &s, const Settings &set, uint32_t nowMs);  // update �
 bool enabled(const Settings &set);    // 黄・赤のどちらかが 0 でない
 uint32_t valueMs();                   // 今の値 [ms]
 uint8_t level(const Settings &set);   // 色: 0 = 白、1 = 黄、2 = 赤
+// 2.12.1: 黄(黄が切なら赤)になってから 0 に戻るまで true(サーキットの真ん中に過負荷時間を出す条件。黄になる前は出さない。
+// 本人 10/29「過負荷回転数を超えたとき警告になっていないときに一瞬過負荷時間が表示されます」)。「黄になった」は電源を切ると忘れる
+bool warned(const Settings &set);
 bool coolDown(uint32_t nowMs);        // クールダウン(タイトルを「クールダウン」にして、リセットまでの残りを出す)
 uint32_t coolLeftMs(const Settings &set, uint32_t nowMs);  // リセットまでの残り [ms]
 uint32_t lowMs(uint32_t nowMs);       // 過負荷 回転数未満が続いている時間 [ms](0 = 続いていない)

@@ -3625,10 +3625,46 @@ int main() {
     ui::update(c, lc, ps, sc, tc += 100);
     CHECK(countCol(PY) > 300 && countCol(PW) < 20, "ピーク: 下がるとまた黄(新しい最高)");
     ui::update(c, lc, ps, sc, tc += TACH_PEAK_HOLD_MS + 200);
-    CHECK(ui::testCenter() == 0 && countCol(PY) < 20 && countCol(PW) > 300, "ピーク: 印が下がり始めたら白(数字は最高のまま)");
-    CHECK(same(c, tc), "ピーク(白)の絵 = 最初から描いた絵");
+    CHECK(ui::testCenter() == 0 && countCol(PY) > 300 && countCol(PW) < 20, "ピーク: 印が下がり始めても黄のまま(数字は最高のまま。2.12.1。2.12.0 までは白)");
+    CHECK(same(c, tc), "ピーク(黄・印が下がっている間)の絵 = 最初から描いた絵");
     ui::update(c, lc, ps, sc, tc += TACH_PEAK_SHOW_MS + 1000);
     CHECK(ui::testCenter() == 3 && !ui::testPeakDrawn(), "ピークの三角が消えたら接続の状態");
+    {  // 2.12.1(本人 10/29「ピークホールドの回転数が表示されたあとにも一瞬白でその回転数が表示されます」): ピークを過ぎたら、三角が消えるまで
+      // 黄のまま。背景が黒の回転数(5000 未満)で、シフトアップ(4800 → 3600 → 次のギアで上がる)と、アクセルを戻す(4900 → 2500)を見る
+      auto rev = [&](int from, int to, int step) {  // 50 ms ごとに step rpm ずつ上げる
+        for (int r = from; r <= to; r += step) {
+          c.rpm = r;
+          ui::update(c, lc, ps, sc, tc += 50);
+          gfx::dirtyClear();
+        }
+      };
+      ui::testPeakReset();
+      rev(3000, 4800, 100);
+      CHECK(ui::testCenter() == 0 && countCol(PW) > 300 && countCol(PY) < 20, "ピーク: 加速中は白(4800)");
+      bool white = false, gone = false;
+      for (int k = 0; k <= 40; k++) {  // シフトアップ: 3600 に落ちて、0.1 秒ごとに 25 rpm ずつ上がる(4 秒で 4600。前の最高 4800 より下)
+        c.rpm = 3600 + 25 * k;
+        ui::update(c, lc, ps, sc, tc += 100);
+        gfx::dirtyClear();
+        white = white || countCol(PW) > 300;
+        gone = gone || ui::testCenter() != 0;
+      }
+      CHECK(!white && !gone && countCol(PY) > 300, "ピーク: シフトアップのあと、次のギアで前の最高より下の間は黄のまま(印が下がり始めても白にしない)");
+      CHECK(same(c, tc), "ピーク(シフトアップのあとの黄)の絵 = 最初から描いた絵");
+      rev(4650, 4750, 50);
+      CHECK(countCol(PW) > 300 && countCol(PY) < 20, "ピーク: 前の最高の近く(PEAK_NUM_DROP_RPM 以内)まで上がったら白(加速中)");
+      rev(4800, 4900, 50);
+      CHECK(ui::testCenter() == 0 && countCol(PW) > 300 && countCol(PY) < 20, "ピーク: 前の最高を超えたら、今の回転数を白で");
+      white = gone = false;
+      for (int k = 0; k < 60; k++) {  // アクセルを戻す: 2500 のまま 6 秒
+        c.rpm = 2500;
+        ui::update(c, lc, ps, sc, tc += 100);
+        gfx::dirtyClear();
+        if (ui::testCenter() == 0) white = white || countCol(PW) > 300;
+        else gone = true;
+      }
+      CHECK(!white && gone, "ピーク: アクセルを戻したら、三角が消えるまで黄のまま(白にしない)");
+    }
     {  // 背景が黄色のときの加速中は紺(白では見にくい。デジタル時計と同じ)
       c.rpm = 3000;
       ui::update(c, lc, ps, sc, tc += 1000);
@@ -3643,16 +3679,20 @@ int main() {
       ui::update(c, lc, ps, sc, tc += 1000);
       CHECK(ui::testCenter() != 0, "ピークの記録を消したら、真ん中はピークではない");
     }
-    // 高負荷時間(GPS の時刻が分からない間は上に「時刻 待ち」)
+    // 過負荷時間(GPS の時刻が分からない間は上に「時刻 待ち」)。2.12.1: 黄になる前(白)は出さない(本人 10/29「過負荷回転数を超えたとき
+    // 警告になっていないときに一瞬過負荷時間が表示されます」)。黄になったあとは、減って白になっても 0 に戻るまで出す
     load::testSet(200000, false);
     sc.timeOk = false;
     ui::update(c, lc, ps, sc, tc += 1000);
-    CHECK(ui::testCenter() == 1, "高負荷時間が 0 でなければ高負荷時間");
+    CHECK(ui::testCenter() == 3 && !load::warned(set), "過負荷時間: 黄になる前(白の 3:20)は出さない(時刻が分からないので接続の状態)");
+    load::testSet(200000, true);
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(ui::testCenter() == 1 && load::warned(set), "過負荷時間: 黄になったあとは、減って白(3:20)になっても出す");
     CHECK(px(233, 233 - (int)LOAD_DISC_R + 8) == gfx::rgb(0x000000), "高負荷時間の黒い円(背景が黒なので見た目は同じ)");
     CHECK(same(c, tc), "高負荷時間(時刻 待ち)の絵 = 最初から描いた絵");
     sc.timeOk = true;
     for (int k = 0; k < 3; k++) {
-      load::testSet(200000 + 1000 * (uint32_t)k, false);
+      load::testSet(200000 + 1000 * (uint32_t)k, true);
       ui::update(c, lc, ps, sc, tc += 1000);
       gfx::dirtyClear();
     }
@@ -3686,6 +3726,44 @@ int main() {
     ui::update(c, lc, ps, sc, tc += 1000);
     CHECK(ui::testCenter() == 4, "高負荷時間が 0 になったらデジタル時計(接続の状態が変わってから STATUS_SHOW_MS たっている)");
     gfx::dirtyClear();
+    {  // 2.12.1: 過負荷 回転数を少し超えては下がる(黄になる前)。ピークの三角が消えてから次に出るまでの間も、過負荷時間は出さない
+      // (本人 10/29「過負荷回転数を超えたとき警告になっていないときに一瞬過負荷時間が表示されます」。2.12.0 までは、三角が消えて
+      // から過負荷時間が 1 秒を切るまでの間、白の「過負荷 0:01」が出ていた)
+      bool counted = false, shown = false;
+      for (int k = 0; k < 400; k++) {  // 0.1 秒ずつ 40 秒。10 秒ごとに 3 秒だけ 3400 rpm、ほかは 2600 rpm
+        c.rpm = k % 100 < 30 ? 3400 : 2600;
+        tc += 100;
+        load::update(c, set, tc);
+        ui::update(c, lc, ps, sc, tc);
+        gfx::dirtyClear();
+        counted = counted || load::valueMs() >= 2000;
+        shown = shown || ui::testCenter() == 1;
+      }
+      CHECK(counted && !shown, "過負荷時間: 黄になる前は、過負荷 回転数を超えて数えていても真ん中に出さない(ピークの三角の合間も)");
+      CHECK(same(c, tc), "過負荷時間を出さない間の絵 = 最初から描いた絵");
+      c.rpm = 3400;  // 黄(10:00)になったら出す
+      ui::testPeakReset();
+      load::testSet(10 * 60000 - 1000, false);
+      for (int k = 0; k <= 10; k++) {
+        load::update(c, set, tc += 100);
+        ui::update(c, lc, ps, sc, tc);
+        gfx::dirtyClear();
+      }
+      CHECK(load::level(set) == 1 && ui::testCenter() == 1, "過負荷時間: 黄(10:00)になったら出す");
+      c.rpm = 2600;
+      for (int k = 0; k < 20; k++) {
+        load::update(c, set, tc += 100);
+        ui::update(c, lc, ps, sc, tc);
+        gfx::dirtyClear();
+      }
+      CHECK(load::level(set) == 0 && ui::testCenter() == 1, "過負荷時間: 黄になったあとは、減って白(9:58)になっても出す");
+      CHECK(same(c, tc), "黄になったあとの白の過負荷時間の絵 = 最初から描いた絵");
+      load::testReset();
+      c.rpm = 850;
+      ui::update(c, lc, ps, sc, tc += 1000);
+      CHECK(ui::testCenter() == 4, "過負荷時間が 0 に戻ったら消す");
+      gfx::dirtyClear();
+    }
 
     // ---- 設定: 過負荷時間の 3 項目(2.12.0: 水温・過負荷の中の 3〜5 項目目。クールダウン時間はなくした)とデフォルトに戻す(その他の中の 2 項目目)
     Signals d;

@@ -549,7 +549,7 @@ static int peakTriKey(const Signals &s);
 static gfx::Rect ptsRect(const gfx::Pt *p, int n);
 static bool rectsOverlap(const gfx::Rect &a, const gfx::Rect &b);
 static void needlePoints(int key, float rIn, float rOut, float wIn, float wOut, gfx::Pt p[4]);
-static bool peakHolding(const Signals &s, uint32_t now);  // 2.11.0: ピークを過ぎて印が止まっている(真ん中の数字を黄にする)
+static bool peakHolding(const Signals &s);  // ピークを過ぎた(真ん中の数字を黄にする。2.11.0。2.12.1: 印が下がり始めても黄)
 static void fmtTime(char *out, size_t n, uint32_t ms);
 static void peakTriPoints(int key, bool right, gfx::Pt p[3]) {
   float a = key * 0.25f;
@@ -763,7 +763,7 @@ struct StatusLine {  // 接続の状態の 1 行
 struct Center {
   uint8_t mode;
   int peak;           // CM_PEAK: 回転数(10 rpm 単位)
-  bool peakHold;      // CM_PEAK: ピークを過ぎて印が止まっている(黄。2.11.0。加速中と下がっている間は白)
+  bool peakHold;      // CM_PEAK: ピークを過ぎた(黄。2.11.0。加速中は白。2.12.1: 印が下がり始めても黄)
   int clockMin;       // CM_CLOCK: 日本時間の 0 時からの分(2.11.0)
   uint32_t loadSec;   // CM_LOAD: 高負荷時間 [秒]
   uint8_t level;      // CM_LOAD: 0 白、1 黄、2 赤
@@ -851,8 +851,9 @@ static void centerMake(const Signals &s, const LinkStats &ls, const SysInfo &si,
     c->mode = CM_PEAK;
     c->peak = g_peakTop > 0 ? (int)lroundf(g_peakTop / 10.0f) * 10 : 0;
     if (c->peak > 9990) c->peak = 9990;  // 4 桁まで(行の四角に入る幅)
-    c->peakHold = peakHolding(s, now);
-  } else if (sec > 0) {
+    c->peakHold = peakHolding(s);
+  } else if (sec > 0 && load::warned(*g_set)) {  // 2.12.1: 黄になる前(白)は出さない(本人 10/29「過負荷回転数を超えたとき警告になっていないときに
+    // 一瞬過負荷時間が表示されます」。ピークの三角が消えてから次に出るまでの間に、白の過負荷時間が一瞬出ていた)
     c->mode = CM_LOAD;
     c->loadSec = sec;
     c->level = load::level(*g_set);
@@ -925,8 +926,9 @@ static void centerLine(const Center &c, int i) {
   const uint16_t bg = centerBg(c.mode);
   char t[16];
   if (c.mode == CM_PEAK) {
-    // 2.11.0: ピークを過ぎて印が止まっている間は黄(背景が黄色のときは紺)、加速中と下がっている間は白(本人「ホールドしているときに黄色　それ以外は白」
-    // 「ピークになったときだけ黄色に。加速中も白」)。白は背景が黄色のときは紺(fgOn。デジタル時計と同じ。白では見にくい)
+    // 2.11.0: ピークを過ぎたら黄(背景が黄色のときは紺)、加速中は白(本人「ホールドしているときに黄色　それ以外は白」
+    // 「ピークになったときだけ黄色に。加速中も白」)。白は背景が黄色のときは紺(fgOn。デジタル時計と同じ。白では見にくい)。
+    // 2.12.1: 印が下がり始めても黄のまま(peakHolding)
     const uint16_t pc = fadeOn(bg, c.peakHold ? peakColOn(bg) : fgOn(bg));
     snprintf(t, sizeof(t), "%d", c.peak);
     textC(PEAK_NUM_FONT, 233, PEAK_NUM_BASE, t, pc);
@@ -1393,12 +1395,13 @@ static void peakTrack(const Signals &s, uint32_t now) {
     g_peakTop = -1.0f;
   }
 }
-// 2.11.0: ピークを過ぎて印が止まっている(真ん中の数字と同じ最高の所で、最後に上がってから TACH_PEAK_HOLD_MS 以内)。下がり始めたら false。
-// 下がって今の回転数に追いつき、そこで止まっていても、数字(最高)とは違う所なので false。
-// 今の回転数が最高から PEAK_NUM_DROP_RPM 下がるまでは false(本人 10/28「ピークになったときだけ黄色に。加速中も白」。加速中は最高 = 今の回転数)
-static bool peakHolding(const Signals &s, uint32_t now) {
-  return g_peakTop > 0 && g_peakRpm >= g_peakTop && (uint32_t)(now - g_peakSetMs) <= TACH_PEAK_HOLD_MS && s.rpmOk &&
-         (float)s.rpm <= g_peakTop - (float)PEAK_NUM_DROP_RPM;
+// ピークを過ぎた: 今の回転数が真ん中の数字(最高)より PEAK_NUM_DROP_RPM 以上低い(本人 10/28「ピークになったときだけ黄色に。加速中も白」。
+// 加速中は最高 = 今の回転数なので false)。
+// 2.12.1(本人 10/29「ピークホールドの回転数が表示されたあとにも一瞬白でその回転数が表示されます」): 印が下がり始めても true のまま。
+// 2.12.0 までは印が止まっている間(TACH_PEAK_HOLD_MS)だけ true で、そのあと、印が PEAK_MIN_RPM を切って消えるまでと、シフトアップのあと
+// 次のギアで前の最高の近くまで上がるまでの間、前の最高が白で出ていた。白に戻るのは、今の回転数が最高の近くまで上がったとき(加速中)だけ
+static bool peakHolding(const Signals &s) {
+  return g_peakTop > 0 && s.rpmOk && (float)s.rpm <= g_peakTop - (float)PEAK_NUM_DROP_RPM;
 }
 // ピークホールドの印を出すか。2.4.0(本人の指示 10/24「回転数が高い状態では上がっても下がっても表示し続けて」): 回転数が上がっていても
 // 出す(2.2.0〜2.3.x は、下がっている間だけ出していた)。2.4.4: 回転が上がるのが終わってから TACH_PEAK_SHOW_MS の間(peakTrack)。
