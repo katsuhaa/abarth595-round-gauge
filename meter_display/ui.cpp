@@ -502,6 +502,7 @@ static int peakTriKey(const Signals &s);
 static gfx::Rect ptsRect(const gfx::Pt *p, int n);
 static bool rectsOverlap(const gfx::Rect &a, const gfx::Rect &b);
 static void needlePoints(int key, float rIn, float rOut, float wIn, float wOut, gfx::Pt p[4]);
+static bool peakHolding(const Signals &s, uint32_t now);  // 2.11.0: ピークを過ぎて印が止まっている(真ん中の数字を黄にする)
 static void fmtTime(char *out, size_t n, uint32_t ms);
 static void peakTriPoints(int key, bool right, gfx::Pt p[3]) {
   float a = key * 0.25f;
@@ -554,25 +555,25 @@ static uint16_t fadeOn(uint16_t bg, uint16_t c) {
 }
 static const int CLK_SQ0 = 233 - (int)CLK_CLIP_R, CLK_SQ1 = 233 + (int)CLK_CLIP_R + 1;  // 時計の内側を包む四角(58〜409)
 
-// ---- 目盛(12 本。3・6・9・12 時は長く太い。色はアイコンと同じ)
+// ---- 目盛(2.11.0: Apple Watch の並び。1 分ごとに 60 本、毎時の 12 本は長く太い。config.h の CLK_TICK_*)。
+// 暗い背景(黒・緑・赤)では毎時が白、ほかは白の半分の濃さ。明るい背景(黄)では黒と、黒の半分弱の濃さ
 static void drawClockTicks() {
-  const uint16_t c = fadeOn(g_bgCol, labelOn(g_bgCol));
-  for (int i = 0; i < 12; i++) {
-    const bool maj = i % 3 == 0;
-    const float w = maj ? CLK_TICK_MAJ_W : CLK_TICK_MIN_W;
+  const bool br = isBright(g_bgCol);
+  const uint16_t ch = fadeOn(g_bgCol, br ? rgb(0x000000) : C_WHITE);
+  const uint16_t cm = fadeOn(g_bgCol, br ? gfx::blend(g_bgCol, rgb(0x000000), 115) : gfx::blend(g_bgCol, C_WHITE, 128));
+  for (int i = 0; i < 60; i++) {
+    const bool hr = i % 5 == 0;
+    const float w = hr ? CLK_TICK_H_W : CLK_TICK_M_W;
     gfx::Pt p[4];
-    needlePoints(i * 30 * 4, maj ? CLK_TICK_MAJ_R_IN : CLK_TICK_MIN_R_IN, CLK_TICK_R_OUT, w, w, p);
+    needlePoints(i * 6 * 4, hr ? CLK_TICK_H_R_IN : CLK_TICK_M_R_IN, CLK_TICK_R_OUT, w, w, p);
     gfx::polyBegin(ptsRect(p, 4));
     gfx::polyAdd(p, 4);
-    gfx::polyFill(c);
+    gfx::polyFill(hr ? ch : cm);
   }
 }
 
-// ---- 針(四角。時針・分針・秒針の順に下から描く)。角度は 1/4 度(3 時が 0°、時計回り)。-1 = 出さない(時刻が分からない)
-struct HandDef {
-  float rOut, w, e;  // 先の半径、太さ、縁の幅(片側)
-};
-static const HandDef HANDS[3] = { { HAND_H_R_OUT, HAND_H_W, HAND_EDGE }, { HAND_M_R_OUT, HAND_M_W, HAND_EDGE }, { HAND_S_R_OUT, HAND_S_W, HAND_S_EDGE } };
+// ---- 針(2.11.0: Apple Watch 風。時針・分針は四角の枠と中の 2 色、秒針は縁の付いた赤の正三角形。config.h の HAND_*・SEC_*)。
+// 時針・分針・秒針の順に下から描く。角度は 1/4 度(3 時が 0°、時計回り)。-1 = 出さない(時刻が分からない)
 static int16_t g_handK[3] = { -1, -1, -1 };  // 画面に描いてある針の角度
 // 今の時刻の針の角度。時針は分と秒の分も、分針は秒の分も進める(1/4 度に丸める)
 static void handsAt(const SysInfo &si, int16_t k[3]) {
@@ -588,33 +589,91 @@ static void handsAt(const SysInfo &si, int16_t k[3]) {
     k[i] = (int16_t)(q % 1440);
   }
 }
-static void handOuter(int i, int key, gfx::Pt p[4]) {  // 縁を含めた形
-  const HandDef &h = HANDS[i];
-  needlePoints(key, HAND_R_IN - h.e, h.rOut + h.e, h.w + 2 * h.e, h.w + 2 * h.e, p);
+// 角の丸い四角(針の向き key、半径 rIn〜rOut、太さ w、角の丸み rc)の点。角は 1 つ 5 点。戻り値は点の数(最大 20)
+static int rrectPoints(int key, float rIn, float rOut, float w, float rc, gfx::Pt *p) {
+  const float a = key * 0.25f * PI_F / 180.0f, ca = cosf(a), sa = sinf(a);
+  const float hw = w * 0.5f;
+  if (rc > hw) rc = hw;
+  auto put = [&](float u, float v, int k) { p[k] = { 233 + u * ca - v * sa, 233 + u * sa + v * ca }; };
+  if (rc < 0.05f) {
+    put(rIn, -hw, 0);
+    put(rOut, -hw, 1);
+    put(rOut, hw, 2);
+    put(rIn, hw, 3);
+    return 4;
+  }
+  // 角の円の中心(u, v)と、始まりの向き(度)。先の右 → 先の左 → 根元の左 → 根元の右
+  const float cu[4] = { rOut - rc, rOut - rc, rIn + rc, rIn + rc }, cv[4] = { -hw + rc, hw - rc, hw - rc, -hw + rc };
+  const float a0[4] = { -90.0f, 0.0f, 90.0f, 180.0f };
+  int n = 0;
+  for (int c = 0; c < 4; c++)
+    for (int j = 0; j <= 4; j++) {
+      const float t = (a0[c] + 22.5f * (float)j) * PI_F / 180.0f;
+      put(cu[c] + rc * cosf(t), cv[c] + rc * sinf(t), n++);
+    }
+  return n;
+}
+// 秒針の正三角形(一辺 side、先の半径 rTip。外向き)の 3 点
+static void triPoints(int key, float rTip, float side, gfx::Pt p[3]) {
+  const float a = key * 0.25f * PI_F / 180.0f, ca = cosf(a), sa = sinf(a);
+  const float rBase = rTip - side * 0.8660254f, hw = side * 0.5f;
+  p[0] = { 233 + rTip * ca, 233 + rTip * sa };
+  p[1] = { 233 + rBase * ca - hw * sa, 233 + rBase * sa + hw * ca };
+  p[2] = { 233 + rBase * ca + hw * sa, 233 + rBase * sa - hw * ca };
+}
+// 正三角形の縁の外側と内側(縁の線の真ん中の一辺 SEC_TRI_SIDE。縁の外側の先が SEC_TRI_R_TIP)。外へ d 広げると一辺は (1 + d / 内接円の半径) 倍
+static void secOuter(int key, gfx::Pt p[3]) {
+  const float ri = SEC_TRI_SIDE / (2.0f * 1.7320508f), d = SEC_FRAME * 0.5f;
+  triPoints(key, SEC_TRI_R_TIP, SEC_TRI_SIDE * (ri + d) / ri, p);
+}
+static void secInner(int key, gfx::Pt p[3]) {
+  const float ri = SEC_TRI_SIDE / (2.0f * 1.7320508f), d = SEC_FRAME * 0.5f;
+  // 内側の三角の先は、外側の先から 2 × SEC_FRAME(正三角形の先は、縁の幅の 2 倍だけ内へ入る)
+  triPoints(key, SEC_TRI_R_TIP - 2.0f * SEC_FRAME, SEC_TRI_SIDE * (ri - d) / ri, p);
+}
+// 時針・分針の枠の外側(i = 0 時針、1 分針)
+static int handOuter(int i, int key, gfx::Pt *p) {
+  const float rOut = i == 0 ? HAND_H_R_OUT : HAND_M_R_OUT;
+  return rrectPoints(key, HAND_R_IN, rOut, HAND_W + HAND_FRAME, HAND_CORNER + HAND_FRAME * 0.5f, p);
 }
 static gfx::Rect handRect(int i, int key) {
-  gfx::Pt p[4];
-  handOuter(i, key, p);
-  return ptsRect(p, 4);
+  gfx::Pt p[20];
+  if (i == 2) {
+    secOuter(key, p);
+    return ptsRect(p, 3);
+  }
+  return ptsRect(p, handOuter(i, key, p));
 }
-// 針の色: 白(背景が黄色のときは紺。ほかの文字と同じ)。縁: 黒の背景は黒、黄色は背景の色、ほか(緑・赤)は紺
-static uint16_t handFillOn(uint16_t bg) {
-  return isBright(bg) ? fgOn(bg) : C_WHITE;
+// 色: 暗い背景(黒・緑・赤)は枠が白・中が黒、明るい背景(黄)は枠が黒・中が白(本人「枠白中黒　背景が明るい場合は逆」)。秒針の縁は枠と同じ色
+static uint16_t handFrameOn(uint16_t bg) {
+  return isBright(bg) ? rgb(0x000000) : C_WHITE;
 }
-static uint16_t handEdgeOn(uint16_t bg) {
-  return isBright(bg) ? bg : (bg == C_BG ? C_BG : rgb(0x06132E));
+static uint16_t handInnerOn(uint16_t bg) {
+  return isBright(bg) ? C_WHITE : rgb(0x000000);
 }
 static void drawHand(int i, int key) {
-  const HandDef &h = HANDS[i];
-  gfx::Pt p[4];
-  handOuter(i, key, p);
-  gfx::polyBegin(ptsRect(p, 4));
-  gfx::polyAdd(p, 4);
-  gfx::polyFill(fadeOn(g_bgCol, handEdgeOn(g_bgCol)));
-  needlePoints(key, HAND_R_IN + h.e, h.rOut - h.e, h.w - 2 * h.e, h.w - 2 * h.e, p);
-  gfx::polyBegin(ptsRect(p, 4));
-  gfx::polyAdd(p, 4);
-  gfx::polyFill(fadeOn(g_bgCol, handFillOn(g_bgCol)));
+  gfx::Pt p[20];
+  if (i == 2) {  // 秒針: 縁(外側の三角)を塗ってから、中(内側の三角)を赤で
+    secOuter(key, p);
+    gfx::polyBegin(ptsRect(p, 3));
+    gfx::polyAdd(p, 3);
+    gfx::polyFill(fadeOn(g_bgCol, handFrameOn(g_bgCol)));
+    secInner(key, p);
+    gfx::polyBegin(ptsRect(p, 3));
+    gfx::polyAdd(p, 3);
+    gfx::polyFill(fadeOn(g_bgCol, rgb(SEC_RGB)));
+    return;
+  }
+  int n = handOuter(i, key, p);
+  gfx::polyBegin(ptsRect(p, n));
+  gfx::polyAdd(p, n);
+  gfx::polyFill(fadeOn(g_bgCol, handFrameOn(g_bgCol)));
+  const float rOut = i == 0 ? HAND_H_R_OUT : HAND_M_R_OUT;
+  const float rc = HAND_CORNER - HAND_FRAME * 0.5f;
+  n = rrectPoints(key, HAND_R_IN + HAND_FRAME, rOut - HAND_FRAME, HAND_W - HAND_FRAME, rc > 0 ? rc : 0, p);
+  gfx::polyBegin(ptsRect(p, n));
+  gfx::polyAdd(p, n);
+  gfx::polyFill(fadeOn(g_bgCol, handInnerOn(g_bgCol)));
 }
 // 針を k へ動かす。er[0..done) はもう g_drvFace から写した四角(内側を描き直した所)。そこに掛かる針と、動いた針の前の所・今の所を
 // 写して消し、消した所に掛かる針も全部(下の針に重なるときは、その上の針も)描き直す
@@ -647,7 +706,7 @@ static void handsUpdate(const int16_t k[3], gfx::Rect *er, int done, int cap) {
 }
 
 // ---- 真ん中(上から順に当てはまった 1 つ。config.h の CENTER_* の説明)
-enum CenterMode : uint8_t { CM_PEAK, CM_LOAD, CM_IDLE, CM_STATUS, CM_NONE = 0xFF };
+enum CenterMode : uint8_t { CM_PEAK, CM_LOAD, CM_IDLE, CM_STATUS, CM_CLOCK, CM_NONE = 0xFF };  // CM_CLOCK: デジタル時計(2.11.0)
 struct StatusLine {  // 接続の状態の 1 行
   const char *name;
   uint8_t kind;    // 0 = 緑(正常)、1 = 灰(待ち・切)、2 = 赤(異常)
@@ -657,6 +716,8 @@ struct StatusLine {  // 接続の状態の 1 行
 struct Center {
   uint8_t mode;
   int peak;           // CM_PEAK: 回転数(10 rpm 単位)
+  bool peakHold;      // CM_PEAK: ピークを過ぎて印が止まっている(黄。2.11.0。加速中と下がっている間は白)
+  int clockMin;       // CM_CLOCK: 日本時間の 0 時からの分(2.11.0)
   uint32_t loadSec;   // CM_LOAD: 高負荷時間 [秒]
   uint8_t level;      // CM_LOAD: 0 白、1 黄、2 赤
   bool cool;          // CM_LOAD: タイトルを「クールダウン」に
@@ -710,6 +771,30 @@ static void statusMake(int row, const LinkStats &ls, const SysInfo &si, uint32_t
       break;
   }
 }
+// 接続の状態が変わったか(2.11.0。本人 10/28「状態のデータは変化があった時に１０秒程度表示する」)。行ごとの色と言葉で比べる(GPS の衛星の
+// 数は比べない。数が揺れるたびに出さないため)。変わったら、そこから STATUS_SHOW_MS の間 true。電源を入れた直後も 1 回出す。
+// 同じ時刻に何度呼んでも同じ(描き直しの照合のため)
+static char g_stKey[4][16];
+static bool g_stHave = false;
+static uint32_t g_stUntil = 0;
+static bool statusShow(const LinkStats &ls, const SysInfo &si, uint32_t now) {
+  bool changed = !g_stHave;
+  for (int i = 0; i < 4; i++) {
+    StatusLine l;
+    statusMake(i, ls, si, now, &l);
+    char k[16];
+    snprintf(k, sizeof(k), "%d|%s", l.kind, l.sv ? "" : l.value);
+    if (strcmp(k, g_stKey[i]) != 0) {
+      memcpy(g_stKey[i], k, sizeof(k));
+      changed = true;
+    }
+  }
+  if (changed) {
+    g_stHave = true;
+    g_stUntil = now + STATUS_SHOW_MS;
+  }
+  return (int32_t)(g_stUntil - now) > 0;
+}
 static void centerMake(const Signals &s, const LinkStats &ls, const SysInfo &si, uint32_t now, Center *c) {
   memset(c, 0, sizeof(*c));
   c->idleSec = idleShowSec(now);
@@ -718,17 +803,21 @@ static void centerMake(const Signals &s, const LinkStats &ls, const SysInfo &si,
     c->mode = CM_PEAK;
     c->peak = g_peakTop > 0 ? (int)lroundf(g_peakTop / 10.0f) * 10 : 0;
     if (c->peak > 9990) c->peak = 9990;  // 4 桁まで(行の四角に入る幅)
+    c->peakHold = peakHolding(s, now);
   } else if (sec > 0) {
     c->mode = CM_LOAD;
     c->loadSec = sec;
     c->level = load::level(*g_set);
     c->cool = load::coolDown();
-    c->timeOk = si.timeOk;
+    c->timeOk = si.timeOk && !si.timeDemo;  // 2.11.0: デモの時刻では電源が切れていた時間を引かないので「時刻 待ち」のまま
   } else if (!load::enabled(*g_set) && c->idleSec >= 0) {
     c->mode = CM_IDLE;
-  } else {
+  } else if (!si.timeOk || statusShow(ls, si, now)) {  // 2.11.0: 状態が変わってから STATUS_SHOW_MS の間と、時刻が分からない間
     c->mode = CM_STATUS;
     for (int i = 0; i < 4; i++) statusMake(i, ls, si, now, &c->st[i]);
+  } else {  // 2.11.0: ふだんはデジタル時計(本人 10/28「サーキットでの状態表示はデジタル時計にして」)
+    c->mode = CM_CLOCK;
+    c->clockMin = (int)((((uint64_t)si.utc + CLOCK_TZ_SEC) % 86400u) / 60u);
   }
 }
 static uint16_t centerBg(uint8_t mode) {  // 真ん中の行の下地(高負荷時間は黒い円)
@@ -741,22 +830,23 @@ static uint16_t loadCol(uint8_t level) {
   return level == 2 ? C_ALARM : (level == 1 ? C_PEAK : C_WHITE);
 }
 static int centerLines(uint8_t mode) {
-  return mode == CM_LOAD || mode == CM_STATUS ? 4 : (mode == CM_NONE ? 0 : 1);
+  return mode == CM_LOAD || mode == CM_STATUS ? 4 : (mode == CM_NONE ? 0 : 1);  // CM_CLOCK は 1 行
 }
 // 行 i の範囲(行だけを描き直すときは、この四角を g_drvBase から戻してから描く)。文字の全部が入り、ほかの行と重ならない。
 // どれも真ん中の四角 CB_RECT の中で、画素の中心が半径 114 以内(針は半径 HAND_R_IN − HAND_EDGE から外なので掛からない)。
 // ピークの数字(4 桁で幅 190)と GPS の「衛星 12」は、アイコンの四角の端に少し入る(戻すのは g_drvBase なので、アイコンも元のまま)
 static gfx::Rect centerLineRect(uint8_t mode, int i) {
-  static const gfx::Rect LOAD_R[4] = { { 185, 162, 281, 185 }, { 175, 188, 291, 212 }, { 140, 212, 327, 265 }, { 150, 266, 316, 296 } };
-  if (mode == CM_PEAK) return gfx::Rect{ 136, 186, 330, 256 };
+  static const gfx::Rect LOAD_R[4] = { { 185, 158, 281, 182 }, { 143, 182, 323, 213 }, { 140, 213, 327, 265 }, { 150, 266, 316, 296 } };  // 2.11.0: タイトルを大きく
+  if (mode == CM_PEAK) return gfx::Rect{ 136, 186, 330, 282 };  // 2.11.0: 「rpm」も(色が変わるので行に入れた)
   if (mode == CM_LOAD) return LOAD_R[i & 3];
   if (mode == CM_IDLE) return gfx::Rect{ 138, 206, 329, 292 };
+  if (mode == CM_CLOCK) return gfx::Rect{ CENTER_X0, (int16_t)(CLOCK_DIGI_BASE - 54), CENTER_X1, (int16_t)(CLOCK_DIGI_BASE + 6) };
   const int mid = STATUS_Y0 + STATUS_PITCH * i;  // 接続の状態
   return gfx::Rect{ CENTER_X0, (int16_t)(mid - 14), (int16_t)(i < 2 ? 329 : 331), (int16_t)(mid + 14) };
 }
 static void centerKey(const Center &c, int i, char *k, size_t n) {
   switch (c.mode) {
-    case CM_PEAK: snprintf(k, n, "%d", c.peak); break;
+    case CM_PEAK: snprintf(k, n, "%d|%d", c.peak, c.peakHold ? 1 : 0); break;
     case CM_LOAD:
       if (i == 0) snprintf(k, n, "%d", c.timeOk ? 1 : 0);
       else if (i == 1) snprintf(k, n, "%d%d", c.cool ? 1 : 0, c.level);
@@ -764,6 +854,7 @@ static void centerKey(const Center &c, int i, char *k, size_t n) {
       else snprintf(k, n, "%d", c.idleSec);
       break;
     case CM_IDLE: snprintf(k, n, "%d", c.idleSec); break;
+    case CM_CLOCK: snprintf(k, n, "%d", c.clockMin); break;
     default: snprintf(k, n, "%d|%d|%s", c.st[i].kind, c.st[i].sv ? 1 : 0, c.st[i].value); break;
   }
 }
@@ -785,20 +876,30 @@ static void centerLine(const Center &c, int i) {
   const uint16_t bg = centerBg(c.mode);
   char t[16];
   if (c.mode == CM_PEAK) {
+    // 2.11.0: ピークを過ぎて印が止まっている間は黄(背景が黄色のときは紺)、加速中と下がっている間は白(本人「ホールドしているときに黄色　それ以外は白」
+    // 「ピークになったときだけ黄色に。加速中も白」)。白は背景が黄色のときは紺(fgOn。デジタル時計と同じ。白では見にくい)
+    const uint16_t pc = fadeOn(bg, c.peakHold ? peakColOn(bg) : fgOn(bg));
     snprintf(t, sizeof(t), "%d", c.peak);
-    textC(PEAK_NUM_FONT, 233, PEAK_NUM_BASE, t, fadeOn(bg, peakColOn(bg)));
+    textC(PEAK_NUM_FONT, 233, PEAK_NUM_BASE, t, pc);
+    textC(FONT_NUM600_22, 233, PEAK_RPM_BASE, "rpm", pc);
   } else if (c.mode == CM_LOAD) {
     const uint16_t col = fadeOn(bg, loadCol(c.level));
     if (i == 0) {
       if (!c.timeOk) textC(FONT_JP600_18, 233, LOAD_WAIT_BASE, "時刻 待ち", fadeOn(bg, labelOn(bg)));
     } else if (i == 1) {
-      textC(FONT_JP600_18, 233, LOAD_TITLE_BASE, c.cool ? "クールダウン" : "高負荷時間", col);
+      // 2.11.0: タイトルは「高負荷」(本人 10/28「文字が小さくて潰れているので文字を大きくして「高負荷」だけに」)。入らない「クールダウン」は小さく
+      const char *tt = c.cool ? "クールダウン" : "高負荷";
+      const FontData &tf = gfx::textWidth(FONT_JP600_30, tt) <= LOAD_TITLE_MAX_W ? FONT_JP600_30 : FONT_JP500_24;
+      textC(tf, 233, LOAD_TITLE_BASE, tt, col);
     } else if (i == 2) {
       fmtTime(t, sizeof(t), c.loadSec * 1000u);
       textC(c.loadSec < 3600 ? FONT_NUM600_64 : FONT_NUM600_56, 233, LOAD_TIME_BASE, t, col);
     } else if (c.idleSec >= 0) {
       drawIdleSmall(c.idleSec, bg);
     }
+  } else if (c.mode == CM_CLOCK) {  // 2.11.0: デジタル時計(時:分、日本時間)
+    snprintf(t, sizeof(t), "%02d:%02d", c.clockMin / 60 % 24, c.clockMin % 60);
+    textC(CLOCK_DIGI_FONT, 233, CLOCK_DIGI_BASE, t, fadeOn(bg, fgOn(bg)));
   } else if (c.mode == CM_IDLE) {  // 2.9.0 のギアの所の表示と同じ(大きい経過時間)。入らなければ小さく
     fmtTime(t, sizeof(t), (uint32_t)c.idleSec * 1000u);
     const float room = CENTER_X1 - CENTER_X0 - 6;
@@ -824,7 +925,6 @@ static void centerLine(const Center &c, int i) {
 static void centerDrawStatic(const Center &c) {
   const uint16_t bg = centerBg(c.mode);
   if (c.mode == CM_LOAD) gfx::fillCircle(233, 233, LOAD_DISC_R, fadeOn(g_bgCol, C_BG));  // 黒い円(背景が黒なら見えない)
-  if (c.mode == CM_PEAK) textC(FONT_NUM600_22, 233, PEAK_RPM_BASE, "rpm", fadeOn(bg, peakColOn(bg)));
   if (c.mode == CM_IDLE) {  // ▼ 3000rpm(2.9.0 と同じ形)
     const uint16_t lc = fadeOn(bg, labelOn(bg));
     char cap[12];
@@ -1216,6 +1316,13 @@ static void peakTrack(const Signals &s, uint32_t now) {
     g_peakTop = -1.0f;
   }
 }
+// 2.11.0: ピークを過ぎて印が止まっている(真ん中の数字と同じ最高の所で、最後に上がってから TACH_PEAK_HOLD_MS 以内)。下がり始めたら false。
+// 下がって今の回転数に追いつき、そこで止まっていても、数字(最高)とは違う所なので false。
+// 今の回転数が最高から PEAK_NUM_DROP_RPM 下がるまでは false(本人 10/28「ピークになったときだけ黄色に。加速中も白」。加速中は最高 = 今の回転数)
+static bool peakHolding(const Signals &s, uint32_t now) {
+  return g_peakTop > 0 && g_peakRpm >= g_peakTop && (uint32_t)(now - g_peakSetMs) <= TACH_PEAK_HOLD_MS && s.rpmOk &&
+         (float)s.rpm <= g_peakTop - (float)PEAK_NUM_DROP_RPM;
+}
 // ピークホールドの印を出すか。2.4.0(本人の指示 10/24「回転数が高い状態では上がっても下がっても表示し続けて」): 回転数が上がっていても
 // 出す(2.2.0〜2.3.x は、下がっている間だけ出していた)。2.4.4: 回転が上がるのが終わってから TACH_PEAK_SHOW_MS の間(peakTrack)。
 // 2.4.5(本人「ピークホールドが 3000 以下に下がった場合は消してしまっていいです」): 印が PEAK_MIN_RPM を切ったら消す
@@ -1439,6 +1546,20 @@ static void drawTachGear(int key, bool clean) {
   textC(TACH_GEAR_FONT, TACH_GEAR_CX, TACH_GEAR_BASE, t, key ? C_WHITE : C_LABEL);
 }
 
+// ---- スポーツモードの「SPORT」(2.11.0。タコの下の真ん中。config.h の TACH_SPORT_*。C-CAN 0A18A000 b4 の 0x10)
+static int g_tachSportKey = -1;  // 描いてある印(1 = 「SPORT」、0 = なし)
+static int tachSportKey(const Signals &s) {
+  return (s.sportOk && s.sport) ? 1 : 0;
+}
+static gfx::Rect tachSportRect() {
+  return gfx::Rect{ (int16_t)(TACH_SPORT_CX - 56), (int16_t)(TACH_SPORT_BASE - 30), (int16_t)(TACH_SPORT_CX + 56), (int16_t)(TACH_SPORT_BASE + 6) };
+}
+static void drawTachSport(int key, bool clean) {
+  const gfx::Rect r = tachSportRect();
+  if (!clean) gfx::fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, C_BG);
+  if (key) textC(TACH_SPORT_FONT, TACH_SPORT_CX, TACH_SPORT_BASE, "SPORT", rgb(TACH_SPORT_RGB));
+}
+
 // ---- 水温・燃料の札(異常のときだけ。config.h の AN_BADGE_*)
 static gfx::Rect badgeArea() {
   gfx::Rect r = { (int16_t)AN_BADGE_X, (int16_t)AN_BADGE_Y, (int16_t)(AN_BADGE_X + AN_BADGE_W), (int16_t)(AN_BADGE_Y + AN_BADGE_PITCH + AN_BADGE_H) };
@@ -1610,6 +1731,8 @@ static void drawBoostFace(const Signals &s) {
   drawTachGear(g_tachGearKey, true);
   g_badgeKey = badgeKey(s);
   drawBadges(s, true);
+  g_tachSportKey = tachSportKey(s);
+  drawTachSport(g_tachSportKey, true);
 }
 
 static void updBoost(const Signals &s, uint32_t now) {
@@ -1630,9 +1753,9 @@ static void updBoost(const Signals &s, uint32_t now) {
     g_peakKey = -1;
     g_tagsDirty = true;
   }
-  int nk = needleKey(s), tk = tachKey(s), pk = peakKey(s), bk = boostNumKey(s), gr = tachGearKey(s);
+  int nk = needleKey(s), tk = tachKey(s), pk = peakKey(s), bk = boostNumKey(s), gr = tachGearKey(s), sp = tachSportKey(s);
   uint32_t gk = badgeKey(s);
-  bool faceItems = bk != g_boostNumKey || gk != g_badgeKey || gr != g_tachGearKey;
+  bool faceItems = bk != g_boostNumKey || gk != g_badgeKey || gr != g_tachGearKey || sp != g_tachSportKey;
   if (nk == g_needleKey && tk == g_tachKey && pk == g_peakKey && !faceItems && !g_barForce) return;
   if (!g_faceOk) {  // 文字盤を取っておけなかったとき: 文字盤を描き直す(遅いが正しい)
     drawBoostFace(s);
@@ -1656,6 +1779,7 @@ static void updBoost(const Signals &s, uint32_t now) {
     if (bk != g_boostNumKey) erased[ne++] = boostNumRect();
     if (gr != g_tachGearKey) erased[ne++] = tachGearRect();
     if (gk != g_badgeKey) erased[ne++] = badgeArea();
+    if (sp != g_tachSportKey) erased[ne++] = tachSportRect();
   }
   bool barRedo = nk != g_needleKey || g_barForce, peakRedo = pk != g_peakKey;
   g_barForce = false;
@@ -1699,6 +1823,11 @@ static void updBoost(const Signals &s, uint32_t now) {
       drawBadges(s, false);
       faceTake(badgeArea());
       g_badgeKey = gk;
+    }
+    if (sp != g_tachSportKey) {
+      drawTachSport(sp, false);
+      faceTake(tachSportRect());
+      g_tachSportKey = sp;
     }
   }
   // 3. 帯とピークの印(変わったか、消したもの)
@@ -1965,9 +2094,22 @@ struct FontPair {
 };
 static const FontPair FP_NAME[] = { { &FONT_NUM600_48, &FONT_JP600_48 }, { &FONT_NUM600_44, &FONT_JP600_44 }, { &FONT_NUM600_34, &FONT_JP600_34 } };
 static const FontPair FP_VALUE[] = { { &FONT_NUM600_64, &FONT_JP600_64 }, { &FONT_NUM600_44, &FONT_JP600_44 }, { &FONT_NUM600_34, &FONT_JP600_34 } };
+// 文字がすべてある(2.11.0: 大きい書体に無い字を含む値(「前を記録した」など)は、字のある小さい書体で出す)
+static bool mixHas(const FontData &fa, const FontData &fj, const char *s) {
+  char buf[48];
+  while (*s) {
+    int n = runLen(s);
+    if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
+    memcpy(buf, s, n);
+    buf[n] = 0;
+    if (!gfx::hasGlyphs(isAsciiLike(s) ? fa : fj, buf)) return false;
+    s += n;
+  }
+  return true;
+}
 static void fitTextC(const FontPair *fp, int n, float maxW, float cx, float base, const char *t, uint16_t c) {
   int k = 0;
-  while (k + 1 < n && mixWidth(*fp[k].a, *fp[k].j, t) > maxW) k++;
+  while (k + 1 < n && (mixWidth(*fp[k].a, *fp[k].j, t) > maxW || !mixHas(*fp[k].a, *fp[k].j, t))) k++;
   mixDraw(*fp[k].a, *fp[k].j, cx - mixWidth(*fp[k].a, *fp[k].j, t) * 0.5f, base, t, c);
 }
 // 太い線の「‹」「›」(dir = -1 / 1)
@@ -2260,7 +2402,7 @@ static void lightSub(uint32_t now, char *out, size_t n) {
   veh::LightInfo li;
   veh::lightInfo(&li, now);
   out[0] = 0;
-  if (li.have) snprintf(out, n, "b0 %02X 最初の受信 %u.%u 秒", (unsigned)li.lastB0, (unsigned)(li.firstMs / 1000), (unsigned)(li.firstMs % 1000 / 100));
+  if (li.have) snprintf(out, n, "b%d %02X 最初の受信 %u.%u 秒", VEH_LIGHT_BYTE, (unsigned)li.lastB0, (unsigned)(li.firstMs / 1000), (unsigned)(li.firstMs % 1000 / 100));
 }
 // GPS(M100): 測位(届かなければ赤)・位置・速度。2.10.0: RaceChrono の送信の入・切に関係なく動かす(時計と高負荷時間に時刻を使う)。
 // 落ちる起動が続いて止めたとき(RC_CRASH_LIMIT)だけ「切」
@@ -2904,7 +3046,7 @@ static void updCanDetail(uint32_t now) {
     if (!full) gfx::fillRect(60, 132, 346, 58, C_BG);
     char id[16], t[32];
     fmtId(id, sizeof(id), v.id, v.ext);
-    snprintf(t, sizeof(t), "%s  b%d", id, g_detByte);
+    snprintf(t, sizeof(t), "%s %s  b%d", v.bus ? "B-CAN" : "C-CAN", id, g_detByte);  // 2.11.0: バスも出す(本人 10/28「C-CAN,B-CANを識別するものを表示」)
     fitTextC(FP_NAME, 3, 330, 233, 184, t, C_LABEL2);
     gfx::fillRect(130, 286, 206, 34, C_BG);  // 上は格子のマスの消す範囲(〜285)に重ねない
     if (v.dlc) {

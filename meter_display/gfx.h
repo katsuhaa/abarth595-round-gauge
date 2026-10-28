@@ -81,6 +81,7 @@ void maskReplace(const uint8_t *mask, Rect r, bool mirrorX, uint16_t c, uint16_t
 // tabular = false にすると、数字を幅のそろっていない形(キャンバスの絵と同じ)で描く
 void setTabularDigits(bool tabular);
 float textWidth(const FontData &f, const char *utf8);
+bool hasGlyphs(const FontData &f, const char *utf8);  // 全部の字がこの書体にある(2.11.0。入らない書体を選ばないため)
 float drawText(const FontData &f, float x, float baseline, const char *utf8, uint16_t c);  // 戻り値は次の書き出し位置
 void drawIcon(const IconData &ic, int x, int y, uint16_t c);
 uint32_t missingGlyphs();  // 書体データに無かった文字の数(0 が正常)

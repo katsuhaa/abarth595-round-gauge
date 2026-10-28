@@ -1,6 +1,7 @@
 // app.cpp - 受信データの解釈(mlink)、車の CAN から値を作る(veh)、CAN の表(cantab)、全開と走行の時間(trip)。説明は app.h
 #include "app.h"
 #include <string.h>
+#include <stdlib.h>
 #include <algorithm>
 #include <math.h>
 
@@ -297,6 +298,7 @@ struct State {
   bool fuelHave;          // fuelPct に値がある
   uint32_t fuelIgnored;   // 捨てた b5(0 と 100 超)のフレームの数
   // ライト(2.9.0: B-CAN 06214000 b0 の 0x08 = ライトのスイッチ)
+  bool sport;             // スポーツモード(0A18A000 b4 の VEH_SPORT_MASK。2.11.0。受けた時刻は fuelSeenMs)
   uint32_t lightSeenMs;   // 最後に受けた時刻(0 = まだ)
   uint32_t lightFirstMs;  // 最初に受けた時刻(電源を入れてからの ms)
   uint8_t lightLastB0;    // 最後に受けた b0
@@ -338,8 +340,8 @@ static void lightSettle(uint32_t now) {
 void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *d, uint32_t now) {
   if (!ext) return;  // 使う値はどれも 29 ビット ID
   if (bus == 1) {
-    if (id == VEH_ID_LIGHT && dlc >= 1) {  // ライト(2.9.0)。b0 のほかのビットは見ない
-      const bool on = (d[0] & VEH_LIGHT_MASK) != 0;
+    if (id == VEH_ID_LIGHT && dlc > VEH_LIGHT_BYTE) {  // ライト(2.9.0)。b0 のほかのビットは見ない
+      const bool on = (d[VEH_LIGHT_BYTE] & VEH_LIGHT_MASK) != 0;
       platLock();
       if (!g.lightSeenMs) {  // 電源を入れてから最初: すぐ使う
         g.lightOn = on;
@@ -353,7 +355,7 @@ void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *
           g.lightPendMs = stamp(now);
         }
       }
-      g.lightLastB0 = d[0];
+      g.lightLastB0 = d[VEH_LIGHT_BYTE];
       g.lightSeenMs = stamp(now);
       platUnlock();
     }
@@ -391,6 +393,7 @@ void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *
       platLock();
       g.fuelSeenMs = stamp(now);
       g.fuelLastB5 = d[5];
+      g.sport = (d[4] & VEH_SPORT_MASK) != 0;  // 2.11.0
       if (d[5] == 0 || d[5] > 100) {
         g.fuelIgnored++;  // 0 = 測れていない(エンジンが止まっている間など)。前の値のまま
       } else {
@@ -465,6 +468,8 @@ void getSignals(Signals *out, uint32_t now) {
   int bc = (int)(r.boostRaw * VEH_BOOST_BAR_PER_LSB * 100.0f + 0.5f);
   out->boostBar = (int16_t)(bc > 32767 ? 32767 : bc) / 100.0f;
   out->gear = gear;
+  out->sportOk = within(r.fuelSeenMs, now, VEH_FUEL_TIMEOUT_MS);  // 2.11.0: 0A18A000 を受けている
+  out->sport = out->sportOk && r.sport;
 }
 
 void fuelInfo(FuelInfo *out, uint32_t now) {
@@ -1358,6 +1363,16 @@ void onFix(const gnss::Fix &f) {
   g_utc = epoch(f.year, f.month, f.day, f.hour, f.min, f.sec);
   g_ms = f.rxMs - (uint32_t)(f.nano / 1000000);  // 秒の始まりの millis(nano は負もある。受けるまでの遅れは見ない)
   g_ok = true;
+}
+uint32_t demoBase(const char *date, const char *time) {
+  static const char MON[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  if (!date || !time || strlen(date) != 11 || strlen(time) != 8 || time[2] != ':' || time[5] != ':') return 0;
+  int mon = 0;
+  for (int i = 0; i < 12; i++)
+    if (strncmp(date, MON + i * 3, 3) == 0) mon = i + 1;
+  const int day = atoi(date + 4), year = atoi(date + 7), hh = atoi(time), mm = atoi(time + 3), ss = atoi(time + 6);
+  if (mon == 0 || day < 1 || day > 31 || year < 2020 || year > 2099 || hh > 23 || mm > 59 || ss > 59) return 0;
+  return epoch((uint16_t)year, (uint8_t)mon, (uint8_t)day, (uint8_t)hh, (uint8_t)mm, (uint8_t)ss) - (uint32_t)CLOCK_TZ_SEC;
 }
 bool now(uint32_t nowMs, uint32_t *utc) {
   if (!g_ok) return false;

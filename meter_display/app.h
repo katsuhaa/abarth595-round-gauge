@@ -27,6 +27,7 @@ struct Signals {
   char gear;          // '1'〜'5'、'N'、'R'
   bool sim;           // 模擬データ
   uint8_t scene;      // 模擬データの場面番号
+  bool sportOk, sport;  // スポーツモード(2.11.0。車の CAN の生データから作るときだけ。C-CAN 0A18A000 b4 の 0x10)
 };
 
 struct Settings {
@@ -126,6 +127,9 @@ struct SysInfo {
   // 2.10.0: 今の時刻(サーキットの時計と高負荷時間に使う)。GPS の時刻が一度分かったら、GPS が途切れても表示器の中の時計で進める
   bool timeOk;          // 時刻が分かっている
   uint32_t utc;         // UTC、1970-01-01 からの秒
+  // 2.11.0: utc はデモの時刻(デモ表示の間、GPS の時刻が分かるまで。gtime::demoBase)。時計の表示だけに使い、高負荷時間の
+  // 「電源が切れていた時間を引く」と保存する時刻には使わない
+  bool timeDemo;
 };
 
 // ---------------------------------------------------------------- plat(基板に依存する部分)
@@ -346,6 +350,9 @@ namespace gtime {
 void onFix(const gnss::Fix &f);           // 新しい NAV-PVT を受けたら呼ぶ(日時が使えないものは捨てる)
 bool now(uint32_t nowMs, uint32_t *utc);  // 時刻が分かっていれば true と UTC(1970-01-01 からの秒)
 uint32_t epoch(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t min, uint8_t sec);  // 日時(UTC)→ 秒
+// 2.11.0: デモの時計の起点。date・time は __DATE__("Oct 28 2026")・__TIME__("12:34:56")の形で、ビルドした PC の時刻(日本時間 =
+// UTC + CLOCK_TZ_SEC)。UTC の秒を返す。読めなければ 0
+uint32_t demoBase(const char *date, const char *time);
 void testReset();                         // 試験用: 分からない状態に戻す
 }
 

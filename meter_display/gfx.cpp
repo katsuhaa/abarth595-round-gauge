@@ -657,6 +657,13 @@ static void blitRle(const uint8_t *p, int w, int h, int x0, int y0, uint16_t c) 
   }
 }
 
+bool hasGlyphs(const FontData &f, const char *utf8) {
+  const char *s = utf8;
+  for (uint32_t code; (code = nextCode(s)) != 0;)
+    if (!findGlyph(f, code)) return false;
+  return true;
+}
+
 float textWidth(const FontData &f, const char *utf8) {
   float wsum = 0;
   const char *s = utf8;

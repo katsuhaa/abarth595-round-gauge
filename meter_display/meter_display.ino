@@ -30,6 +30,7 @@
  *   設定の並び(2.4.0。2.9.0 で 2 番目にイルミネーションの明るさ。2.10.0 で高負荷時間の 4 つと最後に「デフォルトに戻す」): 明るさ・
  *   イルミネーションの明るさ・受信の状態・本体の状態・シフトポイント・水温の警告・高負荷時間 黄・高負荷時間 赤・クールダウン時間・
  *   高負荷時間 リセット・時間の記録・自動で戻る・デモ・デフォルトに戻す。
+ *   タコの下の真ん中に、スポーツモードの間「SPORT」(2.11.0。C-CAN 0A18A000 b4 の 0x10)。時計の針と目盛は Apple Watch 風、秒針は赤の三角(2.11.0)。
  *   ライトのスイッチ(B-CAN 06214000 b0 の 0x08)が入の間は、ふだんの明るさを「イルミネーションの明るさ」にする(2.9.0。点滅の消灯と
  *   最大輝度はそのまま)。明るさの 2 つの項目は、変更の画面を出している間はその値で表示する。
  *   受信の状態は CAN・GPS・IMU・RaceChrono のまとめ(長押しで中へ)、本体の状態は FPS・CPU・メモリーなど。「決定」を押すと
@@ -45,6 +46,8 @@
  *
  * デモ表示: 設定の最後の項目「デモ」を「入」にすると、XIAO をつながずに模擬の値(c6_display_debug と同じ場面 1〜9)を出す。
  *   入の間は UART を読まない。画面の下に「SIM」、上に場面番号が出る。設定は保存され、電源を入れ直しても続く。
+ *   2.11.0: GPS の時刻が分かるまでは、ビルドした時刻(日本時間)から電源を入れてからの時間で時計を進める(書き込んだ直後はほぼ今の時刻。
+ *   入れ直すとビルドした時刻からやり直す)。GPS の時刻が分かったらそちら。高負荷時間と保存する時刻には GPS の時刻だけを使う
  *
  * RaceChrono: 設定 → 受信の状態 →「RaceChrono」の「長押しで開く」で、送信の入・切、BLE の接続、送った数が見られる(GPS・IMU は
  *   受信の状態のそれぞれのグループ。2.4.0)。
@@ -91,14 +94,16 @@
  *
  * ボード: Waveshare ESP32-S3-Touch-AMOLED-1.75(標準版)、arduino-esp32 3.3.11。
  *   追加ライブラリ: NimBLE-Arduino 1.4.3(h2zero。ライブラリマネージャで版を 1.4.3 に選ぶ。2.x は関数の形が違い、コンパイルで止まる)
- *   Arduino IDE のボードは「ESP32S3 Dev Module」。「ツール」で変えるのは次の 2 つだけ(ほかは既定値のまま):
+ *   Arduino IDE のボードは「ESP32S3 Dev Module」。「ツール」で変えるのは次の 3 つだけ(ほかは既定値のまま):
  *     USB CDC On Boot  → Enabled
  *     PSRAM            → OPI PSRAM
- *   どちらも、違っているとコンパイルがエラーで止まる(下の #error)。「USB Mode」が既定値(Hardware CDC and JTAG)で
- *   ないときも同じ。
- *   スケッチは約 1.2MB で、既定の Partition Scheme(1.2MB APP)の 97 %(2.7.0、2026-10-24)。Flash Size も既定値のままで動く。
- *   コンパイルの最後に「Sketch too big」と出るようになったら、Partition Scheme を「Huge APP (3MB No OTA/1MB SPIFFS)」にする
- *   (設定の保存領域はどちらでも同じ場所にあり、保存した値は消えない)。
+ *     Partition Scheme → Huge APP (3MB No OTA/1MB SPIFFS)か Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)(2.10.0 から。
+ *                        SPIFFS はこのスケッチでは使わない)
+ *   どれも、違っているとコンパイルがエラーで止まる(下の #error。Partition Scheme は既定の 1.2MB APP のときだけ止める)。
+ *   「USB Mode」が既定値(Hardware CDC and JTAG)でないときも同じ。
+ *   スケッチは 2.10.0 で 1,339,367 バイトになり、既定の Partition Scheme(1.2MB APP。1,310,720 バイト)に入らない(2.7.0 で 97 %。
+ *   2.10.0 で書体などが増えて 102 %)。設定の保存領域(NVS)は既定も Huge APP も同じ場所(0x9000 から 20KB)なので、切り替えても
+ *   保存した設定・時間の記録・IMU の向きは消えない(Minimal SPIFFS も同じ)。Flash Size は既定値のままでよい。
  *   「コンパイラの警告」を「すべて」にすると NimBLE-Arduino の nimconfig.h から「redefined」の警告がたくさん出るが、
  *   ライブラリ側のもので害はない。このスケッチ自身のファイルからは警告は出ない。
  *
@@ -138,6 +143,9 @@
 #endif
 #if !defined(BOARD_HAS_PSRAM) || !defined(CONFIG_SPIRAM_MODE_OCT)
 #error "「ツール」→「PSRAM」を「OPI PSRAM」にしてください。この基板の PSRAM(8MB)は OPI 接続で、画面用のメモリーに使います。"
+#endif
+#if defined(ARDUINO_PARTITION_default)  // arduino-esp32 は選んだ Partition Scheme を ARDUINO_PARTITION_<名前> で渡す(platform.txt)
+#error "「ツール」→「Partition Scheme」を「Huge APP (3MB No OTA/1MB SPIFFS)」か「Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)」にしてください。2.10.0 からスケッチが既定の 1.2MB APP に入りません(保存した設定は消えません)。"
 #endif
 
 static SysInfo g_sys = {};  // 起動時に確かめた結果(「本体の状態」とシリアルに出す。全部 false・0 から)
@@ -604,7 +612,7 @@ static void saveTimes(uint32_t now, bool force) {
   uint8_t home = ui::homeScreen();
   // 2.10.0: 高負荷時間。0 のままなら書かない。0 でない間は、時刻(時刻が分からなければ 0)を書くため毎回書く
   // (次の起動で、電源が切れていた時間 = その時刻からの時間を引く。ずれは最大 TIME_SAVE_MS)
-  const uint32_t lv = load::valueMs(), lt = g_sys.timeOk ? g_sys.utc : 0, ll = load::lowMs(now);
+  const uint32_t lv = load::valueMs(), lt = (g_sys.timeOk && !g_sys.timeDemo) ? g_sys.utc : 0, ll = load::lowMs(now);  // デモの時刻は書かない
   bool wt = a != g_timesSavedA || b != g_timesSavedB, wh = home != g_homeLoaded;
   bool wl = lv != g_loadSavedV || (lv > 0 && (lt != g_loadSavedT || ll != g_loadSavedL));
   if (!wt && !wh && !wl) return;
@@ -1647,15 +1655,23 @@ void setup() {
 }
 
 // 2.10.0: GPS の時刻(gtime。rc タスクが NAV-PVT のたびに合わせる)→ g_sys.timeOk・utc(サーキットの時計と高負荷時間)。
-// 起動して最初に分かったときに、電源が切れていた時間を高負荷時間から引き(load::onTime。2 回目からは何もしない)、結果を 1 行出す
+// 起動して最初に分かったときに、電源が切れていた時間を高負荷時間から引き(load::onTime。2 回目からは何もしない)、結果を 1 行出す。
+// 2.11.0: デモ表示の間は、GPS の時刻が分かるまでデモの時刻(ビルドした時刻 + 電源を入れてからの秒。g_sys.timeDemo)。時計の表示だけ
 static void timePoll(uint32_t now) {
   static bool s_printed = false;
+  static const uint32_t s_demoBase = gtime::demoBase(__DATE__, __TIME__);
   uint32_t utc = 0;
   platLock();
   const bool ok = gtime::now(now, &utc);
   platUnlock();
-  g_sys.timeOk = ok;
-  if (!ok) return;
+  if (!ok) {
+    g_sys.timeDemo = g_set.demoOn && s_demoBase != 0;
+    g_sys.timeOk = g_sys.timeDemo;
+    if (g_sys.timeDemo) g_sys.utc = s_demoBase + now / 1000u;
+    return;
+  }
+  g_sys.timeOk = true;
+  g_sys.timeDemo = false;
   g_sys.utc = utc;
   const uint32_t v0 = load::valueMs();
   load::onTime(utc, g_set, now);
@@ -1828,19 +1844,21 @@ void loop() {
       }
       veh::LightInfo li;
       veh::lightInfo(&li, now);
-      Serial.printf("  車の値(CAN から): rpm %s%d 車速 %s%.1f アクセル %s%.0f%% 水温 %s%.0f ブースト %s%.2f 燃料 %s%.0f%% ギア %s(比 %.1f) | 燃料 0A18A000 b5 %u"
+      Serial.printf("  車の値(CAN から): rpm %s%d 車速 %s%.1f アクセル %s%.0f%% 水温 %s%.0f ブースト %s%.2f 燃料 %s%.0f%% ギア %s(比 %.1f)スポーツ %s | 燃料 0A18A000 b5 %u"
                     "(0 と 100 超を捨てた %lu 回)| ライト %s 06214000 b0 %02X 切り替え %lu 回 明るさ %d %%\n",
                     s.rpmOk ? "" : "×", s.rpm, s.speedOk ? "" : "×", (double)s.speedKmh, s.throttleOk ? "" : "×", (double)s.throttlePct, s.waterOk ? "" : "×",
                     (double)s.waterC, s.boostOk ? "" : "×", (double)s.boostBar, s.fuelOk ? "" : "×", (double)s.fuelPct, gearText, (double)veh::lastRatio(),
+                    !s.sportOk ? "×" : s.sport ? "入" : "切",
                     (unsigned)fi.lastB5, (unsigned long)fi.ignored, !li.have ? "不明" : !li.seen ? "受信なし" : li.on ? "点" : "消", (unsigned)li.lastB0,
                     (unsigned long)li.changes, normalNow());
     }
     if (g_sys.rc.enabled || g_sys.rc.gpsOn) rcPrintStatusLine();
     // 2.10.0: 時計と高負荷時間
-    char clk[16] = "待ち", lv[16], lo[16] = "–", y[16], r[16], c[16];
+    char clk[24] = "待ち", lv[16], lo[16] = "–", y[16], r[16], c[16];
     if (g_sys.timeOk) {
       const uint32_t l = (g_sys.utc + CLOCK_TZ_SEC) % 86400u;
-      snprintf(clk, sizeof(clk), "%02lu:%02lu:%02lu", (unsigned long)(l / 3600), (unsigned long)(l / 60 % 60), (unsigned long)(l % 60));
+      snprintf(clk, sizeof(clk), "%02lu:%02lu:%02lu%s", (unsigned long)(l / 3600), (unsigned long)(l / 60 % 60), (unsigned long)(l % 60),
+               g_sys.timeDemo ? " デモ" : "");
     }
     msText(load::valueMs(), lv, sizeof(lv));
     if (load::lowMs(now)) msText(load::lowMs(now), lo, sizeof(lo));

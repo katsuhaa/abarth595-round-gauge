@@ -3337,6 +3337,13 @@ int main() {
     gtime::onFix(gf);
     CHECK(gtime::now(50200, &u) && u == 1793065338u, "gtime: 日時が使えない NAV-PVT は捨てる");
     gtime::testReset();
+    // 2.11.0: デモの時計の起点(__DATE__・__TIME__ の形。日本時間 → UTC)
+    CHECK(gtime::demoBase("Oct 27 2026", "10:42:18") == 1793065338u, "gtime: デモの時計の起点(日本時間 10:42:18 = UTC 1:42:18)");
+    CHECK(gtime::demoBase("Jan  1 2027", "08:59:59") == gtime::epoch(2026, 12, 31, 23, 59, 59), "gtime: デモの時計の起点(1 桁の日は空白。年をまたぐ)");
+    CHECK(gtime::demoBase("Feb 29 2028", "23:00:00") == gtime::epoch(2028, 2, 29, 14, 0, 0), "gtime: デモの時計の起点(うるう日)");
+    CHECK(gtime::demoBase("Foo 27 2026", "10:42:18") == 0 && gtime::demoBase("Oct 27 2026", "10-42-18") == 0 && gtime::demoBase("Oct 27 2026", "25:00:00") == 0 &&
+            gtime::demoBase("Oct 27", "10:42:18") == 0 && gtime::demoBase(nullptr, "10:42:18") == 0 && gtime::demoBase("Oct 27 2026", nullptr) == 0,
+          "gtime: デモの時計の起点が読めなければ 0(時計を出さない)");
 
     // ---- サーキットの時計(針)と真ん中の出し分け
     Signals c;
@@ -3363,8 +3370,8 @@ int main() {
     ui::testShow(ui::SC_DRIVE);
     ui::update(c, lc, ps, sc, tc);
     gfx::dirtyClear();
-    // 秒針の通る所(18 秒 = 3 時から 18°、半径 150)。時刻が分からない間は針を出さない
-    const int sx = (int)(233 + 150 * cosf(18.0f * 3.14159265f / 180.0f)), sy = (int)(233 + 150 * sinf(18.0f * 3.14159265f / 180.0f));
+    // 秒針の通る所(18 秒 = 3 時から 18°、半径 163。2.11.0: 秒針は正三角形)。時刻が分からない間は針を出さない
+    const int sx = (int)lroundf(233 + 163 * cosf(18.0f * 3.14159265f / 180.0f)), sy = (int)lroundf(233 + 163 * sinf(18.0f * 3.14159265f / 180.0f));
     CHECK(ui::testCenter() == 3 && px(sx, sy) == gfx::rgb(0x000000), "時刻が分からない間は針を出さない。真ん中は接続の状態");
     // 接続の状態の点(GPS・IMU・RaceChrono・CAN の順に、半径 6 の点の真ん中の色)
     auto dotAt = [&](int row) { return px(STATUS_DOT_X, STATUS_Y0 + STATUS_PITCH * row); };
@@ -3373,7 +3380,17 @@ int main() {
     sc.timeOk = true;
     sc.utc = 1793065338u;  // 10:42:18(日本時間)
     ui::update(c, lc, ps, sc, tc += 1000);
-    CHECK(px(sx, sy) == gfx::rgb(0xFFFFFF), "時刻が分かったら針を出す(10:42:18 の秒針は 3 時から 18°)");
+    CHECK(px(sx, sy) == gfx::rgb(SEC_RGB), "時刻が分かったら針を出す(10:42:18 の秒針は 3 時から 18°。2.11.0: 赤の三角)");
+    {  // 2.11.0: 目盛は 60 本。毎時(12 時・3 時)は白、1 分ごと(6 時 + 1 分 = 96°)は白の半分の濃さ(黒の背景)
+      const uint16_t m = px((int)lroundf(233 + 170 * cosf(96.0f * 3.14159265f / 180.0f)), (int)lroundf(233 + 170 * sinf(96.0f * 3.14159265f / 180.0f)));
+      CHECK(px(233, 233 - 165) == gfx::rgb(0xFFFFFF) && px(233 + 165, 233) == gfx::rgb(0xFFFFFF) && m != 0 && m != gfx::rgb(0xFFFFFF),
+            "目盛: 毎時は白、1 分ごとは薄い(2.11.0)");
+      // 時針(10:42:18 → 321.15° の 12 時から = 3 時から 231.15°)の真ん中(半径 140)は中の黒、枠の外側の縁の近く(真ん中から 6.5 px 横)は白
+      const float ah = (321.15f + 270.0f - 360.0f) * 3.14159265f / 180.0f, ca = cosf(ah), sa = sinf(ah);
+      const int hx = (int)lroundf(233 + 140 * ca), hy = (int)lroundf(233 + 140 * sa);
+      const int ex = (int)lroundf(233 + 140 * ca - 6.4f * sa), ey = (int)lroundf(233 + 140 * sa + 6.4f * ca);
+      CHECK(px(hx, hy) == 0 && px(ex, ey) == gfx::rgb(0xFFFFFF), "時針: 中が黒、枠が白(黒の背景。2.11.0)");
+    }
     CHECK(same(c, tc), "針の絵 = 最初から描いた絵");
     for (int k = 1; k <= 75; k++) {  // 1 秒ずつ進める(秒針が一回り以上。分針・時針も動く)
       sc.utc = 1793065338u + (uint32_t)k;
@@ -3397,18 +3414,80 @@ int main() {
     CHECK(dotAt(0) == D, "接続の状態: GPS を止めているときは灰");
     CHECK(same(c, tc), "異常の接続の状態の絵 = 最初から描いた絵");
     sc.rc.gpsOn = true; sc.rc.gpsOk = true; sc.rc.fixType = 3; sc.rc.enabled = true; sc.rc.connected = true; lc.locked = true;
-    // ピーク: 回転数がはっきり上がったら、真ん中にピークの回転数(上がり切った値。三角が下がっても下げない)
+    // 2.11.0: 状態が変わってから STATUS_SHOW_MS は接続の状態、そのあとはデジタル時計(衛星の数だけが変わっても出さない)
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(ui::testCenter() == 3, "デジタル時計: 状態が変わったら接続の状態");
+    ui::update(c, lc, ps, sc, tc += STATUS_SHOW_MS - 1);
+    CHECK(ui::testCenter() == 3, "デジタル時計: STATUS_SHOW_MS の手前までは接続の状態");
+    ui::update(c, lc, ps, sc, tc += 1);
+    CHECK(ui::testCenter() == 4 && same(c, tc), "デジタル時計: 変わらないまま STATUS_SHOW_MS たったら時計(= 最初から描いた絵)");
+    sc.rc.numSV = 7;
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(ui::testCenter() == 4, "デジタル時計: 衛星の数だけが変わっても時計のまま");
+    for (int k = 0; k < 70; k++) {
+      sc.utc += 1;
+      ui::update(c, lc, ps, sc, tc += 1000);
+      gfx::dirtyClear();
+    }
+    CHECK(ui::testCenter() == 4 && same(c, tc), "デジタル時計: 分が変わった絵 = 最初から描いた絵");
+    sc.timeOk = false;
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(ui::testCenter() == 3, "デジタル時計: 時刻が分からなくなったら接続の状態");
+    sc.timeOk = true;
+    sc.rc.connected = false;
+    ui::update(c, lc, ps, sc, tc += 1000);
+    CHECK(ui::testCenter() == 3 && same(c, tc), "デジタル時計: RaceChrono が未接続になったら接続の状態");
+    sc.rc.connected = true;
+    // ピーク: 回転数がはっきり上がったら、真ん中にピークの回転数(上がり切った値。三角が下がっても下げない)。
+    // 2.11.0: 数字は、ピークを過ぎて印が止まっている間(TACH_PEAK_HOLD_MS)だけ黄。加速中と、印が下がり始めてからは白
+    // (本人「ホールドしているときに黄色　それ以外は白」「ピークになったときだけ黄色に。加速中も白」)
+    auto countCol = [&](uint16_t col) {  // 真ん中の数字と「rpm」の所の、その色の点の数
+      int n = 0;
+      for (int y = 186; y < 282; y++)
+        for (int x = 150; x < 316; x++) n += px(x, y) == col;
+      return n;
+    };
+    const uint16_t PY = gfx::rgb(0xFFD000), PW = gfx::rgb(0xFFFFFF), PN = gfx::rgb(0x06132E);
     c.rpm = 3000;
     ui::update(c, lc, ps, sc, tc += 100);
     c.rpm = 6100;
     ui::update(c, lc, ps, sc, tc += 100);
     CHECK(ui::testCenter() == 0 && ui::testPeakDrawn(), "回転数が上がったら、真ん中はピークの回転数");
+    CHECK(countCol(PY) < 20 && countCol(PW) > 300, "ピーク: 上がっている間(加速中)は白");
+    c.rpm = 6100 - PEAK_NUM_DROP_RPM + 10;
+    ui::update(c, lc, ps, sc, tc += 100);
+    CHECK(countCol(PY) < 20 && countCol(PW) > 300, "ピーク: 最高から PEAK_NUM_DROP_RPM 下がるまでは白(回転数のゆらぎで黄にしない)");
     c.rpm = 4200;
     ui::update(c, lc, ps, sc, tc += 100);
     CHECK(ui::testCenter() == 0, "下がってもピークの三角の間はピークの回転数");
     CHECK(same(c, tc), "ピークの回転数の絵 = 最初から描いた絵");
+    CHECK(countCol(PY) > 300 && countCol(PW) < 20, "ピーク: ピークを過ぎて印が止まっている間は黄");
+    c.rpm = 6300;
+    ui::update(c, lc, ps, sc, tc += 100);
+    CHECK(countCol(PY) < 20 && countCol(PW) > 300, "ピーク: また上がって最高を超えたら白(加速中)");
+    CHECK(same(c, tc), "ピーク(黄 → 白)の絵 = 最初から描いた絵");
+    c.rpm = 4200;
+    ui::update(c, lc, ps, sc, tc += 100);
+    CHECK(countCol(PY) > 300 && countCol(PW) < 20, "ピーク: 下がるとまた黄(新しい最高)");
+    ui::update(c, lc, ps, sc, tc += TACH_PEAK_HOLD_MS + 200);
+    CHECK(ui::testCenter() == 0 && countCol(PY) < 20 && countCol(PW) > 300, "ピーク: 印が下がり始めたら白(数字は最高のまま)");
+    CHECK(same(c, tc), "ピーク(白)の絵 = 最初から描いた絵");
     ui::update(c, lc, ps, sc, tc += TACH_PEAK_SHOW_MS + 1000);
     CHECK(ui::testCenter() == 3 && !ui::testPeakDrawn(), "ピークの三角が消えたら接続の状態");
+    {  // 背景が黄色のときの加速中は紺(白では見にくい。デジタル時計と同じ)
+      c.rpm = 3000;
+      ui::update(c, lc, ps, sc, tc += 1000);
+      c.rpm = 5600;
+      ui::update(c, lc, ps, sc, tc += 1000);
+      ui::update(c, lc, ps, sc, tc += 1000);
+      CHECK(ui::testCenter() == 0 && countCol(PN) > 300 && countCol(PW) < 20 && countCol(PY) < 20, "ピーク: 背景が黄色のときの加速中は紺(白では見にくい)");
+      CHECK(same(c, tc), "ピーク(背景が黄色・紺)の絵 = 最初から描いた絵");
+      ui::testPeakReset();
+      c.rpm = 4200;
+      ui::update(c, lc, ps, sc, tc += 1000);
+      ui::update(c, lc, ps, sc, tc += 1000);
+      CHECK(ui::testCenter() != 0, "ピークの記録を消したら、真ん中はピークではない");
+    }
     // 高負荷時間(GPS の時刻が分からない間は上に「時刻 待ち」)
     load::testSet(200000, false);
     sc.timeOk = false;
@@ -3423,6 +3502,22 @@ int main() {
       gfx::dirtyClear();
     }
     CHECK(same(c, tc), "高負荷時間を 1 秒ずつ描き直した絵 = 最初から描いた絵");
+    {  // 2.11.0: デモの時刻(timeDemo)では、時計は出すが、高負荷時間は「時刻 待ち」のまま(電源が切れていた時間を引いていない)
+      auto waitInk = [&]() {  // 「時刻 待ち」の行の、黒でない点の数(針は半径 HAND_R_IN の外なので掛からない)
+        int n = 0;
+        for (int y = 158; y < 182; y++)
+          for (int x = 185; x < 281; x++) n += px(x, y) != gfx::rgb(0x000000);
+        return n;
+      };
+      CHECK(waitInk() == 0, "高負荷時間: GPS の時刻が分かっていれば「時刻 待ち」は無い");
+      sc.timeDemo = true;
+      ui::update(c, lc, ps, sc, tc += 1000);
+      CHECK(ui::testCenter() == 1 && waitInk() > 50, "高負荷時間: デモの時刻では「時刻 待ち」のまま");
+      CHECK(same(c, tc), "高負荷時間(デモの時刻)の絵 = 最初から描いた絵");
+      sc.timeDemo = false;
+      ui::update(c, lc, ps, sc, tc += 1000);
+      CHECK(waitInk() == 0 && same(c, tc), "高負荷時間: GPS の時刻になったら「時刻 待ち」を消す");
+    }
     c.rpm = 4500;  // 背景が緑: 黒い円が見える(回転が上がってもピークを出さないよう、ピークの記録を消してから)
     load::testSet(16 * 60000, false);
     ui::update(c, lc, ps, sc, tc += 1000);
@@ -3434,7 +3529,7 @@ int main() {
     load::testReset();
     c.rpm = 850;
     ui::update(c, lc, ps, sc, tc += 1000);
-    CHECK(ui::testCenter() == 3, "高負荷時間が 0 になったら接続の状態");
+    CHECK(ui::testCenter() == 4, "高負荷時間が 0 になったらデジタル時計(接続の状態が変わってから STATUS_SHOW_MS たっている)");
     gfx::dirtyClear();
 
     // ---- 設定: 高負荷時間の 4 項目(7〜10 項目目)とデフォルトに戻す(14 項目目)
@@ -3484,6 +3579,86 @@ int main() {
     settingsDefaults(&set);
     ui::testShow(ui::SC_DRIVE);
     gfx::dirtyClear();
+  }
+
+  // ---------------- 30. 2.11.0: スポーツモード(C-CAN 0A18A000 b4 の 0x10。本人 10/28 の写真)をタコに「SPORT」
+  {
+    veh::begin();
+    const uint32_t t0 = 300000000;
+    uint8_t fd[8] = { 0x20, 0x09, 0x40, 0x72, 0x10, 0x37, 0x20, 0xC8 };  // 写真 IMG_1801(b4 = 10、メーターはスポーツの表示)
+    veh::onFrame(0, 1, VEH_ID_FUEL, 8, fd, t0);
+    Signals v;
+    memset(&v, 0, sizeof(v));
+    veh::getSignals(&v, t0);
+    CHECK(v.sportOk && v.sport && v.fuelOk && v.fuelPct == 0x37, "スポーツ: 0A18A000 b4 = 10 でスポーツ(燃料 b5 はそのまま)");
+    fd[4] = 0x00;  // 写真 IMG_1802(b4 = 00、通常の表示)
+    veh::onFrame(0, 1, VEH_ID_FUEL, 8, fd, t0 + 100);
+    memset(&v, 0, sizeof(v));
+    veh::getSignals(&v, t0 + 100);
+    CHECK(v.sportOk && !v.sport, "スポーツ: b4 = 00 で通常");
+    fd[4] = 0xEF;  // 0x10 のほかが全部 1
+    veh::onFrame(0, 1, VEH_ID_FUEL, 8, fd, t0 + 200);
+    memset(&v, 0, sizeof(v));
+    veh::getSignals(&v, t0 + 200);
+    CHECK(!v.sport, "スポーツ: 0x10 だけを見る(10/22 のログの b4 = 02 は通常)");
+    fd[4] = 0x10;
+    veh::onFrame(1, 1, VEH_ID_FUEL, 8, fd, t0 + 300);  // B-CAN の同じ ID は使わない
+    memset(&v, 0, sizeof(v));
+    veh::getSignals(&v, t0 + 300);
+    CHECK(!v.sport, "スポーツ: B-CAN の同じ ID は使わない");
+    veh::onFrame(0, 1, VEH_ID_FUEL, 8, fd, t0 + 400);
+    memset(&v, 0, sizeof(v));
+    veh::getSignals(&v, t0 + 400 + VEH_FUEL_TIMEOUT_MS + 1);
+    CHECK(!v.sportOk && !v.sport, "スポーツ: VEH_FUEL_TIMEOUT_MS 受けなければ出さない");
+    veh::begin();
+
+    // ---- タコの「SPORT」
+    Signals b;
+    memset(&b, 0, sizeof(b));
+    b.linkUp = b.rpmOk = b.boostOk = b.gearOk = b.waterOk = b.fuelOk = true;
+    b.rpm = 2500; b.boostBar = 0.4f; b.gear = '3'; b.waterC = 85; b.fuelPct = 60;
+    LinkStats lb;
+    memset(&lb, 0, sizeof(lb));
+    lb.locked = true;
+    SysInfo sb;
+    memset(&sb, 0, sizeof(sb));
+    uint32_t tb = t0 + 100000;
+    static uint16_t fbB[gfx::W * gfx::H];
+    auto sameB = [&](const Signals &x, uint32_t at) {
+      memcpy(fbB, fb, sizeof(fbB));
+      ui::testRedraw();
+      ui::update(x, lb, ps, sb, at);
+      gfx::dirtyClear();
+      return memcmp(fbB, fb, sizeof(fbB)) == 0;
+    };
+    auto redIn = [&]() {  // 「SPORT」の四角の中に TACH_SPORT_RGB の画素があるか
+      int n = 0;
+      for (int y = TACH_SPORT_BASE - 30; y < TACH_SPORT_BASE + 6; y++)
+        for (int x = TACH_SPORT_CX - 56; x < TACH_SPORT_CX + 56; x++) n += fb[y * gfx::W + x] == gfx::rgb(TACH_SPORT_RGB);
+      return n;
+    };
+    ui::testShow(ui::SC_BOOST);
+    ui::update(b, lb, ps, sb, tb);
+    gfx::dirtyClear();
+    CHECK(redIn() == 0, "タコ: スポーツでなければ「SPORT」は出さない");
+    b.sportOk = b.sport = true;
+    ui::update(b, lb, ps, sb, tb += 50);
+    gfx::dirtyClear();
+    CHECK(redIn() > 200, "タコ: スポーツの間は下の真ん中に「SPORT」");
+    CHECK(sameB(b, tb), "タコ: 「SPORT」を出した絵 = 最初から描いた絵");
+    b.rpm = 6500; b.boostBar = 1.3f; b.gear = '4';  // 針・帯・数字・ギアも同時に変わる
+    ui::update(b, lb, ps, sb, tb += 50);
+    gfx::dirtyClear();
+    CHECK(sameB(b, tb), "タコ: 「SPORT」のまま針・数字・ギアが変わった絵 = 最初から描いた絵");
+    b.sport = false;
+    ui::update(b, lb, ps, sb, tb += 50);
+    gfx::dirtyClear();
+    CHECK(redIn() == 0 && sameB(b, tb), "タコ: スポーツをやめたら消す(= 最初から描いた絵)");
+    ui::testShow(ui::SC_DRIVE);
+    gfx::dirtyClear();
+    // 2.11.0: 値の書体は、字の無い大きい書体を選ばない(乱数試験で「前を記録した」を 64 px で描いて「を」「た」が無かった)
+    CHECK(!gfx::hasGlyphs(FONT_JP600_64, "前を記録した") && gfx::hasGlyphs(FONT_JP600_44, "前を記録した") && gfx::hasGlyphs(FONT_JP600_64, "受信なし"),
+          "書体: 字があるかを見られる(「前を記録した」は 64 px に無く 44 px にある)");
   }
 
   printf("単体試験: %d 個 OK、%d 個 NG、無かった文字 %u\n", passes, fails, (unsigned)gfx::missingGlyphs());

@@ -115,6 +115,7 @@ int main(int argc, char **argv) {
             uint8_t dlc = (uint8_t)rndN(9);
             h.info = (uint8_t)((chance(300) ? 0x80 : 0) | (chance(900) ? 0x40 : 0) | dlc);
             h.id = chance(700) ? (0x0618A000u + rndN(24)) : (chance(500) ? rndN(250) * 0x01000001u : rnd());
+            if (chance(60)) h.id = chance(500) ? VEH_ID_LIGHT : VEH_ID_FUEL;  // 2.11.0: ライトと、燃料・スポーツモード(b4 の 0x10)の ID も混ぜる
             memcpy(p, &h, sizeof(h));
             for (int b = 0; b < 8; b++) p[sizeof(h) + b] = (uint8_t)(chance(700) ? 0x10 * b : rnd());
             sendFrame(ML_TYPE_CAN, p, (uint8_t)(sizeof(h) + dlc), now, damage);
@@ -214,6 +215,7 @@ int main(int argc, char **argv) {
       }
       load::update(s, set, now);
       if (chance(5)) si.timeOk = chance(800);
+      if (chance(5)) si.timeDemo = chance(300);  // 2.11.0: デモの時刻(高負荷時間は「時刻 待ち」のまま)
       si.utc = 1793065338u + now / 1000 + (chance(1) ? rnd() : 0);
       ps.fps = rndN(100);
       ps.loopMaxMs = rndN(60);
@@ -269,6 +271,11 @@ int main(int argc, char **argv) {
           mlink::getSignals(&s, now);
           ui::update(s, ls, ps, si, now);
         }
+        // 2.11.0: 値を 0.5 秒ごとに描き直す画面(受信の状態・グループの中)は、描き直した時刻で比べる。間の時刻で比べると、
+        // 時間で変わる判定(ライトの「受信なし」= VEH_LIGHT_TIMEOUT_MS など)が、最初から描いたものと違ってよいため
+        now += 500;
+        mlink::getSignals(&s, now);
+        ui::update(s, ls, ps, si, now);
         // 受信が途切れる境目(1 秒)と自動で戻る境目をまたがないよう、値はここで止める
         // オープニングは照合しない(最初から描くと始めからやり直す作りなので、同じ時刻の絵にならない。2.4.3)
         ui::Screen sc = ui::screen();

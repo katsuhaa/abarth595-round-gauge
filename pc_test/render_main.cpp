@@ -90,6 +90,14 @@ int main(int argc, char **argv) {
   shot("BoostHalf", sig(3000, '2', 90, 50, true, true, 0.74f), ui::SC_BOOST);
   now += 10000;
   shot("BoostHot", sig(5600, '4', 112, 12, true, true, 0.9f), ui::SC_BOOST);         // 水温の異常と燃料の異常(右下の弧とアイコンが赤)
+  {
+    Signals sp = sig(5600, '4', 112, 12, true, true, 0.9f);
+    sp.sportOk = sp.sport = true;
+    shot("BoostSportHot", sp, ui::SC_BOOST);  // 2.11.0: スポーツモードの「SPORT」と、水温・燃料の札
+    sp = sig(4200, '3', 92, 62, true, true, 1.25f);
+    sp.sportOk = sp.sport = true;
+    shot("BoostSport", sp, ui::SC_BOOST);  // 2.11.0: スポーツモードの「SPORT」
+  }
   now += 10000;
   shot("BoostPeakUp", sig(6400, '3', 92, 62, true, true, 1.4f), ui::SC_BOOST);       // 6400 まで上げてから
   now += 200;
@@ -169,6 +177,11 @@ int main(int argc, char **argv) {
     g_keepPeak = true;
     shot("DrivePeak2", sig(4200, '3', 92, 62), ui::SC_DRIVE);
     now += 10000;
+    peakUp(6100);  // 2.11.0: 印が下がり始めたら、真ん中の数字は白
+    now += TACH_PEAK_HOLD_MS + 500;
+    g_keepPeak = true;
+    shot("DrivePeakFall", sig(4200, '3', 92, 62), ui::SC_DRIVE);
+    now += 10000;
     // 背景が黄色のときの針とピーク(紺)
     peakUp(6040);
     g_keepPeak = true;
@@ -185,8 +198,10 @@ int main(int argc, char **argv) {
         gfx::dirtyClear();
         now += 1000;
       }
-      shot("DriveClockStep", s, ui::SC_DRIVE);
+      shot("DriveClockStep", s, ui::SC_DRIVE);  // 2.11.0: 状態が変わらないまま 10 秒を過ぎたので、真ん中はデジタル時計
     }
+    shot("DriveClockYellow", sig(5500, '3', 92, 62), ui::SC_DRIVE);  // 2.11.0: シフト点の手前(背景が黄)の針の色
+    shot("DriveClockRed", sig(6300, '4', 92, 62), ui::SC_DRIVE);     // 2.11.0: シフト点を超えた(背景が赤)の針の色
     si.timeOk = false;
     memset(&si.rc, 0, sizeof(si.rc));
     memset(&ls, 0, sizeof(ls));
