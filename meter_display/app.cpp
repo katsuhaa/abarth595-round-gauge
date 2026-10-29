@@ -1117,6 +1117,11 @@ namespace gnss {
 static Fix g_fix;
 static bool g_have = false;
 static uint32_t g_pvt = 0, g_ack = 0, g_nak = 0, g_bad = 0;
+// 2.13.0: OTP の高性能設定のための受信(UBX-MON-VER の版、UBX-CFG-VALGET の応答、CFG-OTP(0x06 0x41)と VALGET の ACK/NAK の数)
+static char g_monSw[31], g_monHw[11];
+static uint32_t g_monVerCount = 0, g_valgetCount = 0, g_ackOtp = 0, g_nakOtp = 0, g_nakValget = 0;
+static uint8_t g_valget[100];
+static uint16_t g_valgetLen = 0;
 // 組み立て中のメッセージ
 static int g_state = 0;  // 0 = 同期 1 待ち、1 = 同期 2 待ち、2 = class、3 = id、4 = len L、5 = len H、6 = 中身、7 = ck A、8 = ck B
 static uint8_t g_cls = 0, g_id = 0, g_ckA = 0, g_ckB = 0;
@@ -1129,6 +1134,9 @@ void begin() {
   g_have = false;
   g_pvt = g_ack = g_nak = g_bad = 0;
   g_state = 0;
+  g_monSw[0] = g_monHw[0] = 0;
+  g_monVerCount = g_valgetCount = g_ackOtp = g_nakOtp = g_nakValget = 0;
+  g_valgetLen = 0;
 }
 
 static inline uint16_t u16(const uint8_t *p) {
@@ -1230,8 +1238,21 @@ int feed(const uint8_t *data, size_t n, uint32_t nowMs) {
             got++;
           } else if (g_cls == 0x05 && g_id == 0x01) {
             g_ack++;
+            if (g_plen == 2 && g_pay[0] == 0x06 && g_pay[1] == 0x41) g_ackOtp++;  // 2.13.0: CFG-OTP の ACK
           } else if (g_cls == 0x05 && g_id == 0x00) {
             g_nak++;
+            if (g_plen == 2 && g_pay[0] == 0x06 && g_pay[1] == 0x41) g_nakOtp++;
+            if (g_plen == 2 && g_pay[0] == 0x06 && g_pay[1] == 0x8B) g_nakValget++;
+          } else if (g_cls == 0x0A && g_id == 0x04 && g_plen >= 40) {  // 2.13.0: MON-VER(swVersion 30 文字 + hwVersion 10 文字 + 拡張。拡張は使わない)
+            memcpy(g_monSw, g_pay, 30);
+            g_monSw[30] = 0;
+            memcpy(g_monHw, g_pay + 30, 10);
+            g_monHw[10] = 0;
+            g_monVerCount++;
+          } else if (g_cls == 0x06 && g_id == 0x8B && g_plen >= 4) {  // 2.13.0: CFG-VALGET の応答(版・層・位置 + 鍵と値の並び)
+            g_valgetLen = g_plen < sizeof(g_pay) ? g_plen : (uint16_t)sizeof(g_pay);
+            memcpy(g_valget, g_pay, g_valgetLen);
+            g_valgetCount++;
           }
         } else {
           g_bad++;
@@ -1263,6 +1284,81 @@ uint32_t nakCount() {
 uint32_t badCount() {
   return g_bad;
 }
+// ---- 2.13.0: M10 の OTP の高性能設定(SAM-M10Q 統合マニュアル 2.1.5。本人 10/29 の決定: GPS + Galileo で 20 回/秒)
+// マニュアル Table 3 の 2 つの列(UBX-CFG-OTP、0x06 0x41。CPU のクロックを上げる設定を OTP に書く。永久)と、確かめる VALGET の問い合わせ。
+// チェックサムは 10/29 に計算して照合した
+static const uint8_t OTP_HP1[] = { 0xB5, 0x62, 0x06, 0x41, 0x10, 0x00, 0x03, 0x00, 0x04, 0x1F, 0x54, 0x5E, 0x79, 0xBF, 0x28, 0xEF, 0x12, 0x05, 0xFD, 0xFF, 0xFF, 0xFF, 0x8F, 0x0D };
+static const uint8_t OTP_HP2[] = { 0xB5, 0x62, 0x06, 0x41, 0x1C, 0x00, 0x04, 0x01, 0xA4, 0x10, 0xBD, 0x34, 0xF9, 0x12, 0x28, 0xEF, 0x12, 0x05, 0x05, 0x00, 0xA4, 0x40,
+                                   0x00, 0xB0, 0x71, 0x0B, 0x0A, 0x00, 0xA4, 0x40, 0x00, 0xD8, 0xB8, 0x05, 0xDE, 0xAE };
+static const uint8_t OTP_VALGET_POLL[] = { 0xB5, 0x62, 0x06, 0x8B, 0x14, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x00, 0xA4, 0x40, 0x03, 0x00, 0xA4, 0x40,
+                                           0x05, 0x00, 0xA4, 0x40, 0x0A, 0x00, 0xA4, 0x40, 0x4C, 0x15 };
+static const uint32_t OTP_KEYS[4] = { 0x40A40001, 0x40A40003, 0x40A40005, 0x40A4000A };
+static const uint32_t OTP_VALUES[4] = { 0x0B71B000, 0x0B71B000, 0x0B71B000, 0x05B8D800 };  // 192 MHz × 3、96 MHz
+size_t buildOtpHighPerf(int part, uint8_t *out, size_t cap) {
+  const uint8_t *src = part == 0 ? OTP_HP1 : OTP_HP2;
+  const size_t n = part == 0 ? sizeof(OTP_HP1) : sizeof(OTP_HP2);
+  if (cap < n) return 0;
+  memcpy(out, src, n);
+  return n;
+}
+size_t buildOtpValgetPoll(uint8_t *out, size_t cap) {
+  if (cap < sizeof(OTP_VALGET_POLL)) return 0;
+  memcpy(out, OTP_VALGET_POLL, sizeof(OTP_VALGET_POLL));
+  return sizeof(OTP_VALGET_POLL);
+}
+static void copyStr(char *dst, size_t cap, const char *src) {
+  if (!cap) return;
+  size_t i = 0;
+  for (; i + 1 < cap && src[i]; i++) dst[i] = src[i];
+  dst[i] = 0;
+}
+bool monVer(char *sw, size_t swCap, char *hw, size_t hwCap) {
+  if (!g_monVerCount) return false;
+  copyStr(sw, swCap, g_monSw);
+  copyStr(hw, hwCap, g_monHw);
+  return true;
+}
+uint32_t monVerCount() {
+  return g_monVerCount;
+}
+uint32_t valgetCount() {
+  return g_valgetCount;
+}
+uint32_t ackOtpCount() {
+  return g_ackOtp;
+}
+uint32_t nakOtpCount() {
+  return g_nakOtp;
+}
+uint32_t nakValgetCount() {
+  return g_nakValget;
+}
+bool valgetValue(uint32_t key, uint32_t *val) {
+  size_t pos = 4;  // 版(1)・層(1)・位置(2)の次から鍵と値
+  while (pos + 4 <= g_valgetLen) {
+    uint32_t k = u32(g_valget + pos);
+    int size = (int)((k >> 28) & 7);
+    int n = (size == 3) ? 2 : (size == 4) ? 4 : (size == 5) ? 8 : 1;
+    if (pos + 4 + (size_t)n > g_valgetLen) return false;
+    if (k == key) {
+      uint32_t v = 0;
+      for (int i = 0; i < n && i < 4; i++) v |= (uint32_t)g_valget[pos + 4 + i] << (8 * i);
+      *val = v;
+      return true;
+    }
+    pos += 4 + (size_t)n;
+  }
+  return false;
+}
+int otpHighPerfState() {
+  if (!g_valgetCount) return 0;
+  for (int i = 0; i < 4; i++) {
+    uint32_t v;
+    if (!valgetValue(OTP_KEYS[i], &v)) return 2;
+    if (v != OTP_VALUES[i]) return 2;
+  }
+  return 1;
+}
 
 // UBX の枠(同期 2 + class + id + 長さ 2 + 中身 + チェックサム 2)を作る
 static size_t ubxFrame(uint8_t *out, size_t cap, uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t len) {
@@ -1274,7 +1370,7 @@ static size_t ubxFrame(uint8_t *out, size_t cap, uint8_t cls, uint8_t id, const 
   out[3] = id;
   out[4] = (uint8_t)(len & 0xFF);
   out[5] = (uint8_t)(len >> 8);
-  memcpy(out + 6, payload, len);
+  if (len) memcpy(out + 6, payload, len);  // 2.13.0: 中身なし(MON-VER の問い合わせ)も作れるように
   uint8_t a = 0, b = 0;
   for (size_t i = 2; i < 6 + (size_t)len; i++) {
     a = (uint8_t)(a + out[i]);
@@ -1332,7 +1428,7 @@ size_t buildSignals(uint8_t *out, size_t cap) {
   pay[n++] = 0x00;
   n += putKey(pay + n, KEY_GPS, 1);
   n += putKey(pay + n, KEY_GPS_L1CA, 1);
-  n += putKey(pay + n, KEY_GAL, 1);
+  n += putKey(pay + n, KEY_GAL, 1);  // GPS + Galileo(本人 10/29 の決定。u-blox M10 の測位の上限は、既定で 10 回/秒、OTP の高性能設定で 20 回/秒)
   n += putKey(pay + n, KEY_GAL_E1, 1);
   n += putKey(pay + n, KEY_QZSS, 1);
   n += putKey(pay + n, KEY_QZSS_L1CA, 1);
@@ -1342,6 +1438,13 @@ size_t buildSignals(uint8_t *out, size_t cap) {
   return ubxFrame(out, cap, 0x06, 0x8A, pay, (uint16_t)n);
 }
 
+size_t buildMonVerPoll(uint8_t *out, size_t cap) {  // 2.13.0: UBX-MON-VER の問い合わせ(中身なし)
+  return ubxFrame(out, cap, 0x0A, 0x04, nullptr, 0);
+}
+size_t buildReset(uint8_t *out, size_t cap) {  // 2.13.0: UBX-CFG-RST = ハードウェアリセット(navBbrMask 0 = ホットスタート)。OTP の設定は再起動で効く
+  const uint8_t pay[4] = { 0x00, 0x00, 0x00, 0x00 };
+  return ubxFrame(out, cap, 0x06, 0x04, pay, 4);
+}
 size_t buildBaud(uint8_t *out, size_t cap, uint32_t baud) {
   uint8_t pay[16];
   size_t n = 0;

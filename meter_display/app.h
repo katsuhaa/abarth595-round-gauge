@@ -120,6 +120,9 @@ struct RcStats {
   // 2.10.0: GPS(M100)を動かしている。RaceChrono の送信の入・切に関係なく動かす(時計と高負荷時間に時刻を使う)。
   // 落ちる起動が続いて RC_CRASH_LIMIT で止めたときだけ false(enabled は送信 = BLE・IMU を動かしているか)
   bool gpsOn;
+  // 2.13.0: M100 の OTP の高性能設定の状態。0 = 待ち(確かめている・書いている)、1 = 済、2 = 未(確かめただけ。RC_GPS_OTP_HIGH_PERF 0)、
+  // 3 = 不明(応答なし)、4 = 異常(未対応の版、書けなかった、書いたのに入っていない)
+  uint8_t otp;
 };
 
 struct SysInfo {
@@ -349,11 +352,25 @@ uint32_t badCount();      // チェックサムの合わなかった数
 // 設定(UBX-CFG-VALSET、層は config.h の RC_GPS_CFG_LAYERS)。2 つに分けてある(1 つでも鍵が通らないと、その
 // メッセージ全体が NAK になるため。無くても困らない衛星系の設定で、測位の設定まで落とさない)。戻り値はバイト数
 //   buildConfig : 測位 rateHz 回/秒、NAV-PVT を UART1 へ、NMEA を止める、UBX の入力、車載モデル(out は 96 バイト以上)
-//   buildSignals: 衛星系は GPS・Galileo・QZSS、BeiDou・GLONASS・SBAS は切(RaceBox 互換機と同じ。out は 96 バイト以上)
+//   buildSignals: 衛星系は GPS・Galileo・QZSS、BeiDou・GLONASS・SBAS は切(本人 10/29 の決定。u-blox M10 は GPS+Galileo だと測位が既定で
+//                 最大 10 回/秒、OTP の高性能設定(下)で 20 回/秒。out は 96 バイト以上)
 size_t buildConfig(uint8_t *out, size_t cap, int rateHz);
 size_t buildSignals(uint8_t *out, size_t cap);
 // UART1 の速度だけを変える(工場出荷の 9600 bps から RC_GPS_BAUD へ)
 size_t buildBaud(uint8_t *out, size_t cap, uint32_t baud);
+// 2.13.0: M10 の OTP の高性能設定(測位の回数の上限を上げる。SAM-M10Q 統合マニュアル 2.1.5。永久の設定で、元に戻せない。本人 10/29 の決定)
+size_t buildMonVerPoll(uint8_t *out, size_t cap);         // UBX-MON-VER の問い合わせ(版を読む)
+size_t buildOtpHighPerf(int part, uint8_t *out, size_t cap);  // マニュアルの設定列 2 本(part 0、1)をそのまま。UBX-CFG-OTP(0x06 0x41)
+size_t buildOtpValgetPoll(uint8_t *out, size_t cap);      // 設定を確かめる UBX-CFG-VALGET の問い合わせ(鍵 4 つ)
+size_t buildReset(uint8_t *out, size_t cap);              // UBX-CFG-RST(ハードウェアリセット。書いた設定は再起動で効く)
+bool monVer(char *sw, size_t swCap, char *hw, size_t hwCap);  // 受けた MON-VER の swVersion(例「ROM SPG 5.10 (7b202e)」)と hwVersion。無ければ false
+uint32_t monVerCount();     // 受けた MON-VER の数
+uint32_t valgetCount();     // 受けた CFG-VALGET の応答の数
+uint32_t ackOtpCount();     // CFG-OTP への ACK の数(設定列 2 本で 2)
+uint32_t nakOtpCount();     // CFG-OTP への NAK の数
+uint32_t nakValgetCount();  // CFG-VALGET への NAK の数(鍵を知らないファーム)
+bool valgetValue(uint32_t key, uint32_t *val);  // 最後に受けた VALGET の応答から鍵の値を取る
+int otpHighPerfState();     // 0 = 応答なし、1 = 高性能設定が入っている(4 つの鍵が期待の値)、2 = 入っていない
 }
 
 // ---------------------------------------------------------------- gtime(今の時刻。2.10.0: サーキットの時計と高負荷時間)

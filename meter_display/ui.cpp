@@ -2458,10 +2458,10 @@ static void drawDefaultsDesc(int y) {
 enum Group : uint8_t { G_CAN, G_GPS, G_IMU, G_RC, G_SYS, G_COUNT };
 static const int N_LINK_GROUPS = 4;  // 受信の状態のグループ(CAN・GPS・IMU・RaceChrono)
 static const char *const GROUP_NAME[G_COUNT] = { "CAN", "GPS", "IMU", "RaceChrono", "本体の状態" };
-static const int GROUP_N[G_COUNT] = { 9, 3, 2, 3, 8 };  // グループの中のページの数(2.6.0: CAN に「前後で比べる」。2.9.0: CAN に「ライト」)
+static const int GROUP_N[G_COUNT] = { 9, 4, 2, 3, 8 };  // グループの中のページの数(2.6.0: CAN に「前後で比べる」。2.9.0: CAN に「ライト」。2.13.0: GPS に「OTP」)
 static const int GRP_MAX = 9;
 enum { P_CAN_BAUD, P_CAN_RX, P_CAN_ERR, P_CAN_READER, P_CAN_BUS, P_CAN_FUEL, P_CAN_LIGHT, P_CAN_CHECK, P_CAN_PP };  // CAN の中のページ
-enum { P_GPS_FIX, P_GPS_POS, P_GPS_SPEED };                                                   // GPS
+enum { P_GPS_FIX, P_GPS_POS, P_GPS_SPEED, P_GPS_OTP };                                        // GPS(2.13.0: OTP = M100 の高性能設定)
 enum { P_IMU_ACC, P_IMU_CAL };                                                                // IMU
 enum { P_RC_SEND, P_RC_LINK, P_RC_RATE };                                                     // RaceChrono
 enum { P_SYS_FPS, P_SYS_CPU, P_SYS_CLOCK, P_SYS_TEMP, P_SYS_RAM, P_SYS_PSRAM, P_SYS_FLASH, P_SYS_BOOT };  // 本体の状態
@@ -2577,12 +2577,19 @@ static void lightSub(uint32_t now, char *out, size_t n) {
 // GPS(M100): 測位(届かなければ赤)・位置・速度。2.10.0: RaceChrono の送信の入・切に関係なく動かす(時計と高負荷時間に時刻を使う)。
 // 落ちる起動が続いて止めたとき(RC_CRASH_LIMIT)だけ「切」
 static void gpsItems(const SysInfo &si, InfoItem *it) {
-  static const char *const L[] = { "測位", "位置", "速度" };
+  static const char *const L[] = { "測位", "位置", "速度", "OTP" };
   initItems(it, GROUP_N[G_GPS], L);
   it[P_GPS_FIX].core = true;
   const RcStats &r = si.rc;
   const bool fix = r.gpsOk && r.fixType >= 2;
-  InfoItem &x = it[P_GPS_FIX], &p = it[P_GPS_POS], &s = it[P_GPS_SPEED];
+  InfoItem &x = it[P_GPS_FIX], &p = it[P_GPS_POS], &s = it[P_GPS_SPEED], &o = it[P_GPS_OTP];
+  // 2.13.0: M100 の OTP の高性能設定(測位の上限 10 → 20 回/秒)。済 = 入っている、未 = 確かめただけ、不明 = 応答なし、異常 = 版が違う・書けない。まとめには入れない
+  if (!r.gpsOn) snprintf(o.value, sizeof(o.value), "切");
+  else if (r.otp == 1) snprintf(o.value, sizeof(o.value), "済 20 Hz"), o.v = V_OK;
+  else if (r.otp == 2) snprintf(o.value, sizeof(o.value), "未 10 Hz");
+  else if (r.otp == 3) snprintf(o.value, sizeof(o.value), "不明"), o.v = V_NG;
+  else if (r.otp == 4) snprintf(o.value, sizeof(o.value), "異常"), o.v = V_NG;
+  else snprintf(o.value, sizeof(o.value), "待ち");
   if (!r.gpsOn) snprintf(x.value, sizeof(x.value), "切");
   else if (!r.gpsOk) snprintf(x.value, sizeof(x.value), "受信なし"), x.v = V_NG;
   else snprintf(x.value, sizeof(x.value), "%s 衛星 %u %u Hz", r.fixType == 3 || r.fixType == 4 ? "3D" : r.fixType == 2 ? "2D" : "測位なし", (unsigned)r.numSV, (unsigned)r.pvtPerSec), x.v = fix ? V_OK : V_WAIT;

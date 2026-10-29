@@ -1620,12 +1620,77 @@ int main() {
         pos += 4 + (size_t)vn;
         keys++;
       }
-      CHECK(cfg[n - 2] == a && cfg[n - 1] == b && keys == 9 && on == 6 && pos == n - 2, "衛星系の設定: 鍵 9 個(入 6、切 3)、チェックサム");
+      CHECK(cfg[n - 2] == a && cfg[n - 1] == b && keys == 9 && on == 6 && pos == n - 2, "衛星系の設定: 鍵 9 個(入 6 = GPS・Galileo・QZSS、切 3 = BeiDou・GLONASS・SBAS)、チェックサム");
     }
     n = gnss::buildBaud(cfg, sizeof(cfg), 115200);
     CHECK(n == 8 + 4 + 8 && cfg[10] == 0x01 && cfg[11] == 0x00 && cfg[12] == 0x52 && cfg[13] == 0x40 && cfg[14] == 0x00 && cfg[15] == 0xC2 && cfg[16] == 0x01 && cfg[17] == 0x00,
           "速度の設定: 鍵 0x40520001 と 115200(4 バイト)");
     CHECK(gnss::buildConfig(cfg, 16, 25) == 0, "出力が小さすぎるときは 0");
+    // 2.13.0: M10 の OTP の高性能設定(SAM-M10Q 統合マニュアル 2.1.5)。設定列・問い合わせ・リセットの枠とチェックサム、応答の読み取り
+    {
+      auto ckOk = [](const uint8_t *m, size_t n) {
+        if (n < 8 || m[0] != 0xB5 || m[1] != 0x62) return false;
+        size_t len = (size_t)(m[4] | (m[5] << 8));
+        if (n != len + 8) return false;
+        uint8_t a = 0, b = 0;
+        for (size_t i = 2; i < n - 2; i++) { a = (uint8_t)(a + m[i]); b = (uint8_t)(b + a); }
+        return m[n - 2] == a && m[n - 1] == b;
+      };
+      uint8_t m[64];
+      size_t n1 = gnss::buildOtpHighPerf(0, m, sizeof(m));
+      CHECK(n1 == 24 && m[2] == 0x06 && m[3] == 0x41 && m[6] == 0x03 && m[22] == 0x8F && m[23] == 0x0D && ckOk(m, n1), "OTP 1 本目: CFG-OTP、24 バイト、チェックサム 8F 0D");
+      size_t n2 = gnss::buildOtpHighPerf(1, m, sizeof(m));
+      CHECK(n2 == 36 && m[2] == 0x06 && m[3] == 0x41 && m[6] == 0x04 && m[34] == 0xDE && m[35] == 0xAE && ckOk(m, n2), "OTP 2 本目: CFG-OTP、36 バイト、チェックサム DE AE");
+      // 2 本目の中に 192 MHz(0x0B71B000)と 96 MHz(0x05B8D800)の値が入っている
+      CHECK(m[22] == 0x00 && m[23] == 0xB0 && m[24] == 0x71 && m[25] == 0x0B && m[30] == 0x00 && m[31] == 0xD8 && m[32] == 0xB8 && m[33] == 0x05, "OTP 2 本目: 192 MHz と 96 MHz の値");
+      size_t n3 = gnss::buildOtpValgetPoll(m, sizeof(m));
+      CHECK(n3 == 28 && m[2] == 0x06 && m[3] == 0x8B && m[26] == 0x4C && m[27] == 0x15 && ckOk(m, n3), "OTP の確認: VALGET の問い合わせ、28 バイト、チェックサム 4C 15");
+      size_t n4 = gnss::buildMonVerPoll(m, sizeof(m));
+      CHECK(n4 == 8 && m[2] == 0x0A && m[3] == 0x04 && m[4] == 0 && m[5] == 0 && ckOk(m, n4), "MON-VER の問い合わせ: 中身なしの 8 バイト");
+      size_t n5 = gnss::buildReset(m, sizeof(m));
+      CHECK(n5 == 12 && m[2] == 0x06 && m[3] == 0x04 && m[6] == 0 && m[7] == 0 && m[8] == 0 && ckOk(m, n5), "CFG-RST: ハードウェアリセット、ホットスタート");
+      CHECK(gnss::buildOtpHighPerf(1, m, 20) == 0 && gnss::buildOtpValgetPoll(m, 10) == 0, "出力が小さすぎるときは 0");
+      // 応答の読み取り: マニュアルの期待する応答 → 設定済み。値が違う応答 → 未設定。ACK/NAK の数え分け。MON-VER の版
+      gnss::begin();
+      CHECK(gnss::otpHighPerfState() == 0 && !gnss::monVer(nullptr, 0, nullptr, 0), "読む前: 応答なし、版なし");
+      static const uint8_t resp[] = { 0xB5, 0x62, 0x06, 0x8B, 0x24, 0x00, 0x01, 0x04, 0x00, 0x00, 0x01, 0x00, 0xA4, 0x40, 0x00, 0xB0, 0x71, 0x0B, 0x03, 0x00, 0xA4, 0x40, 0x00, 0xB0, 0x71, 0x0B,
+                                      0x05, 0x00, 0xA4, 0x40, 0x00, 0xB0, 0x71, 0x0B, 0x0A, 0x00, 0xA4, 0x40, 0x00, 0xD8, 0xB8, 0x05, 0x76, 0x81 };
+      gnss::feed(resp, sizeof(resp), 1000);
+      uint32_t v = 0;
+      CHECK(gnss::valgetCount() == 1 && gnss::valgetValue(0x40A4000A, &v) && v == 0x05B8D800 && gnss::valgetValue(0x40A40003, &v) && v == 0x0B71B000 && !gnss::valgetValue(0x40A40002, &v),
+            "VALGET の応答: 鍵の値を取れる、無い鍵は false");
+      CHECK(gnss::otpHighPerfState() == 1, "マニュアルの期待する応答 → 設定済み");
+      uint8_t resp2[sizeof(resp)];
+      memcpy(resp2, resp, sizeof(resp));
+      resp2[15] = 0x00; resp2[16] = 0x6E; resp2[17] = 0x02;  // 1 つ目の鍵を 0x026E0000 に(既定のクロックの想定)
+      { uint8_t a = 0, b = 0; for (size_t i = 2; i < sizeof(resp2) - 2; i++) { a = (uint8_t)(a + resp2[i]); b = (uint8_t)(b + a); } resp2[sizeof(resp2) - 2] = a; resp2[sizeof(resp2) - 1] = b; }
+      gnss::feed(resp2, sizeof(resp2), 1100);
+      CHECK(gnss::valgetCount() == 2 && gnss::otpHighPerfState() == 2, "値が違う応答 → 未設定");
+      static const uint8_t ackOtp[] = { 0xB5, 0x62, 0x05, 0x01, 0x02, 0x00, 0x06, 0x41, 0x4F, 0x78 };
+      static const uint8_t ackValget[] = { 0xB5, 0x62, 0x05, 0x01, 0x02, 0x00, 0x06, 0x8B, 0x99, 0xC2 };
+      static const uint8_t nakValget[] = { 0xB5, 0x62, 0x05, 0x00, 0x02, 0x00, 0x06, 0x8B, 0x98, 0xBD };
+      gnss::feed(ackOtp, sizeof(ackOtp), 1200);
+      gnss::feed(ackOtp, sizeof(ackOtp), 1300);
+      gnss::feed(ackValget, sizeof(ackValget), 1400);
+      gnss::feed(nakValget, sizeof(nakValget), 1500);
+      CHECK(gnss::ackOtpCount() == 2 && gnss::nakOtpCount() == 0 && gnss::nakValgetCount() == 1 && gnss::ackCount() == 3 && gnss::nakCount() == 1 && gnss::badCount() == 0,
+            "ACK/NAK: CFG-OTP の ACK 2、VALGET の ACK 1・NAK 1");
+      // MON-VER: swVersion 30 文字、hwVersion 10 文字、拡張 2 つ(各 30)= 100 バイト
+      uint8_t mv[8 + 100];
+      memset(mv, 0, sizeof(mv));
+      mv[0] = 0xB5; mv[1] = 0x62; mv[2] = 0x0A; mv[3] = 0x04; mv[4] = 100; mv[5] = 0;
+      memcpy(mv + 6, "ROM SPG 5.10 (7b202e)", 21);
+      memcpy(mv + 36, "000A0000", 8);
+      memcpy(mv + 46, "PROTVER=34.10", 13);
+      memcpy(mv + 76, "MOD=MAX-M10S", 12);
+      { uint8_t a = 0, b = 0; for (size_t i = 2; i < 106; i++) { a = (uint8_t)(a + mv[i]); b = (uint8_t)(b + a); } mv[106] = a; mv[107] = b; }
+      gnss::feed(mv, sizeof(mv), 1600);
+      char sw[32], hw[12];
+      CHECK(gnss::monVerCount() == 1 && gnss::monVer(sw, sizeof(sw), hw, sizeof(hw)) && strcmp(sw, "ROM SPG 5.10 (7b202e)") == 0 && strcmp(hw, "000A0000") == 0, "MON-VER: 版を読める");
+      CHECK(strncmp(sw, RC_GPS_OTP_FW_PREFIX, strlen(RC_GPS_OTP_FW_PREFIX)) == 0, "版が手順の対象(ROM SPG 5.10)で始まる");
+      gnss::begin();
+      CHECK(gnss::otpHighPerfState() == 0 && gnss::ackOtpCount() == 0 && gnss::monVerCount() == 0, "begin で OTP の受信もリセット");
+    }
   }
 
   // ---------------- 17. RaceChrono DIY の符号化(GPS 20 バイト、日時 3 バイト、CAN)
@@ -2679,7 +2744,22 @@ int main() {
       CHECK(ui::testInfoItem(2, 0, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切(RaceChrono 送信)") == 0, "IMU の加速度: 送信が切なら「切(RaceChrono 送信)」の灰");
       CHECK(ui::testInfoSummary(3, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切") == 0, "RaceChrono のまとめ: 送信が切なら「切」の灰");
       CHECK(ui::testInfoSummary(1, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "待ち") == 0, "GPS のまとめ: 送信が切でも測位前なら「待ち」(2.10.0)");
+      // 2.13.0: GPS の 4 ページ目「OTP」(M100 の高性能設定)。まとめには入れない
+      s2.rc.otp = 0;
+      CHECK(ui::testInfoItem(1, 3, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "待ち") == 0, "GPS の OTP: 確かめている間は「待ち」");
+      s2.rc.otp = 1;
+      CHECK(ui::testInfoItem(1, 3, l1, p0, s2, far, v, sizeof(v)) == 1 && strcmp(v, "済 20 Hz") == 0, "GPS の OTP: 入っていれば「済 20 Hz」の緑");
+      CHECK(ui::testInfoSummary(1, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "待ち") == 0, "GPS のまとめ: OTP が済でも測位前なら「待ち」(OTP はまとめに入れない)");
+      s2.rc.otp = 2;
+      CHECK(ui::testInfoItem(1, 3, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "未 10 Hz") == 0, "GPS の OTP: 書かない設定なら「未 10 Hz」");
+      s2.rc.otp = 3;
+      CHECK(ui::testInfoItem(1, 3, l1, p0, s2, far, v, sizeof(v)) == 2 && strcmp(v, "不明") == 0, "GPS の OTP: 応答なしは「不明」の赤");
+      s2.rc.otp = 4;
+      CHECK(ui::testInfoItem(1, 3, l1, p0, s2, far, v, sizeof(v)) == 2 && strcmp(v, "異常") == 0, "GPS の OTP: 版が違う・書けないは「異常」の赤");
+      CHECK(ui::testInfoSummary(1, l1, p0, s2, far, v, sizeof(v)) == 2 && strcmp(v, "異常 1") == 0, "GPS のまとめ: OTP が異常なら赤を数えて「異常 1」(版が違う・書けないのは気づけるように)");
+      s2.rc.otp = 0;
       s2.rc.gpsOn = false;
+      CHECK(ui::testInfoItem(1, 3, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切") == 0, "GPS の OTP: GPS を止めているときは「切」");
       CHECK(ui::testInfoItem(1, 0, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切") == 0, "GPS の測位: 止めているときは「切」の灰(2.10.0)");
       CHECK(ui::testInfoSummary(1, l1, p0, s2, far, v, sizeof(v)) == 0 && strcmp(v, "切") == 0, "GPS のまとめ: 止めているときは「切」の灰(2.10.0)");
       CHECK(ui::testInfoSummary(-1, l1, p0, s2, far, v, sizeof(v)) == 1, "受信の状態のまとめ: 送信が切・GPS を止めているなら GPS・IMU・RaceChrono は数えない");

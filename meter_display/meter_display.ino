@@ -866,6 +866,13 @@ static int g_gpsRxPin = PIN_GPS_RX, g_gpsTxPin = PIN_GPS_TX;
 static bool g_gpsPinsKnown = false;  // 信号のあるピンを見つけた
 static uint8_t g_gpsSync = 0;
 static uint32_t g_gpsPrevCode = 0xFFFFFFFF;
+// 2.13.0: M100 の OTP の高性能設定(otpManage)。状態は下の enum、結果は g_sys.rc.otp(受信の状態 → GPS の「OTP」)
+enum { OTP_WAIT_GPS = 0, OTP_QUERY, OTP_WRITE, OTP_RESET, OTP_DONE, OTP_NOT_SET, OTP_UNKNOWN, OTP_FAIL };
+static int g_otp = OTP_WAIT_GPS;
+static uint32_t g_otpMs = 0, g_gpsUpMs = 0;
+static int g_otpTries = 0, g_otpStep = 0;
+static bool g_otpWrote = false;
+static uint32_t g_otpMon0 = 0, g_otpVal0 = 0, g_otpNakV0 = 0, g_otpAck0 = 0, g_otpNak0 = 0;
 // IMU
 static int g_imuFails = 0;
 static uint32_t g_imuRetryMs = 0, g_imuSendMs = 0, g_imuCalSavedVer = 0, g_imuCalSaveMs = 0;
@@ -1165,7 +1172,7 @@ static void gpsSend(const uint8_t *d, size_t n) {
 
 static void gpsSendConfig() {
   uint8_t b[128];
-  gpsSend(b, gnss::buildConfig(b, sizeof(b), RC_GPS_RATE_HZ));  // 測位の設定(これが通れば NAV-PVT が 25 回/秒で届く)
+  gpsSend(b, gnss::buildConfig(b, sizeof(b), RC_GPS_RATE_HZ));  // 測位の設定(これが通れば NAV-PVT が届く。回数は M10 の上限まで: GPS+Galileo で 10、OTP の高性能設定後は 20)
   gpsSend(b, gnss::buildSignals(b, sizeof(b)));                 // 衛星系(通らなくても測位には困らない)
   g_gpsCfgMs = millis();
 }
@@ -1195,6 +1202,7 @@ static void gpsOnPvt(uint32_t now) {
   if (g_gpsState != 1) {
     g_gpsState = 1;
     g_gpsPinsKnown = true;
+    g_gpsUpMs = now;  // 2.13.0: otpManage が、位置が届き始めてから RC_GPS_OTP_SETTLE_MS 待つのに使う
     Serial.printf("GPS: 位置(NAV-PVT)が届き始めた(受信「IO%d」、送信「IO%d」。設定の ACK %lu、NAK %lu、衛星 %u)\n", g_gpsRxPin, g_gpsTxPin, (unsigned long)gnss::ackCount(),
                   (unsigned long)gnss::nakCount(), f.numSV);
   }
@@ -1216,6 +1224,123 @@ static void gpsOnPvt(uint32_t now) {
   }
   rcdiy::encodeGpsMain(f, g_gpsSync, b);
   rcPush(RC_GPS, b, 20);
+}
+
+// ---- 2.13.0: M100(u-blox M10)の OTP の高性能設定(SAM-M10Q 統合マニュアル 2.1.5。本人 10/29 の決定: GPS + Galileo で 20 回/秒)
+// 位置が届き始めて RC_GPS_OTP_SETTLE_MS たったら、版(MON-VER)と OTP の鍵 4 つ(VALGET)を読む。
+//   入っている → 済(ここで終わり。2 回目以降の起動はいつもこれ)。入っていない → 版が RC_GPS_OTP_FW_PREFIX で始まり RC_GPS_OTP_HIGH_PERF 1 なら、
+//   設定列 2 本を書く(それぞれ ACK を待つ)→ M100 をリセット → 位置が戻ってからもう一度読んで確かめる(書くのは 1 回の起動で 1 度だけ)。
+//   版が違う・NAK・応答なし は書かない。結果は g_sys.rc.otp とシリアル
+static uint8_t otpStatus() {
+  switch (g_otp) {
+    case OTP_DONE: return 1;
+    case OTP_NOT_SET: return 2;
+    case OTP_UNKNOWN: return 3;
+    case OTP_FAIL: return 4;
+    default: return 0;
+  }
+}
+static void otpSendPolls(uint32_t now) {
+  uint8_t b[32];
+  g_otpMon0 = gnss::monVerCount();
+  g_otpVal0 = gnss::valgetCount();
+  g_otpNakV0 = gnss::nakValgetCount();
+  gpsSend(b, gnss::buildMonVerPoll(b, sizeof(b)));
+  gpsSend(b, gnss::buildOtpValgetPoll(b, sizeof(b)));
+  g_otpMs = now;
+  g_otp = OTP_QUERY;
+}
+static void otpSendPart(int part, uint32_t now) {
+  uint8_t b[48];
+  g_otpAck0 = gnss::ackOtpCount();
+  g_otpNak0 = gnss::nakOtpCount();
+  g_otpStep = part;
+  gpsSend(b, gnss::buildOtpHighPerf(part, b, sizeof(b)));
+  g_otpMs = now;
+  g_otp = OTP_WRITE;
+  Serial.printf("GPS OTP: 高性能設定の %d 本目を書いた(ACK 待ち)\n", part + 1);
+}
+static void otpManage(uint32_t now) {
+  char sw[32], hw[12];
+  switch (g_otp) {
+    case OTP_WAIT_GPS:
+      if (g_gpsState == 1 && (uint32_t)(now - g_gpsUpMs) >= RC_GPS_OTP_SETTLE_MS) otpSendPolls(now);
+      break;
+    case OTP_QUERY:
+      if (gnss::valgetCount() != g_otpVal0) {
+        const int st = gnss::otpHighPerfState();
+        if (st == 1) {
+          g_otp = OTP_DONE;
+          gnss::monVer(sw, sizeof(sw), hw, sizeof(hw));
+          Serial.printf("GPS OTP: 高性能設定 済み(M100 の版 %s / %s)。測位の上限は GPS+Galileo で 20 回/秒%s\n", sw, hw, g_otpWrote ? "。この起動で書いた設定が入った" : "");
+        } else if (g_otpWrote) {
+          g_otp = OTP_FAIL;
+          Serial.println("GPS OTP: 異常。書いたのに設定が入っていない(VALGET の値が期待と違う)");
+        } else if (gnss::monVerCount() == g_otpMon0) {
+          if ((uint32_t)(now - g_otpMs) >= RC_GPS_OTP_REPLY_MS) {  // 鍵は読めたが版が来ない
+            if (++g_otpTries < RC_GPS_OTP_TRIES) {
+              otpSendPolls(now);
+            } else {
+              g_otp = OTP_UNKNOWN;
+              Serial.println("GPS OTP: 不明。版(MON-VER)の応答がない");
+            }
+          }
+        } else {
+          gnss::monVer(sw, sizeof(sw), hw, sizeof(hw));
+          if (!RC_GPS_OTP_HIGH_PERF) {
+            g_otp = OTP_NOT_SET;
+            Serial.printf("GPS OTP: 未設定(版 %s / %s)。RC_GPS_OTP_HIGH_PERF 0 なので書かない。測位は GPS+Galileo で最大 10 回/秒\n", sw, hw);
+          } else if (strncmp(sw, RC_GPS_OTP_FW_PREFIX, strlen(RC_GPS_OTP_FW_PREFIX)) != 0) {
+            g_otp = OTP_FAIL;
+            Serial.printf("GPS OTP: 異常。版が「%s」で、手順の対象(%s …)と違うので書かない\n", sw, RC_GPS_OTP_FW_PREFIX);
+          } else {
+            Serial.printf("GPS OTP: 未設定(版 %s / %s)→ 高性能設定を書く(永久。本人 10/29 の決定)\n", sw, hw);
+            otpSendPart(0, now);
+          }
+        }
+      } else if (gnss::nakValgetCount() != g_otpNakV0) {
+        g_otp = OTP_FAIL;
+        gnss::monVer(sw, sizeof(sw), hw, sizeof(hw));
+        Serial.printf("GPS OTP: 異常。鍵の読み出し(VALGET)が NAK(版 %s)。この版では書かない\n", gnss::monVerCount() != g_otpMon0 ? sw : "不明");
+      } else if ((uint32_t)(now - g_otpMs) >= RC_GPS_OTP_REPLY_MS) {
+        if (++g_otpTries < RC_GPS_OTP_TRIES) {
+          otpSendPolls(now);
+        } else {
+          g_otp = OTP_UNKNOWN;
+          Serial.println("GPS OTP: 不明。鍵の読み出し(VALGET)に応答がない");
+        }
+      }
+      break;
+    case OTP_WRITE:
+      if (gnss::nakOtpCount() != g_otpNak0) {
+        g_otp = OTP_FAIL;
+        Serial.printf("GPS OTP: 異常。%d 本目が NAK。書けなかった\n", g_otpStep + 1);
+      } else if (gnss::ackOtpCount() != g_otpAck0) {
+        if (g_otpStep == 0) {
+          otpSendPart(1, now);
+        } else {
+          uint8_t b[16];
+          g_otpWrote = true;
+          gpsSend(b, gnss::buildReset(b, sizeof(b)));
+          g_otp = OTP_RESET;
+          g_otpMs = now;
+          g_otpTries = 0;
+          g_gpsState = 0;  // M100 が再起動する。位置が戻るまでは gpsManage が設定を送り直す(速度も含めて)
+          g_gpsAttempts = 0;
+          g_gpsCfgMs = now;
+          Serial.println("GPS OTP: 2 本とも ACK。M100 をリセットした(UBX-CFG-RST)。位置が戻ったら設定を読み直して確かめる");
+        }
+      } else if ((uint32_t)(now - g_otpMs) >= RC_GPS_OTP_REPLY_MS) {
+        g_otp = OTP_FAIL;
+        Serial.printf("GPS OTP: 異常。%d 本目の ACK が来ない\n", g_otpStep + 1);
+      }
+      break;
+    case OTP_RESET:
+      if ((uint32_t)(now - g_otpMs) >= 4000) g_otp = OTP_WAIT_GPS;  // M100 の再起動を待ってから。位置が戻って RC_GPS_OTP_SETTLE_MS たったら読み直す
+      break;
+    default:
+      break;
+  }
 }
 
 static void gpsManage(uint32_t now) {
@@ -1435,6 +1560,7 @@ static void rcStatsTick(uint32_t now) {
   r.imuOk = g_imuOk;
   r.imuLevel = imu::levelOk();
   r.imuForward = imu::forwardOk();
+  r.otp = otpStatus();  // 2.13.0
 }
 
 static void rcTask(void *) {
@@ -1451,6 +1577,7 @@ static void rcTask(void *) {
       if (n > 0) gnss::feed(buf, (size_t)n, now);
       if (gnss::pvtCount() != pvt0) gpsOnPvt(now);
       gpsManage(now);
+      otpManage(now);  // 2.13.0
     }
     if (g_rcSend && (int32_t)(now - nextImu) >= 0) {  // IMU は送信が入のときだけ
       nextImu += 1000 / IMU_SAMPLE_HZ;
@@ -1509,8 +1636,9 @@ static void rcPrintStatusLine() {
     snprintf(imu, sizeof(imu), "%s 前後 %+.2f 横 %+.2f g 上 %s 前 %s", rc.imuOk ? "OK" : "なし", rc.gLon, rc.gLat, rc.imuLevel ? "済" : "未", rc.imuForward ? "済" : "未");
   }
   if (rc.gpsOn)
-    snprintf(gps, sizeof(gps), "%s 衛星 %u 位置 %lu 回/秒 %.1f km/h(UBX 誤り %lu)", !rc.gpsOk ? "受信なし" : rc.fixType == 3 || rc.fixType == 4 ? "3D" : rc.fixType == 2 ? "2D" : "測位なし",
-             rc.numSV, (unsigned long)rc.pvtPerSec, rc.gpsKmh, (unsigned long)gnss::badCount());
+    snprintf(gps, sizeof(gps), "%s 衛星 %u 位置 %lu 回/秒 %.1f km/h(UBX 誤り %lu)OTP %s", !rc.gpsOk ? "受信なし" : rc.fixType == 3 || rc.fixType == 4 ? "3D" : rc.fixType == 2 ? "2D" : "測位なし",
+             rc.numSV, (unsigned long)rc.pvtPerSec, rc.gpsKmh, (unsigned long)gnss::badCount(),
+             rc.otp == 1 ? "済" : rc.otp == 2 ? "未" : rc.otp == 3 ? "不明" : rc.otp == 4 ? "異常" : "待ち");
   Serial.printf("  RaceChrono: %s | GPS %s | IMU %s\n", ble, gps, imu);
 }
 #else
