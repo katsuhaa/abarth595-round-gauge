@@ -1,6 +1,6 @@
 # 595 表示器 仕様書
 
-- 2026-10-31(表示器 meter_display 2.14.4、CANリーダー c6_can_link 2.0.0)
+- 2026-10-31(表示器 meter_display 2.14.5、CANリーダー c6_can_link 2.0.0)
 - 対象: アバルト 595(シリーズ 4)の純正ブースト計の位置に付ける丸型表示器と、OBD コネクタ付近の CANリーダー。画面・操作・使う CAN 信号・RaceChrono の登録をこの 1 冊にまとめた(2026-10-08 の UI 仕様書、サーキット画面・減光の仕様書、RaceChrono チャンネル一覧を統合)
 - 配線・部品は別資料「595表示器_配線図」(Rev.1.6)
 - 数値はファームウェア(meter_display/config.h)の値。設定で変えられるものは 8 章
@@ -11,7 +11,7 @@
 | --- | --- |
 | 表示器 | Waveshare ESP32-S3-Touch-AMOLED-1.75(丸型 466×466、タッチ、IMU QMI8658 内蔵)。arduino-esp32 3.3.11、NimBLE-Arduino 1.4.3。ボード「ESP32S3 Dev Module」、USB CDC On Boot = Enabled、PSRAM = OPI PSRAM、Partition Scheme = Huge APP |
 | CANリーダー | Seeed XIAO ESP32C6 + SN65HVD230 ×2。C-CAN(500 kbps)と B-CAN(50 kbps)を受信だけ(送信・ACK なし)。CAN の生データを UART 921600 bps で表示器へ送る: 中身が変わった ID は最短 20 ms 間隔、変わらない ID は 1 秒ごと、1.5 秒受けていない ID は送らない |
-| GPS | HGLRC M100(u-blox M10)。表示器が UBX で設定を書く: 衛星系は GPS・Galileo・QZSS(BeiDou・GLONASS・SBAS は切)、測位 20 回/秒、115200 bps、NAV-PVT だけ。M10 の測位の上限は GPS+Galileo で既定 10 回/秒なので、表示器が起動時に M10 の OTP(一度だけ書ける設定)に高性能設定を書いて 20 回/秒にする(未設定のときだけ書き、M100 をリセットして確かめる。永久で元に戻せない。結果は 受信の状態 → GPS →「OTP」。今の M100 は確かめる問い合わせ(VALGET 層 4)に NAK を返すため、書かずに「異常」と出る。2026-10-31)。表示器の「IO17」← M100 の送信、「IO18」→ M100 の受信(2026-10-31 の試験で確定。配線図 Rev.1.7 の GPS の矢印とは逆)。時計・過負荷時間の時刻・RaceChrono に使う |
+| GPS | HGLRC M100(u-blox M10)。表示器が UBX で設定を書く: 衛星系は GPS・Galileo・QZSS(BeiDou・GLONASS・SBAS は切)、測位 20 回/秒、115200 bps、NAV-PVT だけ。M10 の測位の上限は GPS+Galileo で既定 10 回/秒なので、表示器が起動時に M10 の OTP(一度だけ書ける設定)に高性能設定を書いて 20 回/秒にする(未設定のときだけ書き、M100 をリセットして確かめる。永久で元に戻せない。結果は 受信の状態 → GPS →「OTP」。手順は u-blox の SAM-M10Q 統合マニュアル 2.1.5 のとおり: 確かめる問い合わせ(VALGET 層 4)が NAK = まだ書いていない → 書いてリセットし、同じ問い合わせが高性能の値を返せば「済」。書くのはこの表示器で一度だけ(NVS に印。2.14.5))。表示器の「IO17」← M100 の送信、「IO18」→ M100 の受信(2026-10-31 の試験で確定。配線図 Rev.1.7 の GPS の矢印とは逆)。時計・過負荷時間の時刻・RaceChrono に使う |
 | RaceChrono | 表示器が Bluetooth LE 機器「595 meter」(RaceChrono DIY)になり、GPS・車の CAN の生データ・IMU を 1 台で送る(10 章) |
 | 電源 | IG 連動の 12 V(ヒューズ F49 から 5A→3A のヒューズ電源)→ 表示器内の降圧コンバータ(MP1584EN)で 5 V → CANリーダー・M100 |
 
