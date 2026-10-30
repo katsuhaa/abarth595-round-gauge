@@ -365,18 +365,18 @@ int main(int argc, char **argv) {
     // 2.12.0: 設定の段 = カテゴリ 6 つ(SetCat*)、カテゴリの中 = 項目(ITEMS の並び。受信の状態・本体の状態はカテゴリの段から中へ)
     const char *cats[] = { "SetCat1Screen", "SetCat2Shift", "SetCat3Warn", "SetCat4Info", "SetCat5Sys", "SetCat6Other" };
     for (int c = 0; c < 6; c++) shot(cats[c], s, ui::SC_SET_LIST, c);
-    const char *items[] = { "Set1Bright", "SetIllum", "Set7Auto", "Set4Shift", "SetRing", "Set5Warn", "SetLoadRpm", "SetLoadY", "SetLoadR",
-                            "SetLoadRs", "SetMaint", "Set6Time", nullptr, nullptr, "Set8Demo", "SetDefaults" };
-    for (int i = 0; i < 16; i++)
+    const char *items[] = { "Set1Bright", "SetIllum", "Set7Auto", "Set4Shift", "SetRing", "Set5Warn", "SetFuelWarn", "SetLoadRpm", "SetLoadY", "SetLoadR",
+                            "SetLoadRs", "SetMaint", "Set6Time", nullptr, nullptr, "Set8Demo", "SetDefaults" };  // 2.14.0: SetFuelWarn(燃料の警告)
+    for (int i = 0; i < 17; i++)
       if (items[i]) shot(items[i], s, ui::SC_SET_CAT, i);
     // 2.12.0: 累積時間がメンテナンスの時間に達した(水温・過負荷のカテゴリ・累積時間 リセットの項目と確認の画面は赤の「メンテナンス」)
     trip::setTimes(18000000u, 45296000);
     shot("SetCat3WarnDue", s, ui::SC_SET_LIST, 2);
-    shot("Set6TimeDue", s, ui::SC_SET_CAT, 11);
+    shot("Set6TimeDue", s, ui::SC_SET_CAT, 12);
     trip::setTimes(5025000, 45296000);
     set.maintHours = 0;  // メンテナンスが切: 今までどおり ▲▼ と「2 つとも 0 に戻す」
-    shot("Set6TimeOff", s, ui::SC_SET_CAT, 11);
-    shot("SettingsMaintOff", s, ui::SC_SET_EDIT, 10);  // 0 = 「切」
+    shot("Set6TimeOff", s, ui::SC_SET_CAT, 12);
+    shot("SettingsMaintOff", s, ui::SC_SET_EDIT, 11);  // 0 = 「切」
     set.maintHours = SET_MAINT_DEFAULT;
     shot("SettingsBright", s, ui::SC_SET_EDIT, 0);
     shot("SettingsIllum", s, ui::SC_SET_EDIT, 1);  // 2.9.0: 名前は 2 行
@@ -387,22 +387,23 @@ int main(int argc, char **argv) {
     shot("SetRingOne", s, ui::SC_SET_CAT, 4);
     set.ringOne = 0;
     shot("SettingsWarn", s, ui::SC_SET_EDIT, 5);
-    shot("SettingsLoadRpm", s, ui::SC_SET_EDIT, 6);  // 2.12.0: 過負荷 回転数
-    shot("SettingsLoadY", s, ui::SC_SET_EDIT, 7);
+    shot("SettingsFuelWarn", s, ui::SC_SET_EDIT, 6);  // 2.14.0: 燃料の警告
+    shot("SettingsLoadRpm", s, ui::SC_SET_EDIT, 7);  // 2.12.0: 過負荷 回転数
+    shot("SettingsLoadY", s, ui::SC_SET_EDIT, 8);
     set.loadRedMin = 0;
-    shot("SettingsLoadROff", s, ui::SC_SET_EDIT, 8);  // 0 = 「切」
+    shot("SettingsLoadROff", s, ui::SC_SET_EDIT, 9);  // 0 = 「切」
     set.loadRedMin = SET_LOADR_DEFAULT;
-    shot("SettingsLoadRs", s, ui::SC_SET_EDIT, 9);
-    shot("SettingsMaint", s, ui::SC_SET_EDIT, 10);  // 2.12.0: メンテナンスまでの累積時間
+    shot("SettingsLoadRs", s, ui::SC_SET_EDIT, 10);
+    shot("SettingsMaint", s, ui::SC_SET_EDIT, 11);  // 2.12.0: メンテナンスまでの累積時間
 
     shot("SettingsAuto", s, ui::SC_SET_EDIT, 2);
     set.demoOn = 1;
-    shot("SettingsDemo", s, ui::SC_SET_EDIT, 14);
+    shot("SettingsDemo", s, ui::SC_SET_EDIT, 15);
     set.demoOn = 0;
     shot("SettingsRcSend", s, ui::SC_SET_EDIT, 0, 1);
-    shot("SetReset", s, ui::SC_SET_EDIT, 11);  // 2.12.0: 累積時間 リセットは変更の画面(0:00:00 から 30 分ずつ)
+    shot("SetReset", s, ui::SC_SET_EDIT, 12);  // 2.12.0: 累積時間 リセットは変更の画面(0:00:00 から 30 分ずつ)
     {
-      ui::testShow(ui::SC_SET_EDIT, 11);
+      ui::testShow(ui::SC_SET_EDIT, 12);
       ui::testTouch(now);
       ui::update(s, ls, ps, si, now);
       for (int k = 0; k < 5; k++) ui::tap(366, 233, now + 10 + k);  // 2:30:00
@@ -602,7 +603,7 @@ int main(int argc, char **argv) {
       trip::setTimes(18000000u, 0);
       shot("DriveMaint", sig(2500, '3', 92, 62), ui::SC_DRIVE);              // 真ん中の下に赤の「メンテナンス」
       shot("DriveMaintSim", s, ui::SC_DRIVE);                                 // デモ: 「SIM 7」は上、「メンテナンス」は下
-      shot("DriveMaintFuel", sig(2500, '3', 92, 6), ui::SC_DRIVE);            // 燃料の警告の赤の上は白
+      shot("DriveMaintFuel", sig(2500, '3', 92, 6), ui::SC_DRIVE);            // 燃料の警告でも赤のまま(2.14.0: 下を赤く塗らない)
       shot("DriveMaintRed", sig(6600, '4', 92, 62), ui::SC_DRIVE);            // 背景が赤の上は白
       shot("BoostMaint", sig(2500, '3', 92, 62, true, true, 0.4f), ui::SC_BOOST);         // 札の段に赤の「メンテナンス」
       shot("BoostMaintWater", sig(2500, '3', 112, 62, true, true, 0.4f), ui::SC_BOOST);   // 水温の札の下の段
@@ -620,6 +621,13 @@ int main(int argc, char **argv) {
     shot("DataHot3", hot, ui::SC_DATA);
     Signals hot2 = sig(6100, '2', 118, 3);
     shot("DataAlarm3", hot2, ui::SC_DATA);
+    // 2.14.0: 注意(暗い黄、点滅なし。水温は 警告温度 − 5 ℃ から、燃料は 燃料の警告 + 10 % 未満から)と警告(赤、点滅)。背景は塗らない
+    shot("DriveCaution", sig(2500, '3', 106, 25), ui::SC_DRIVE);
+    shot("BoostCaution", sig(2500, '3', 106, 25, true, true, 0.4f), ui::SC_BOOST);
+    shot("DataCaution", sig(2500, '3', 106, 25), ui::SC_DATA);
+    shot("DriveWarn", sig(2500, '3', 112, 12), ui::SC_DRIVE);  // 点灯側
+    shot("BoostWarn", sig(2500, '3', 112, 12, true, true, 0.4f), ui::SC_BOOST);
+    shot("BoostCautionWarn", sig(2500, '3', 106, 12, true, true, 0.4f), ui::SC_BOOST);  // 水温は注意、燃料は警告
     shot("DriveCold", sig(1500, '1', 35, 100), ui::SC_DRIVE);
     shot("Drive5900", sig(5900, '2', 69, 15.5f), ui::SC_DRIVE);
     now += BLINK_ON_FAST_MS;  // 点滅の消灯の側(画面全体を消す設定では絵は同じで、明るさだけが変わる)

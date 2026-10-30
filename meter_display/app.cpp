@@ -933,6 +933,7 @@ void settingsDefaults(Settings *s) {
   s->ringOne = SET_RING_DEFAULT;
   s->loadRpm = SET_LOADRPM_DEFAULT;
   s->maintHours = SET_MAINT_DEFAULT;
+  s->fuelWarnPct = SET_FUELWARN_DEFAULT;  // 2.14.0
 }
 
 // ================================================================ load(高負荷時間。2.10.0。説明は app.h)
@@ -1660,6 +1661,13 @@ bool filterPass(uint32_t pid, uint32_t nowMs, uint16_t minMs) {
 
 int filterCount() {
   return g_allowAll ? -1 : g_n;
+}
+
+bool filterAllowed(uint32_t pid) {
+  if (g_allowAll) return true;
+  for (int i = 0; i < g_n; i++)
+    if (g_pid[i] == pid) return true;
+  return false;
 }
 
 }  // namespace rcdiy

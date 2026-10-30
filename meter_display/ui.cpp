@@ -31,6 +31,7 @@ static const uint16_t C_WARN_TRACK = rgb(0x6A1C26);   // 水温の警告温度�
 static const uint16_t C_ALARM = rgb(0xE3241B);        // 異常のときの枠と下地
 static const uint16_t C_ALARM_TRACK = rgb(0x8E130D);  // 異常のときのバーの地
 static const uint16_t C_ALARM_UNIT = rgb(0xFFE3DC);   // 異常のときの単位
+static const uint16_t C_CAUTION = rgb(0xE0B000);      // 注意(暗い黄。2.14.0: 警告の手前の段。点滅しない。本人 10/30「黄色がクリームに見えるので暗い黄色に」で #FFEE99 → #E0B000)
 static const uint16_t C_ACCENT = rgb(0x5FD0FF);       // 押せる所の印
 static const uint16_t C_ORANGE = rgb(0xFF4600);
 static const uint16_t C_PEAK = rgb(0xFFD000);         // 回転計のピークホールドの印(黄)
@@ -78,6 +79,10 @@ static uint16_t alarmOn(uint16_t bg) {
 static uint16_t alarmDimOn(uint16_t bg) {
   return isReddish(bg) ? gfx::blend(bg, 0xFFFF, 70) : C_ALARM_TRACK;
 }
+// 注意の色(2.14.0): 暗い黄。背景が明るい(黄)ときは暗い黄が見えないので暗い琥珀色
+static uint16_t cautionOn(uint16_t bg) {
+  return isBright(bg) ? rgb(0x6E5200) : C_CAUTION;
+}
 static uint16_t segOffOn(uint16_t bg) {  // 消えているマスは描かない(背景と同じ色)
   return bg;
 }
@@ -110,8 +115,8 @@ static bool g_full = true;       // 次の update で画面全体を描き直す
 static Settings *g_set = nullptr;
 static uint32_t g_lastActMs = 0; // 最後に操作した時刻(自動で戻る用)
 static uint32_t g_nextMs = 0;    // 走行以外の画面を次に見直す時刻
-static bool g_waterAlarm = false, g_fuelAlarm = false;
-static bool g_alarmOff = false;  // 異常の表示の点滅の消灯側(update で時刻から決める)
+static uint8_t g_waterLvl = 0, g_fuelLvl = 0;  // 水温・燃料の段(2.14.0): 0 = 正常、1 = 注意(暗い黄)、2 = 警告(赤・点滅)
+static bool g_alarmOff = false;  // 警告の表示の点滅の消灯側(update で時刻から決める)
 static bool g_simShown = false;
 static bool g_blank = false;  // 画面全体の点滅の消灯の間
 static uint8_t g_level = BL_NORMAL;  // 画面全体の明るさの段階(BlinkLevel)
@@ -411,7 +416,7 @@ static void arc(float a0, float a1, uint16_t c) {
   gfx::fillArc(233, 233, ARC_R_IN, ARC_R_OUT, a0, a1, c);
 }
 // 弧のある側(上 = 水温、下 = 燃料)を、半径 ALARM_FILL_R の円の中で横一直線に切った形で塗る(10/22)。
-// 弧・アイコン・「– –」はこの中に収まるので、描き直すときはこれで消す。異常の点滅の点灯側は赤で塗る。
+// 弧・アイコン・「– –」はこの中に収まるので、描き直すときはこれで消す(オープニング)。2.14.0: 警告でも赤く塗らなくなったので、消すためだけに使う。
 // clear: なめらかにせず、縁から 2 px 外まで c 一色にする(前に赤く塗った縁の画素が残らない。輪の内側 RING_R_IN には届かない)。
 // それ以外: 円の縁は画素の途中で切れるので、1 行ずつ fillRectF で塗る(左右の端がなめらかになる。下地は消した直後の背景)
 static void fillSide(bool top, uint16_t c, bool clear) {
@@ -431,41 +436,63 @@ static void fillSide(bool top, uint16_t c, bool clear) {
     }
   }
 }
-// 異常の点灯側で塗る色(赤。背景が赤っぽいときは黒にして、赤い背景との差をつける)
-static uint16_t alarmFillOn(uint16_t bg) {
-  return isReddish(bg) ? C_BG : C_ALARM;
+// 水温・燃料の段(2.14.0): 0 = 正常、1 = 注意(暗い黄)、2 = 警告(赤・点滅)。本人 10/30「まず、薄い黄色にしてから赤い警告にしたい」
+// 「しきい値−５度の時点で燃料と同じように薄い黄色から警告表示に移行する」。
+// 境目そのもの(ヒステリシスなし。上がる側の判定と、オープニングのデモ): 水温は 警告温度 − WATER_CAUTION_BELOW_C で注意、警告温度で警告。
+// 燃料は 燃料の警告 + FUEL_CAUTION_ABOVE_PCT 未満で注意、燃料の警告 未満で警告
+static uint8_t waterLevelOf(float c) {
+  return c >= (float)g_set->warnTempC ? 2 : (c >= (float)(g_set->warnTempC - WATER_CAUTION_BELOW_C) ? 1 : 0);
+}
+static uint8_t fuelLevelOf(float p) {
+  return p < (float)g_set->fuelWarnPct ? 2 : (p < (float)(g_set->fuelWarnPct + FUEL_CAUTION_ABOVE_PCT) ? 1 : 0);
+}
+// 今の段 cur から次の段を決める(update)。上がるのは境目そのもの。戻るのは、今の段の境目から WATER_ALARM_HYST_C / FUEL_ALARM_HYST_PCT ぶん
+// 離れてから(境目でちらつかない)。離れていれば 2 段いっぺんに戻る
+static uint8_t waterLevelHyst(float c, uint8_t cur) {
+  uint8_t lvl = waterLevelOf(c);
+  if (lvl < cur) {
+    const float edge = cur == 2 ? (float)g_set->warnTempC : (float)(g_set->warnTempC - WATER_CAUTION_BELOW_C);
+    if (c >= edge - WATER_ALARM_HYST_C) lvl = cur;
+  }
+  return lvl;
+}
+static uint8_t fuelLevelHyst(float p, uint8_t cur) {
+  uint8_t lvl = fuelLevelOf(p);
+  if (lvl < cur) {
+    const float edge = cur == 2 ? (float)g_set->fuelWarnPct : (float)(g_set->fuelWarnPct + FUEL_CAUTION_ABOVE_PCT);
+    if (p < edge + FUEL_ALARM_HYST_PCT) lvl = cur;
+  }
+  return lvl;
+}
+// 注意・警告のときの、弧の伸びた所とアイコンの色(2.14.0)。警告は点滅(点灯側は赤、消灯側は暗い赤。赤っぽい背景では白と薄い赤)
+static uint16_t levelColor(uint8_t lvl, uint16_t bg) {
+  if (lvl == 2) return g_alarmOff ? alarmDimOn(bg) : alarmOn(bg);
+  return cautionOn(bg);
 }
 
 // 水温(5.4、5.6、5.7 を円弧にしたもの)。上の弧: 左端(220°)から時計回りに伸びる。
 // 2.10.0: 弧は時計の内側(ARC_R_IN〜ARC_R_OUT)、アイコン(32 px)は弧の右端の先(342°、半径 116。仕様書 circuit_screen_spec.md 4.1)。
-// 異常(10/22): 点滅の点灯側は上側を赤く塗り(fillSide)、弧の地は暗い赤・伸びた所は白。消灯側は背景のまま、伸びた所が赤。
-// アイコンは塗る所の外(背景の上)なので、点灯側は白、消灯側は赤。
+// 2.14.0: 注意は伸びた所とアイコンを暗い黄に、警告は赤にして点滅(消灯側は暗い赤)。弧の地は正常と同じ(警告温度から上は暗い赤)。
+// 背景は塗らない(2.13.0 までは警告の点灯側に上側を fillSide で赤く塗っていた。本人 10/30「警告が目につきすぎて気になってしまうので、
+// 背景は黒のままにしてください」)。
 // clean = true: 背景を塗った直後(消す必要がない。サーキットでは時計の内側の絵 innerDraw がいつも塗ってから描く)。
 // false はオープニングだけ(時計を出す前に、画面へ直接描き直す)
 static const int ICON_M = 32;  // アイコンの大きさ(ICON_WATER_M・ICON_FUEL_M)
 static const int ICON_WATER_X = 327, ICON_WATER_Y = 181, ICON_FUEL_X = 107, ICON_FUEL_Y = 253;
 static void drawWaterPanel(const Signals &s, bool clean) {
   const float A0 = WATER_ARC_START_DEG, A1 = WATER_ARC_START_DEG + ARC_SWEEP_DEG;
-  bool alarm = s.waterOk && g_waterAlarm;
-  bool filled = alarm && !g_alarmOff;  // 点灯側: 赤く塗る
+  const uint8_t lvl = s.waterOk ? g_waterLvl : 0;
   if (!clean) {
     fillSide(true, g_bgCol, true);
     gfx::fillRect(ICON_WATER_X, ICON_WATER_Y, ICON_M, ICON_M, g_bgCol);
   }
-  if (filled) fillSide(true, alarmFillOn(g_bgCol), false);
-  uint16_t alarmC = filled ? C_WHITE : alarmOn(g_bgCol);
-  gfx::drawIcon(ICON_WATER_M, ICON_WATER_X, ICON_WATER_Y, alarm ? alarmC : labelOn(g_bgCol));
+  gfx::drawIcon(ICON_WATER_M, ICON_WATER_X, ICON_WATER_Y, lvl ? levelColor(lvl, g_bgCol) : labelOn(g_bgCol));
   if (!s.waterOk) {
     textC(FONT_NUM600_34, 233, 129, "– –", labelOn(g_bgCol));  // 弧の真ん中(半径 116)
     return;
   }
   const float span = WATER_BAR_MAX_C - WATER_BAR_MIN_C;
   float ae = A0 + waterArcQ(s) * 0.25f;
-  if (alarm) {
-    arc(A0, A1, filled ? C_ALARM_TRACK : alarmDimOn(g_bgCol));
-    arc(A0, ae, alarmC);
-    return;
-  }
   float aw = A0 + ARC_SWEEP_DEG * (clampf((float)g_set->warnTempC, WATER_BAR_MIN_C, WATER_BAR_MAX_C) - WATER_BAR_MIN_C) / span;
   float ab = A0 + ARC_SWEEP_DEG * (WATER_BLUE_END_C - WATER_BAR_MIN_C) / span;
   if (aw >= A1 - 0.1f) {
@@ -474,36 +501,33 @@ static void drawWaterPanel(const Signals &s, bool clean) {
     arc(A0, A1, C_WARN_TRACK);
     arc(A0, aw, C_TRACK);
   }
+  if (lvl) {
+    arc(A0, ae, levelColor(lvl, g_bgCol));
+    return;
+  }
   arc(A0, ae, C_WATER_BLUE);
   if (ae > ab) arc(ab, ae, C_WHITE);
 }
 
 // 燃料(5.5、5.6、5.7 を円弧にしたもの)。下の弧: 左端(140°)から反時計回り(角度が減る向き)に伸びる。
-// 2.10.0: アイコン(32 px)は弧の左端の先(162°、半径 116)。0〜FUEL_ALARM_PCT の地は暗い赤(10/22)。異常の描き方は水温と同じ(下側を塗る)
+// 2.10.0: アイコン(32 px)は弧の左端の先(162°、半径 116)。0〜燃料の警告(設定。2.14.0)の地は暗い赤(10/22)。注意・警告の描き方は水温と同じ
 static void drawFuelPanel(const Signals &s, bool clean) {
   const float A1 = FUEL_ARC_START_DEG, A0 = FUEL_ARC_START_DEG - ARC_SWEEP_DEG;
-  bool alarm = s.fuelOk && g_fuelAlarm;
-  bool filled = alarm && !g_alarmOff;
+  const uint8_t lvl = s.fuelOk ? g_fuelLvl : 0;
   if (!clean) {
     fillSide(false, g_bgCol, true);
     gfx::fillRect(ICON_FUEL_X, ICON_FUEL_Y, ICON_M, ICON_M, g_bgCol);
   }
-  if (filled) fillSide(false, alarmFillOn(g_bgCol), false);
-  uint16_t alarmC = filled ? C_WHITE : alarmOn(g_bgCol);
-  gfx::drawIcon(ICON_FUEL_M, ICON_FUEL_X, ICON_FUEL_Y, alarm ? alarmC : labelOn(g_bgCol));
+  gfx::drawIcon(ICON_FUEL_M, ICON_FUEL_X, ICON_FUEL_Y, lvl ? levelColor(lvl, g_bgCol) : labelOn(g_bgCol));
   if (!s.fuelOk) {
     textC(FONT_NUM600_34, 233, 361, "– –", labelOn(g_bgCol));
     return;
   }
   float as = A1 - fuelArcQ(s) * 0.25f;
-  if (alarm) {
-    arc(A0, A1, filled ? C_ALARM_TRACK : alarmDimOn(g_bgCol));
-  } else {
-    const float aw = A1 - ARC_SWEEP_DEG * FUEL_ALARM_PCT / 100.0f;  // 異常になる残量の所
-    arc(A0, aw, C_TRACK);
-    arc(aw, A1, C_WARN_TRACK);
-  }
-  arc(as, A1, alarm ? alarmC : C_WHITE);
+  const float aw = A1 - ARC_SWEEP_DEG * (float)g_set->fuelWarnPct / 100.0f;  // 警告になる残量の所
+  arc(A0, aw, C_TRACK);
+  arc(aw, A1, C_WARN_TRACK);
+  arc(as, A1, lvl ? levelColor(lvl, g_bgCol) : C_WHITE);
 }
 
 // 3000rpm 以下の経過時間(config.h の IDLE_*)。update のたびに記録する(どの画面でも)。2.12.0: 回転数は設定の「過負荷 回転数」(初期値 3000)
@@ -581,11 +605,11 @@ static float g_peakTop = -1.0f;  // ピークの三角を出している間の�
 // 描いた内容を表す数(これが変わったら描き直す)
 static uint32_t waterKey(const Signals &s) {
   if (!s.waterOk) return 1;
-  return 2 | (g_waterAlarm ? 4 : 0) | ((g_waterAlarm && g_alarmOff) ? 8 : 0) | ((uint32_t)waterArcQ(s) << 4) | ((uint32_t)g_set->warnTempC << 16);
+  return 2 | ((uint32_t)g_waterLvl << 2) | ((g_waterLvl == 2 && g_alarmOff) ? 16 : 0) | ((uint32_t)waterArcQ(s) << 5) | ((uint32_t)g_set->warnTempC << 16);
 }
 static uint32_t fuelKey(const Signals &s) {
   if (!s.fuelOk) return 1;
-  return 2 | (g_fuelAlarm ? 4 : 0) | ((g_fuelAlarm && g_alarmOff) ? 8 : 0) | ((uint32_t)fuelArcQ(s) << 4);
+  return 2 | ((uint32_t)g_fuelLvl << 2) | ((g_fuelLvl == 2 && g_alarmOff) ? 16 : 0) | ((uint32_t)fuelArcQ(s) << 5) | ((uint32_t)g_set->fuelWarnPct << 16);  // 2.14.0: 地の境目(燃料の警告)も
 }
 
 // ---------------------------------------------------------------- 時計と真ん中(2.10.0。config.h の CLK_*・HAND_*・CENTER_*・LOAD_*・STATUS_*)
@@ -1012,26 +1036,20 @@ static void baseRestore(const gfx::Rect &r) {  // 今の描く先へ(r は CB_RE
 static const int DRV_SIM_BASE = 158;    // 「SIM 7」のベースライン(真ん中の上。弧の内側)
 static const int DRV_MAINT_BASE = 312;  // 「メンテナンス」のベースライン(真ん中の下。真ん中の行の下端 295 と燃料の弧の内側の間)
 static bool maintDue();  // 累積時間がメンテナンスの時間に達した(データ画面の所)
-// 0 = 出さない。bit 8 = 「SIM」、下位 8 ビット = 場面番号、bit 9 = メンテナンス、bit 10 = その下が燃料の警告の赤
+// 0 = 出さない。bit 8 = 「SIM」、下位 8 ビット = 場面番号、bit 9 = メンテナンス(2.14.0: 燃料の警告で下を赤く塗らなくなったので bit 10 はなくした)
 static uint16_t tagOf(const Signals &s) {
   uint16_t t = (s.linkUp && s.sim) ? (uint16_t)(0x100 | s.scene) : 0;
-  if (maintDue()) {
-    t |= 0x200;
-    if (s.fuelOk && g_fuelAlarm) t |= 0x400;
-  }
+  if (maintDue()) t |= 0x200;
   return t;
 }
-static void drawDriveTags(uint16_t tag, uint16_t bg, bool disc) {  // disc = 真ん中に黒い円(過負荷時間)
+static void drawDriveTags(uint16_t tag, uint16_t bg) {
   if (tag & 0x100) {
     char t[12];
     if (tag & 0xFF) snprintf(t, sizeof(t), "SIM %u", (unsigned)(tag & 0xFF));
     else snprintf(t, sizeof(t), "SIM");
     textC(FONT_NUM600_20, 233, DRV_SIM_BASE, t, labelOn(bg));
   }
-  if (tag & 0x200) {
-    const uint16_t under = (!disc && (tag & 0x400)) ? C_ALARM : bg;  // 燃料の警告で赤く塗った上は白
-    textC(FONT_JP600_18, 233, DRV_MAINT_BASE, "メンテナンス", alarmOn(under));
-  }
+  if (tag & 0x200) textC(FONT_JP600_18, 233, DRV_MAINT_BASE, "メンテナンス", alarmOn(bg));  // 赤っぽい背景では白
 }
 
 // 時計の内側を全部描く(今の描く先へ。針は描かない)。真ん中の行の前で、行の下地を g_drvBase に取る
@@ -1041,7 +1059,7 @@ static void innerDraw(const Signals &s, const Center &c, uint16_t tag) {
   drawFuelPanel(s, true);
   drawClockTicks();
   centerDrawStatic(c);
-  drawDriveTags(tag, c.mode == CM_LOAD ? C_BG : g_bgCol, c.mode == CM_LOAD);
+  drawDriveTags(tag, c.mode == CM_LOAD ? C_BG : g_bgCol);
   baseSave();
   for (int i = 0; i < centerLines(c.mode); i++) centerLine(c, i);
 }
@@ -1646,27 +1664,31 @@ static void drawTachSport(int key, bool clean) {
   if (key) textC(TACH_SPORT_FONT, TACH_SPORT_CX, TACH_SPORT_BASE, "SPORT", rgb(TACH_SPORT_RGB));
 }
 
-// ---- 水温・燃料の札(異常のときだけ。config.h の AN_BADGE_*)
+// ---- 水温・燃料の札(注意・警告のときだけ。config.h の AN_BADGE_*)。2.14.0: 注意 = 黒地に暗い黄の枠・アイコン・数字(点滅なし)、
+// 警告 = 赤い札に白のアイコン・数字(点滅。消灯側は暗い赤)。2.13.0 までは警告(赤い札)だけ
 static gfx::Rect badgeArea() {
   gfx::Rect r = { (int16_t)AN_BADGE_X, (int16_t)AN_BADGE_Y, (int16_t)(AN_BADGE_X + AN_BADGE_W), (int16_t)(AN_BADGE_Y + AN_BADGE_PITCH + AN_BADGE_H) };
   return r;
 }
 static uint32_t badgeKey(const Signals &s) {
-  const bool wa = s.waterOk && g_waterAlarm, fa = s.fuelOk && g_fuelAlarm, md = maintDue();
-  if (!wa && !fa && !md) return 0;
-  uint32_t k = 1 | (wa ? 2 : 0) | (fa ? 4 : 0) | ((wa || fa) && g_alarmOff ? 8 : 0) | (md ? (1u << 27) : 0);  // 2.12.0: メンテナンス(点滅しない)
-  if (wa) k |= ((uint32_t)((int)lroundf(clampf(s.waterC, -99, 999)) + 100) & 0x7FF) << 4;
-  if (fa) k |= ((uint32_t)(int)lroundf(clampf(s.fuelPct, 0, 999)) & 0x3FF) << 16;
+  const uint8_t wl = s.waterOk ? g_waterLvl : 0, fl = s.fuelOk ? g_fuelLvl : 0;
+  const bool md = maintDue();
+  if (!wl && !fl && !md) return 0;
+  uint32_t k = 1 | ((uint32_t)wl << 1) | ((uint32_t)fl << 3) | (((wl == 2 || fl == 2) && g_alarmOff) ? 32 : 0) | (md ? (1u << 27) : 0);  // 2.12.0: メンテナンス(点滅しない)
+  if (wl) k |= ((uint32_t)((int)lroundf(clampf(s.waterC, -99, 999)) + 100) & 0x7FF) << 6;
+  if (fl) k |= ((uint32_t)(int)lroundf(clampf(s.fuelPct, 0, 999)) & 0x3FF) << 17;
   return k;
 }
-static void drawBadge(int y, const IconData &icon, int value) {
-  const uint16_t bg = g_alarmOff ? C_ALARM_TRACK : C_ALARM;  // 点滅: 点灯側は赤、消灯側は暗い赤
-  gfx::fillRoundRect(AN_BADGE_X, y, AN_BADGE_W, AN_BADGE_H, 6, bg);
-  gfx::drawIcon(icon, AN_BADGE_X + 8, y + (AN_BADGE_H - icon.h) / 2, C_WHITE);
+static void drawBadge(int y, const IconData &icon, int value, uint8_t lvl) {
+  const bool warn = lvl == 2;
+  const uint16_t fg = warn ? C_WHITE : C_CAUTION;
+  if (warn) gfx::fillRoundRect(AN_BADGE_X, y, AN_BADGE_W, AN_BADGE_H, 6, g_alarmOff ? C_ALARM_TRACK : C_ALARM);  // 点滅: 点灯側は赤、消灯側は暗い赤
+  else gfx::frameRoundRect(AN_BADGE_X, y, AN_BADGE_W, AN_BADGE_H, 6, 2, C_CAUTION, C_BG);  // 注意: 暗い黄の枠(2 px)
+  gfx::drawIcon(icon, AN_BADGE_X + 8, y + (AN_BADGE_H - icon.h) / 2, fg);
   char t[20];
   if (value < 0) snprintf(t, sizeof(t), "−%d", -value);
   else snprintf(t, sizeof(t), "%d", value);
-  textR(FONT_DIAL500_40, AN_BADGE_X + AN_BADGE_W - 10, y + 38, t, C_WHITE);
+  textR(FONT_DIAL500_40, AN_BADGE_X + AN_BADGE_W - 10, y + 38, t, fg);
 }
 // 2.12.0: メンテナンスの札(累積時間がメンテナンスの時間に達したら。水温・燃料の札の次の段。点滅しない。2 段とも水温・燃料なら出さない)
 static void drawMaintBadge(int y) {
@@ -1676,14 +1698,14 @@ static void drawMaintBadge(int y) {
 static void drawBadges(const Signals &s, bool clean) {
   const gfx::Rect r = badgeArea();
   if (!clean) gfx::fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, C_BG);
-  const bool wa = s.waterOk && g_waterAlarm, fa = s.fuelOk && g_fuelAlarm;
+  const uint8_t wl = s.waterOk ? g_waterLvl : 0, fl = s.fuelOk ? g_fuelLvl : 0;
   int y = AN_BADGE_Y;
-  if (wa) {
-    drawBadge(y, ICON_WATER, (int)lroundf(clampf(s.waterC, -99, 999)));
+  if (wl) {
+    drawBadge(y, ICON_WATER, (int)lroundf(clampf(s.waterC, -99, 999)), wl);
     y += AN_BADGE_PITCH;
   }
-  if (fa) {
-    drawBadge(y, ICON_FUEL, (int)lroundf(clampf(s.fuelPct, 0, 999)));
+  if (fl) {
+    drawBadge(y, ICON_FUEL, (int)lroundf(clampf(s.fuelPct, 0, 999)), fl);
     y += AN_BADGE_PITCH;
   }
   if (maintDue() && y <= AN_BADGE_Y + AN_BADGE_PITCH) drawMaintBadge(y);
@@ -2077,8 +2099,9 @@ static int statLines(int row, const LinkStats &ls, const SysInfo &si, const char
 
 // 水温・燃料: アイコン(48 px)、6px 空けて数字、3px 空けて単位。この並びを colX〜colX+204 の中央に寄せる(6.1)
 static const int DATA_COL_W = 204;
-static void drawDataCell(int colX, const IconData &icon, bool ok, int value, const char *unit, bool alarm) {
-  const uint16_t ac = (alarm && g_alarmOff) ? alarmDimOn(C_BG) : C_ALARM;  // 異常: 赤で点滅(消灯側は暗い赤)
+static void drawDataCell(int colX, const IconData &icon, bool ok, int value, const char *unit, uint8_t lvl) {
+  // lvl(2.14.0): 1 = 注意(暗い黄。点滅なし)、2 = 警告(赤で点滅。消灯側は暗い赤)
+  const uint16_t ac = lvl == 2 ? (g_alarmOff ? alarmDimOn(C_BG) : C_ALARM) : C_CAUTION;
   fillRectData(colX - 2, 182, DATA_COL_W + 4, 76, C_BG);
   char t[20];
   if (!ok) snprintf(t, sizeof(t), "– –");
@@ -2087,10 +2110,10 @@ static void drawDataCell(int colX, const IconData &icon, bool ok, int value, con
   float wd = gfx::textWidth(FONT_NUM600_64, t), wu = gfx::textWidth(FONT_NUM600_34, unit);
   float total = icon.w + 6 + wd + 3 + wu;
   float left = floorf(colX + (DATA_COL_W - total) * 0.5f);
-  // 異常(6.2): 枠なし。アイコン・数字・単位を赤で描く
-  gfx::drawIcon(icon, (int)left, 196, alarm ? ac : C_LABEL);
-  gfx::drawText(FONT_NUM600_64, left + icon.w + 6, 242, t, alarm ? ac : C_WHITE);
-  gfx::drawText(FONT_NUM600_34, left + icon.w + 6 + wd + 3, 242, unit, alarm ? ac : C_LABEL);
+  // 注意・警告(6.2): 枠なし。アイコン・数字・単位を暗い黄・赤で描く
+  gfx::drawIcon(icon, (int)left, 196, lvl ? ac : C_LABEL);
+  gfx::drawText(FONT_NUM600_64, left + icon.w + 6, 242, t, lvl ? ac : C_WHITE);
+  gfx::drawText(FONT_NUM600_34, left + icon.w + 6 + wd + 3, 242, unit, lvl ? ac : C_LABEL);
 }
 
 // ▲ / ▼ の行。y = 時間の数字のベースライン
@@ -2165,17 +2188,17 @@ static void updData(const Signals &s, const LinkStats &ls, const SysInfo &si, ui
       g_dStatKey[row][sizeof(g_dStatKey[row]) - 1] = 0;
     }
   }
-  bool wa = s.waterOk && g_waterAlarm, fa = s.fuelOk && g_fuelAlarm;
+  const uint8_t wl = s.waterOk ? g_waterLvl : 0, fl = s.fuelOk ? g_fuelLvl : 0;  // 2.14.0: 段(0 = 正常、1 = 注意、2 = 警告)
   // 数字は 3 文字まで(それより長いと枠からはみ出す)。車の値がこの範囲を出ることはない
   int wv = (int)lroundf(clampf(s.waterC, -99, 999)), fv = (int)lroundf(clampf(s.fuelPct, 0, 999));
-  int wk = s.waterOk ? (wv * 8 + 4 + (wa ? 1 : 0) + ((wa && g_alarmOff) ? 2 : 0)) : 0x7FFFFFFF;
-  int fk = s.fuelOk ? (fv * 8 + 4 + (fa ? 1 : 0) + ((fa && g_alarmOff) ? 2 : 0)) : 0x7FFFFFFF;
+  int wk = s.waterOk ? (wv * 16 + 8 + wl + ((wl == 2 && g_alarmOff) ? 4 : 0)) : 0x7FFFFFFF;
+  int fk = s.fuelOk ? (fv * 16 + 8 + fl + ((fl == 2 && g_alarmOff) ? 4 : 0)) : 0x7FFFFFFF;
   if (full || wk != g_dWaterKey) {
-    drawDataCell(26, ICON_WATER_L, s.waterOk, wv, "°C", wa);
+    drawDataCell(26, ICON_WATER_L, s.waterOk, wv, "°C", wl);
     g_dWaterKey = wk;
   }
   if (full || fk != g_dFuelKey) {
-    drawDataCell(236, ICON_FUEL_L, s.fuelOk, fv, "%", fa);
+    drawDataCell(236, ICON_FUEL_L, s.fuelOk, fv, "%", fl);
     g_dFuelKey = fk;
   }
   const int row2 = maintRow();  // 2.12.0: 下の行は ▼ かメンテナンス
@@ -2627,8 +2650,11 @@ static void rcItems(const SysInfo &si, uint32_t now, InfoItem *it) {
   else if (!r.bleOk) snprintf(l.value, sizeof(l.value), "開始できない"), l.v = V_NG;
   else if (r.connected) snprintf(l.value, sizeof(l.value), "接続中"), l.v = V_OK;
   else snprintf(l.value, sizeof(l.value), "未接続(待機中)");
-  snprintf(n.value, sizeof(n.value), "CAN %u/s GPS %u/s", (unsigned)r.canPerSec, (unsigned)r.gpsPerSec);
-  n.v = recent(g_dropIncMs, now) ? V_NG : (r.connected ? V_OK : V_WAIT);
+  // 2.14.2: IMU も出す。RaceChrono が IMU の PID(0618A0F1 加速度・F2 ヨーレート)を頼んでいなければ、送っていない方を「未設定」と出す(RaceChrono にそのチャンネルが無い)
+  const char *imu = (r.imuPidOk & 3) == 3 ? nullptr : r.imuPidOk == 1 ? "F2未設定" : r.imuPidOk == 2 ? "F1未設定" : "未設定";
+  if (imu) snprintf(n.value, sizeof(n.value), "CAN %u/s GPS %u/s IMU %s", (unsigned)r.canPerSec, (unsigned)r.gpsPerSec, imu);
+  else snprintf(n.value, sizeof(n.value), "CAN %u/s GPS %u/s IMU %u/s", (unsigned)r.canPerSec, (unsigned)r.gpsPerSec, (unsigned)r.imuPerSec);
+  n.v = recent(g_dropIncMs, now) ? V_NG : (r.connected ? (imu ? V_WAIT : V_OK) : V_WAIT);
 }
 // 本体の状態(2.4.0: 受信の状態から移した): FPS・起動。2.4.3: CPU・クロック・温度・RAM・PSRAM・フラッシュ(本人「クロック数など CPU に
 // 関わるデータ、型式など」)。値は基板が SysInfo の cpu に入れる(起動時と 1 秒ごと)
@@ -2753,7 +2779,7 @@ static void linkPages(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
 // 2.12.0(同じ版で): 水温・過負荷を 水温の警告・過負荷 回転数・過負荷時間 黄・赤・過負荷がリセットされる時間・メンテナンスまでの累積時間・累積時間 リセット に
 // (本人「過負荷は短期的な上昇によりクールダウンが必要になるという考え方と、それの累積によりメンテナンスの期間を推測する」)。「クールダウン時間」は
 // なくした(クールダウンは黄に達したあとの冷ましている途中の表示にした。config.h の LOAD_COOL_SHOW_MS)。累積時間 リセットは値を入れてから
-// リセットする(本人「今の累積走行時間を入れる入力を」「累積時間の入力はリセットと同じ画面に」)。16 項目
+// リセットする(本人「今の累積走行時間を入れる入力を」「累積時間の入力はリセットと同じ画面に」)。17 項目(2.14.0: 燃料の警告を足した)
 enum Unit : uint8_t { U_NONE, U_RPM, U_MIN, U_PCT, U_DEGC, U_ONOFF, U_MIN_OFF, U_SIDE, U_HOUR_OFF };  // U_MIN_OFF: 分。0 は「切」(2.10.0)。U_SIDE: 両側・片側(2.12.0)。U_HOUR_OFF: 時間。0 は「切」(2.12.0)
 enum ItemKind : uint8_t { K_VALUE, K_TIME, K_LINK, K_SYS, K_DEFAULTS };  // K_TIME: 累積時間 リセット(2.12.0: 変更の画面で値を入れる。値は秒)
 struct Item {
@@ -2771,8 +2797,9 @@ static const Item ITEMS[] = {
   // シフト
   { "シフトポイント", &Settings::shiftRpm, SET_SHIFT_MIN, SET_SHIFT_MAX, SET_SHIFT_STEP, U_RPM, K_VALUE },
   { "回転数の輪", &Settings::ringOne, 0, 1, 1, U_SIDE, K_VALUE },  // 2.12.0: 両側・片側(本人 10/28「片方だけのを実装したい」)
-  // 水温・過負荷
+  // 警告・過負荷(2.14.0: 燃料の警告を足して「水温・過負荷」から改名)
   { "水温の警告", &Settings::warnTempC, SET_WARN_MIN, SET_WARN_MAX, SET_WARN_STEP, U_DEGC, K_VALUE },
+  { "燃料の警告", &Settings::fuelWarnPct, SET_FUELWARN_MIN, SET_FUELWARN_MAX, SET_FUELWARN_STEP, U_PCT, K_VALUE },  // 2.14.0: これ未満で警告(赤)、+10 % 未満で注意(暗い黄)
   // 2.12.0: 過負荷時間・累積時間・サーキットの ▼ の境目の回転数(今までは 3000 固定)
   { "過負荷 回転数", &Settings::loadRpm, SET_LOADRPM_MIN, SET_LOADRPM_MAX, SET_LOADRPM_STEP, U_RPM, K_VALUE },
   // 2.12.0: 「高負荷時間」は「過負荷時間」に(本人 10/28「過負荷に統一して今の過負荷計測を累積時間に」)
@@ -2803,10 +2830,10 @@ enum { CAT_SCREEN, CAT_SHIFT, CAT_WARN, CAT_LINK, CAT_SYS, CAT_OTHER };
 static const Cat CATS[] = {
   { "画面", 0, 3 },            // 明るさ・イルミネーションの明るさ・自動で戻る
   { "シフトポイント", 3, 2 },  // シフトポイント・回転数の輪(本人「シフトと言うメニューの名前はシフトポイントに」)
-  { "水温・過負荷", 5, 7 },    // 水温の警告・過負荷 回転数・過負荷時間 黄・赤・過負荷がリセットされる時間・メンテナンスまでの累積時間・累積時間 リセット
-  { "受信の状態", 12, 1 },
-  { "本体の状態", 13, 1 },
-  { "その他", 14, 2 },         // デモ・デフォルトに戻す
+  { "警告・過負荷", 5, 8 },    // 水温の警告・燃料の警告(2.14.0)・過負荷 回転数・過負荷時間 黄・赤・過負荷がリセットされる時間・メンテナンスまでの累積時間・累積時間 リセット
+  { "受信の状態", 13, 1 },
+  { "本体の状態", 14, 1 },
+  { "その他", 15, 2 },         // デモ・デフォルトに戻す
 };
 static const int N_CATS = sizeof(CATS) / sizeof(CATS[0]);
 static bool catDirect(int c) {  // 設定の段から長押しでそのまま中へ(受信の状態・本体の状態)
@@ -2897,7 +2924,7 @@ static void setItemValue(const Item &it, const LinkStats &ls, const PerfStats &p
     groupSummary(G_SYS, ls, ps, si, now, v, n, col);
   }
 }
-// 2.12.0: カテゴリの段に出す、中の主な値(1 行。受信の状態・本体の状態は setItemValue)。水温・過負荷は、累積時間がメンテナンスの
+// 2.12.0: カテゴリの段に出す、中の主な値(1 行。受信の状態・本体の状態は setItemValue)。警告・過負荷は、累積時間がメンテナンスの
 // 時間に達していたら赤の「メンテナンス」
 static void catSummary(int c, char *v, size_t n, uint16_t *col) {
   *col = C_LABEL2;
@@ -3506,17 +3533,18 @@ static void openSegs(const uint16_t want[RING_SLOTS]) {  // 色が変わった�
   }
 }
 // 水温と燃料の弧とアイコンを、走行画面と同じ描き方(drawWaterPanel / drawFuelPanel)で描く。pw・pf = 0〜1 で、水温は
-// WATER_BAR_MIN_C〜WATER_BAR_MAX_C、燃料は 0〜100 % の仮の値にする。異常の表示(水温が警告温度以上、燃料が FUEL_ALARM_PCT 未満)
-// も走行画面と同じに出る(赤で点滅。10/21: 本人の指示「実際と同じように」)。本物の信号の異常の判定(g_waterAlarm など)は壊さない
+// WATER_BAR_MIN_C〜WATER_BAR_MAX_C、燃料は 0〜100 % の仮の値にする。注意・警告の表示(2.14.0: 水温は警告温度 − 5 ℃ で注意・警告温度で警告、
+// 燃料は 燃料の警告 + 10 % 未満で注意・燃料の警告 未満で警告)も走行画面と同じに出る(暗い黄 → 赤で点滅。10/21: 本人の指示「実際と同じように」)。
+// 本物の信号の段の判定(g_waterLvl など)は壊さない
 static void openPanels(float pw, float pf) {
   Signals v;
   memset(&v, 0, sizeof(v));
   v.waterOk = v.fuelOk = true;
   v.waterC = WATER_BAR_MIN_C + (WATER_BAR_MAX_C - WATER_BAR_MIN_C) * pw;
   v.fuelPct = 100.0f * pf;
-  bool wa = g_waterAlarm, fa = g_fuelAlarm;
-  g_waterAlarm = v.waterC >= g_set->warnTempC;
-  g_fuelAlarm = v.fuelPct < FUEL_ALARM_PCT;
+  const uint8_t wl = g_waterLvl, fl = g_fuelLvl;
+  g_waterLvl = waterLevelOf(v.waterC);
+  g_fuelLvl = fuelLevelOf(v.fuelPct);
   uint32_t wk = waterKey(v), fk = fuelKey(v);
   bool clean = !g_openArcs;  // 背景を塗った直後は消す必要がない
   if (clean || wk != g_openWaterKey) {
@@ -3528,8 +3556,8 @@ static void openPanels(float pw, float pf) {
     g_openFuelKey = fk;
   }
   g_openArcs = true;
-  g_waterAlarm = wa;
-  g_fuelAlarm = fa;
+  g_waterLvl = wl;
+  g_fuelLvl = fl;
 }
 static float openWaterP(const Signals &s) {  // 今の水温の弧の長さ(0〜1。信号なしは 0)
   return s.waterOk ? clampf((s.waterC - WATER_BAR_MIN_C) / (WATER_BAR_MAX_C - WATER_BAR_MIN_C), 0.0f, 1.0f) : 0.0f;
@@ -4486,13 +4514,9 @@ void touchUp(uint32_t nowMs) {
 }
 
 void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const SysInfo &si, uint32_t now) {
-  // 異常の判定(5.6)。境目でちらつかないよう、戻る側に少し幅を持たせる
-  if (!s.waterOk) g_waterAlarm = false;
-  else if (s.waterC >= g_set->warnTempC) g_waterAlarm = true;
-  else if (s.waterC < g_set->warnTempC - WATER_ALARM_HYST_C) g_waterAlarm = false;
-  if (!s.fuelOk) g_fuelAlarm = false;
-  else if (s.fuelPct < FUEL_ALARM_PCT) g_fuelAlarm = true;
-  else if (s.fuelPct >= FUEL_ALARM_PCT + FUEL_ALARM_HYST_PCT) g_fuelAlarm = false;
+  // 水温・燃料の段(5.6。2.14.0: 正常 → 注意 → 警告)。境目でちらつかないよう、戻る側に少し幅を持たせる(waterLevelHyst / fuelLevelHyst)
+  g_waterLvl = s.waterOk ? waterLevelHyst(s.waterC, g_waterLvl) : 0;
+  g_fuelLvl = s.fuelOk ? fuelLevelHyst(s.fuelPct, g_fuelLvl) : 0;
 
   // 設定から時間で戻る(2.3)。戻る先は覚えている画面。CAN確認は戻らない(操作を待っていることがある)
   if (g_sc == SC_SET_LIST || g_sc == SC_SET_CAT || g_sc == SC_SET_EDIT || g_sc == SC_SET_INFO || g_sc == SC_SET_GRP || g_sc == SC_SET_RESET) {

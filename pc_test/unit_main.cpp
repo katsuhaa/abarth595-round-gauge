@@ -748,11 +748,29 @@ int main() {
   // メンテナンスまでの累積時間・累積時間 リセット(2.11.0 までの「時間の記録」)
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   next(t); next(t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "3 つ目のカテゴリ = 水温・過負荷");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "3 つ目のカテゴリ = 警告・過負荷(2.14.0: 水温・過負荷から改名)");
   holdOpen(live, t);
-  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 5, "水温・過負荷の中の 1 項目目 = 水温の警告");
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 5, "警告・過負荷の中の 1 項目目 = 水温の警告");
   next(t);
-  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 6, "水温・過負荷の中の 2 項目目 = 過負荷 回転数(2.12.0)");
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 6, "警告・過負荷の中の 2 項目目 = 燃料の警告(2.14.0)");
+  {  // 2.14.0: 燃料の警告(初期値 20 %、5〜50 % を 5 ずつ)
+    const int savesF = g_hostSaves;
+    holdOpen(live, t);
+    CHECK(ui::screen() == ui::SC_SET_EDIT && set.fuelWarnPct == SET_FUELWARN_DEFAULT && SET_FUELWARN_DEFAULT == 20, "燃料の警告の変更(初期値 20 %)");
+    ui::tap(RX, MY, t += 100); ui::tap(RX, MY, t += 100);
+    CHECK(set.fuelWarnPct == SET_FUELWARN_DEFAULT + 2 * SET_FUELWARN_STEP, "燃料の警告: 右半分で 5 ずつ上がる(30)");
+    for (int i = 0; i < 20; i++) ui::tap(RX, MY, t += 10);
+    CHECK(set.fuelWarnPct == SET_FUELWARN_MAX, "燃料の警告: 上限 50 で止まる");
+    for (int i = 0; i < 20; i++) ui::tap(LX, MY, t += 10);
+    CHECK(set.fuelWarnPct == SET_FUELWARN_MIN, "燃料の警告: 下限 5 で止まる");
+    for (int i = 0; i < 4; i++) ui::tap(RX, MY, t += 10);
+    ui::tap(BOTX, BOTY, t += 100);
+    upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 6 && set.fuelWarnPct == 25 && g_hostSaves == savesF + 1, "燃料の警告: 「決定」で保存して項目の画面へ(25)");
+    set.fuelWarnPct = SET_FUELWARN_DEFAULT;
+  }
+  next(t);
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 7, "警告・過負荷の中の 3 項目目 = 過負荷 回転数(2.12.0)");
   {
     const int saves1 = g_hostSaves;
     holdOpen(live, t);
@@ -768,10 +786,10 @@ int main() {
     upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
     CHECK(ui::screen() == ui::SC_SET_CAT && set.loadRpm == 3500 && g_hostSaves == saves1 + 1, "過負荷 回転数: 「決定」で保存して項目の画面へ(3500)");
   }
-  prev(t); prev(t);
-  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 11, "水温・過負荷の中: 最初の前は最後 = 累積時間 リセット(7 項目目)");
+  prev(t); prev(t); prev(t);
+  CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 12, "警告・過負荷の中: 最初の前は最後 = 累積時間 リセット(8 項目目)");
   prev(t);
-  CHECK(ui::testSetItem() == 10, "その前がメンテナンスまでの累積時間(6 項目目。2.12.0)");
+  CHECK(ui::testSetItem() == 11, "その前がメンテナンスまでの累積時間(7 項目目。2.12.0)");
   {
     const int saves1 = g_hostSaves;
     holdOpen(live, t);
@@ -788,7 +806,7 @@ int main() {
     CHECK(ui::screen() == ui::SC_SET_CAT && set.maintHours == 12 && g_hostSaves == saves1 + 1, "メンテナンスまでの累積時間: 「決定」で保存して項目の画面へ(12 時間)");
   }
   next(t);
-  CHECK(ui::testSetItem() == 11, "水温・過負荷の中の 7 項目目 = 累積時間 リセット(2.11.0 までの時間の記録)");
+  CHECK(ui::testSetItem() == 12, "警告・過負荷の中の 8 項目目 = 累積時間 リセット(2.11.0 までの時間の記録)");
   {  // ▲ の横の数字は設定の過負荷 回転数(3500 と 3000 で絵が違う)
     static uint16_t fbT[gfx::W * gfx::H];
     ui::testRedraw();
@@ -823,7 +841,7 @@ int main() {
           "累積時間 リセット: 0:00:00 のまま下「リセット」で 2 つとも 0 にして、すぐ保存(今までのリセットと同じ)");
     CHECK(load::valueMs() == 0, "累積時間 リセット: 過負荷時間も 0 に(過負荷時間は累積時間を超えない)");
     upd(live, t += 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
-    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 11, "累積時間 リセット: 点滅が終わったら項目の画面へ");
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 12, "累積時間 リセット: 点滅が終わったら項目の画面へ");
     trip::setTimes(5025000, 7000);
     holdOpen(live, t);
     ui::tap(RX, MY, t += 100); ui::tap(RX, MY, t += 100); ui::tap(RX, MY, t += 100); ui::tap(LX, MY, t += 100);  // 0:30:00 → 1:00:00 → 1:30:00 → 1:00:00
@@ -1171,8 +1189,9 @@ int main() {
     gfx::dirtyClear();
   }
 
-  // ---------------- 12c. アナログ計の水温・燃料の札とブーストの数字(2026-10-22): 札は異常のときだけ(中心の下、赤)。
-  //                   燃料は FUEL_ALARM_PCT(30 %)未満で異常。札や数字が変わっても針は壊れず、最初から描いたものと同じになる
+  // ---------------- 12c. アナログ計の水温・燃料の札とブーストの数字(2026-10-22): 札は注意・警告のときだけ(中心の下)。
+  //                   2.14.0: 燃料は 燃料の警告(初期 20 %)未満で警告(赤い札、点滅)、+10 % 未満で注意(黒地に暗い黄の枠の札、点滅なし)。
+  //                   札や数字が変わっても針は壊れず、最初から描いたものと同じになる
   {
     Signals b;
     memset(&b, 0, sizeof(b));
@@ -1213,12 +1232,25 @@ int main() {
     b.boostBar = 0.65f;
     ui::update(b, ls, ps, si, tc);
     gfx::dirtyClear();
-    b.fuelPct = FUEL_ALARM_PCT - 1;  // 29 %: 燃料の札(1 つだけ: 上の段)
+    static uint16_t fbC[gfx::W * gfx::H];
+    b.fuelPct = set.fuelWarnPct + FUEL_CAUTION_ABOVE_PCT - 1;  // 29 %: 注意(2.14.0)
+    ui::update(b, ls, ps, si, tc + 2 * ALARM_BLINK_HALF_MS);
+    CHECK(countIn(bx0, AN_BADGE_Y, bx1, AN_BADGE_Y + AN_BADGE_H, gfx::rgb(0xE0B000)) > 300 && countIn(bx0, by0, bx1, by1, gfx::rgb(0xE3241B)) == 0
+          && countIn(bx0 + 4, AN_BADGE_Y + 4, bx1 - 4, AN_BADGE_Y + AN_BADGE_H - 4, gfx::rgb(0x000000)) > 2000,
+          "札: 燃料 29 % は注意 = 黒地に暗い黄の枠と文字(赤は無い。2.14.0)");
+    memcpy(fbC, fb, sizeof(fbC));
+    ui::testRedraw();
+    ui::update(b, ls, ps, si, tc + 2 * ALARM_BLINK_HALF_MS);
+    CHECK(memcmp(fbC, fb, sizeof(fbC)) == 0, "注意の札の絵 = 同じ時刻に最初から描いた絵");
+    gfx::dirtyClear();
+    ui::update(b, ls, ps, si, tc + 3 * ALARM_BLINK_HALF_MS);
+    CHECK(gfx::dirtyCount() == 0, "札: 注意は点滅しない(消灯側の時刻でも描き直さない)");
+    gfx::dirtyClear();
+    b.fuelPct = set.fuelWarnPct - 1;  // 19 %: 警告の札(赤。1 つだけ: 上の段)
     b.rpm = 1000;  // 針も動かす
     ui::update(b, ls, ps, si, tc + 2 * ALARM_BLINK_HALF_MS);
     CHECK(countIn(bx0, AN_BADGE_Y, bx1, AN_BADGE_Y + AN_BADGE_H, gfx::rgb(0xE3241B)) > 2000 &&
-          countIn(bx0, AN_BADGE_Y + AN_BADGE_PITCH, bx1, AN_BADGE_Y + AN_BADGE_PITCH + AN_BADGE_H, gfx::rgb(0xE3241B)) == 0, "札: 燃料 29 % で上の段に赤い札が出る(下の段は空)");
-    static uint16_t fbC[gfx::W * gfx::H];
+          countIn(bx0, AN_BADGE_Y + AN_BADGE_PITCH, bx1, AN_BADGE_Y + AN_BADGE_PITCH + AN_BADGE_H, gfx::rgb(0xE3241B)) == 0, "札: 燃料 19 % で上の段に赤い札が出る(下の段は空)");
     memcpy(fbC, fb, sizeof(fbC));
     ui::testRedraw();
     ui::update(b, ls, ps, si, tc + 2 * ALARM_BLINK_HALF_MS);
@@ -1237,12 +1269,13 @@ int main() {
     ui::update(b, ls, ps, si, tc + 3 * ALARM_BLINK_HALF_MS);
     CHECK(memcmp(fbC, fb, sizeof(fbC)) == 0, "札が 2 つ・ブーストが赤の範囲の絵 = 同じ時刻に最初から描いた絵");
     gfx::dirtyClear();
-    b.fuelPct = FUEL_ALARM_PCT + FUEL_ALARM_HYST_PCT;  // 31 %: 燃料の異常が終わる(水温だけ)
+    b.fuelPct = set.fuelWarnPct + FUEL_CAUTION_ABOVE_PCT + FUEL_ALARM_HYST_PCT;  // 31 %: 燃料の注意も終わる(水温だけ)
     b.waterOk = false;  // 水温の信号もなくなる: 札は出ない
     b.boostOk = false;  // ブーストの信号がない: 帯なし、数字は「– –」
     b.rpm = 2000;
     ui::update(b, ls, ps, si, tc + 4 * ALARM_BLINK_HALF_MS);
-    CHECK(countIn(bx0, by0, bx1, by1, gfx::rgb(0xE3241B)) == 0 && countIn(bx0, by0, bx1, by1, gfx::rgb(0x8E130D)) == 0, "札: 異常が終わると消える");
+    CHECK(countIn(bx0, by0, bx1, by1, gfx::rgb(0xE3241B)) == 0 && countIn(bx0, by0, bx1, by1, gfx::rgb(0x8E130D)) == 0
+          && countIn(bx0, by0, bx1, by1, gfx::rgb(0xE0B000)) == 0, "札: 注意・警告が終わると消える");
     CHECK(countIn(BOOST_NUM_X - 200, BOOST_NUM_BASE - 56, BOOST_NUM_X, BOOST_NUM_BASE, gfx::rgb(0x29C5FF)) == 0, "ブーストの信号がない: 水色の数字は消える");
     memcpy(fbC, fb, sizeof(fbC));
     ui::testRedraw();
@@ -1251,7 +1284,9 @@ int main() {
     gfx::dirtyClear();
   }
 
-  // ---------------- 12d. 走行画面の異常(2026-10-22): 点滅の点灯側は弧の側を赤く塗る、消灯側は背景のまま弧が赤。燃料は 30 % 未満
+  // ---------------- 12d. 走行画面の注意・警告(2.14.0。2026-10-22 の上下の赤い塗りはやめた): 背景は塗らず、弧の伸びた所とアイコンの色で出す。
+  //                   燃料は 燃料の警告 + 10 % 未満で注意(暗い黄、点滅なし)、燃料の警告 未満で警告(赤、点滅。消灯側は暗い赤)。
+  //                   水温は 警告温度 − 5 ℃ で注意、警告温度で警告。戻る側は境目から 1 ℃ / 1 % 離れてから
   {
     Signals b;
     memset(&b, 0, sizeof(b));
@@ -1259,45 +1294,86 @@ int main() {
     b.rpm = 2000;  // 背景は黒
     b.gearOk = true; b.gear = '2';
     b.waterOk = true; b.waterC = 90;
-    b.fuelOk = true; b.fuelPct = FUEL_ALARM_PCT + 5;
-    uint32_t td = 66000000;  // 異常の点滅の点灯側
+    b.fuelOk = true; b.fuelPct = set.fuelWarnPct + FUEL_CAUTION_ABOVE_PCT + 5;  // 35 %
+    uint32_t td = 66000000;  // 警告の点滅の点灯側
     ui::testShow(ui::SC_DRIVE);
     ui::update(b, ls, ps, si, td);
     auto px = [&](int x, int y) { return fb[y * gfx::W + x]; };
-    // 塗る所のうち、弧にもアイコンにも掛からない点: 燃料は (233, 300)、水温は (233, 165)
-    CHECK(px(233, 300) == gfx::rgb(0x000000) && px(233, 165) == gfx::rgb(0x000000), "異常でないときは塗らない");
-    {
-      float a = (FUEL_ARC_START_DEG - ARC_SWEEP_DEG * 0.1f) * 3.14159265f / 180.0f, r = (ARC_R_IN + ARC_R_OUT) * 0.5f;
-      CHECK(px((int)(233 + r * cosf(a)), (int)(233 + r * sinf(a))) == gfx::rgb(0xFFFFFF), "燃料 35 %: 10 % の所は白(伸びた所)");
-    }
+    const uint16_t BLACK = gfx::rgb(0x000000), RED = gfx::rgb(0xE3241B), DIMRED = gfx::rgb(0x8E130D), PALE = gfx::rgb(0xE0B000), WHITE = gfx::rgb(0xFFFFFF);
+    auto arcPx = [&](float deg) {  // 弧の太さの真ん中の画素
+      const float a = deg * 3.14159265f / 180.0f, r = (ARC_R_IN + ARC_R_OUT) * 0.5f;
+      return px((int)(233 + r * cosf(a)), (int)(233 + r * sinf(a)));
+    };
+    const float fuel10 = FUEL_ARC_START_DEG - ARC_SWEEP_DEG * 0.1f;  // 燃料 10 % の所(伸びた所の中)
+    const float water80 = WATER_ARC_START_DEG + ARC_SWEEP_DEG * (80.0f - WATER_BAR_MIN_C) / (WATER_BAR_MAX_C - WATER_BAR_MIN_C);  // 水温 80 ℃ の所(70 ℃ の青より上)
+    // 2.13.0 まで塗っていた所のうち、弧にもアイコンにも掛からない点: 燃料は (233, 300)、水温は (233, 165)
+    CHECK(px(233, 300) == BLACK && px(233, 165) == BLACK, "正常: 塗らない");
+    CHECK(arcPx(fuel10) == WHITE && arcPx(water80) == WHITE, "燃料 35 %: 10 % の所は白(伸びた所)。水温 90 ℃: 80 ℃ の所は白");
     gfx::dirtyClear();
-    b.fuelPct = FUEL_ALARM_PCT - 1;
+    b.fuelPct = set.fuelWarnPct + FUEL_CAUTION_ABOVE_PCT - 1;  // 29 %: 注意
     ui::update(b, ls, ps, si, td + 2 * ALARM_BLINK_HALF_MS);
-    CHECK(px(233, 300) == gfx::rgb(0xE3241B) && px(233, 165) == gfx::rgb(0x000000), "燃料 29 %: 点灯側は下側を赤く塗る(上は塗らない)");
+    CHECK(gfx::dirtyCount() > 0 && arcPx(fuel10) == PALE && px(233, 300) == BLACK && px(233, 165) == BLACK, "燃料 29 %: 注意 = 伸びた所が暗い黄、背景は塗らない(2.14.0)");
     static uint16_t fbD[gfx::W * gfx::H];
     memcpy(fbD, fb, sizeof(fbD));
     ui::testRedraw();
     ui::update(b, ls, ps, si, td + 2 * ALARM_BLINK_HALF_MS);
-    CHECK(memcmp(fbD, fb, sizeof(fbD)) == 0, "燃料の異常(点灯側)の絵 = 同じ時刻に最初から描いた絵");
+    CHECK(memcmp(fbD, fb, sizeof(fbD)) == 0, "燃料の注意の絵 = 同じ時刻に最初から描いた絵");
     gfx::dirtyClear();
-    ui::update(b, ls, ps, si, td + 3 * ALARM_BLINK_HALF_MS);
-    CHECK(px(233, 300) == gfx::rgb(0x000000), "燃料 29 %: 消灯側は塗らない");
+    ui::update(b, ls, ps, si, td + 3 * ALARM_BLINK_HALF_MS);  // 警告なら消灯側の時刻
+    CHECK(gfx::dirtyCount() == 0 && arcPx(fuel10) == PALE, "燃料 29 %: 注意は点滅しない");
+    b.fuelPct = set.fuelWarnPct - 1;  // 19 %: 警告
+    ui::update(b, ls, ps, si, td + 4 * ALARM_BLINK_HALF_MS);  // 点灯側
+    CHECK(arcPx(fuel10) == RED && px(233, 300) == BLACK, "燃料 19 %: 警告の点灯側は伸びた所が赤、背景は塗らない");
     memcpy(fbD, fb, sizeof(fbD));
     ui::testRedraw();
-    ui::update(b, ls, ps, si, td + 3 * ALARM_BLINK_HALF_MS);
-    CHECK(memcmp(fbD, fb, sizeof(fbD)) == 0, "燃料の異常(消灯側)の絵 = 同じ時刻に最初から描いた絵(塗った跡が残らない)");
-    gfx::dirtyClear();
-    b.waterC = 112;
     ui::update(b, ls, ps, si, td + 4 * ALARM_BLINK_HALF_MS);
-    CHECK(px(233, 165) == gfx::rgb(0xE3241B) && px(233, 300) == gfx::rgb(0xE3241B), "水温 112 ℃ と燃料 29 %: 点灯側は上下とも赤く塗る");
-    int gearWhite = 0;  // 真ん中の文字(白。2.10.0: ギアから接続の状態に変えた)は塗る所に削られない
+    CHECK(memcmp(fbD, fb, sizeof(fbD)) == 0, "燃料の警告(点灯側)の絵 = 同じ時刻に最初から描いた絵");
+    gfx::dirtyClear();
+    ui::update(b, ls, ps, si, td + 5 * ALARM_BLINK_HALF_MS);  // 消灯側
+    CHECK(gfx::dirtyCount() > 0 && arcPx(fuel10) == DIMRED && px(233, 300) == BLACK, "燃料 19 %: 消灯側は伸びた所が暗い赤、背景は塗らない");
+    memcpy(fbD, fb, sizeof(fbD));
+    ui::testRedraw();
+    ui::update(b, ls, ps, si, td + 5 * ALARM_BLINK_HALF_MS);
+    CHECK(memcmp(fbD, fb, sizeof(fbD)) == 0, "燃料の警告(消灯側)の絵 = 同じ時刻に最初から描いた絵");
+    gfx::dirtyClear();
+    b.waterC = set.warnTempC - WATER_CAUTION_BELOW_C;  // 105 ℃: 水温の注意(境目そのもの)
+    ui::update(b, ls, ps, si, td + 6 * ALARM_BLINK_HALF_MS);
+    CHECK(arcPx(water80) == PALE && px(233, 165) == BLACK, "水温 105 ℃(警告温度 − 5): 注意 = 伸びた所が暗い黄、上も塗らない");
+    b.waterC = 112;
+    ui::update(b, ls, ps, si, td + 8 * ALARM_BLINK_HALF_MS);  // 点灯側
+    CHECK(arcPx(water80) == RED && arcPx(fuel10) == RED && px(233, 165) == BLACK && px(233, 300) == BLACK, "水温 112 ℃ と燃料 19 %: 上下とも赤、背景はどちらも塗らない");
+    int centerWhite = 0;  // 真ん中の文字(白。2.10.0: ギアから接続の状態に変えた)はそのまま
     for (int y = 170; y < 296; y++)
       for (int x = 160; x < 306; x++)
-        if (px(x, y) == gfx::rgb(0xFFFFFF)) gearWhite++;
+        if (px(x, y) == WHITE) centerWhite++;
     memcpy(fbD, fb, sizeof(fbD));
     ui::testRedraw();
-    ui::update(b, ls, ps, si, td + 4 * ALARM_BLINK_HALF_MS);
-    CHECK(memcmp(fbD, fb, sizeof(fbD)) == 0 && gearWhite > 1000, "上下とも異常の絵 = 最初から描いた絵(真ん中の文字は残る)");
+    ui::update(b, ls, ps, si, td + 8 * ALARM_BLINK_HALF_MS);
+    CHECK(memcmp(fbD, fb, sizeof(fbD)) == 0 && centerWhite > 1000, "上下とも警告の絵 = 最初から描いた絵(真ん中の文字は残る)");
+    // 戻る側の幅(ヒステリシス): 境目から 1 ℃ / 1 % 離れるまで今の段のまま(警告 → 注意、注意 → 正常とも)
+    b.waterC = set.warnTempC - 0.5f;  // 109.5: まだ警告
+    b.fuelPct = set.fuelWarnPct + 0.5f;  // 20.5: まだ警告
+    ui::update(b, ls, ps, si, td + 10 * ALARM_BLINK_HALF_MS);
+    CHECK(arcPx(water80) == RED && arcPx(fuel10) == RED, "警告温度 − 0.5 ℃・燃料の警告 + 0.5 %: まだ警告のまま");
+    b.waterC = set.warnTempC - 1.5f;  // 108.5: 注意へ
+    b.fuelPct = set.fuelWarnPct + 1.0f;  // 21: 注意へ
+    ui::update(b, ls, ps, si, td + 12 * ALARM_BLINK_HALF_MS);
+    CHECK(arcPx(water80) == PALE && arcPx(fuel10) == PALE, "警告温度 − 1.5 ℃・燃料の警告 + 1 %: 注意に戻る");
+    b.waterC = set.warnTempC - WATER_CAUTION_BELOW_C - 0.5f;  // 104.5: まだ注意
+    b.fuelPct = set.fuelWarnPct + FUEL_CAUTION_ABOVE_PCT + 0.5f;  // 30.5: まだ注意
+    ui::update(b, ls, ps, si, td + 14 * ALARM_BLINK_HALF_MS);
+    CHECK(arcPx(water80) == PALE && arcPx(fuel10) == PALE, "注意の境目から 0.5 戻っただけでは注意のまま");
+    b.waterC = set.warnTempC - WATER_CAUTION_BELOW_C - 1.5f;  // 103.5: 正常
+    b.fuelPct = set.fuelWarnPct + FUEL_CAUTION_ABOVE_PCT + 1.0f;  // 31: 正常
+    ui::update(b, ls, ps, si, td + 16 * ALARM_BLINK_HALF_MS);
+    CHECK(arcPx(water80) == WHITE && arcPx(fuel10) == WHITE, "注意の境目から 1.5 ℃ / 1 % 戻ったら正常");
+    b.waterC = 118;  // 正常から一気に警告温度以上(2 段上がる)
+    b.fuelPct = 50;
+    ui::update(b, ls, ps, si, td + 18 * ALARM_BLINK_HALF_MS);
+    CHECK(arcPx(water80) == RED && arcPx(fuel10) == WHITE, "正常から警告温度以上: いっぺんに警告");
+    b.waterC = 90;  // 警告から一気に正常(2 段戻る)
+    ui::update(b, ls, ps, si, td + 20 * ALARM_BLINK_HALF_MS);
+    CHECK(arcPx(water80) == WHITE, "警告から大きく下がったら、いっぺんに正常");
     gfx::dirtyClear();
   }
 
@@ -1374,7 +1450,7 @@ int main() {
     memset(&d, 0, sizeof(d));
     uint32_t td = 50000000;
     set.demoOn = 0;
-    ui::testShow(ui::SC_SET_CAT, 14);
+    ui::testShow(ui::SC_SET_CAT, 15);
     holdOpen(d, td);  // 触れた時刻を操作した時刻にする(先に update すると、前の操作から時間がたっていて自動で戻る)
     CHECK(ui::screen() == ui::SC_SET_EDIT, "その他の中の 1 項目目で「デモ」の変更画面へ");
     ui::tap(366, 233, td += 100);
@@ -1386,7 +1462,7 @@ int main() {
     ui::update(d, ls, ps, si, td);
     CHECK(ui::screen() == ui::SC_SET_EDIT && g_hostSaves == sv + 1 && ui::testFlashing(), "「決定」で保存し、下の帯が点滅(2.4.3)");
     ui::update(d, ls, ps, si, td + 2 * SAVED_FLASH_COUNT * SAVED_FLASH_MS + 10);
-    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 14 && !ui::testFlashing(), "点滅が終わったらデモの項目へ");
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 15 && !ui::testFlashing(), "点滅が終わったらデモの項目へ");
     set.demoOn = 0;
     gfx::dirtyClear();
   }
@@ -1443,10 +1519,18 @@ int main() {
     holdOpen(d, tr);
     CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 3 && ui::testPage() == 0, "受信の状態 4 ページ目(RaceChrono)の「長押しで開く」で中へ");
     si.rc.enabled = true; si.rc.bleOk = true; si.rc.connected = true; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 9; si.rc.lat = 355812345; si.rc.lon = 1396821234;
-    si.rc.imuOk = true; si.rc.imuLevel = true; si.rc.imuForward = true;
+    si.rc.imuOk = true; si.rc.imuLevel = true; si.rc.imuForward = true; si.rc.imuPidOk = 3; si.rc.imuPerSec = 40;
     ui::update(d, ls, ps, si, tr += 600);
     ui::update(d, ls, ps, si, tr += 600);
     CHECK(ui::screen() == ui::SC_SET_GRP, "値が変わっても画面はそのまま");
+    {
+      char v[48];
+      CHECK(ui::testInfoItem(3, 2, ls, ps, si, tr, v, sizeof(v)) == 1 && strcmp(v, "CAN 0/s GPS 0/s IMU 40/s") == 0, "2.14.2: 送った数に IMU の数/秒");
+      SysInfo s2 = si; s2.rc.imuPidOk = 1;
+      CHECK(ui::testInfoItem(3, 2, ls, ps, s2, tr, v, sizeof(v)) == 0 && strcmp(v, "CAN 0/s GPS 0/s IMU F2未設定") == 0, "2.14.2: ヨーレートの PID を頼まれていなければ F2未設定");
+      s2.rc.imuPidOk = 0;
+      CHECK(ui::testInfoItem(3, 2, ls, ps, s2, tr, v, sizeof(v)) == 0 && strcmp(v, "CAN 0/s GPS 0/s IMU 未設定") == 0, "2.14.2: どちらも頼まれていなければ 未設定(待ち)");
+    }
     // RaceChrono の点(3 個): 1 個目は送信の入・切(判定なし)、2 個目 = 接続、3 個目 = 送った数
     CHECK(dotCol(3, 1) == GREEN && dotCol(3, 2) == GREEN, "RaceChrono: 接続中なら 接続・送った数 の点が緑");
     si.rc.bleOk = false;  // BLE を開始できない: 2 個目(接続)が赤
@@ -1750,6 +1834,7 @@ int main() {
     CHECK(!rcdiy::filterPass(0x0618A001, 1050), "間隔 100 ms の途中は通らない");
     CHECK(rcdiy::filterPass(0x0618A001, 1100), "100 ms たてば通る");
     CHECK(!rcdiy::filterPass(0x0210A006, 1100), "許可していない PID は通らない");
+    CHECK(rcdiy::filterAllowed(0x0618A001) && !rcdiy::filterAllowed(0x0618A0F1), "2.14.2: filterAllowed は頼まれている PID だけ true(間隔は進めない)");
     uint8_t allow2[] = { 2, 0x00, 0x00, 0x02, 0x10, 0xA0, 0x06 };  // 間隔 0 = 毎回
     rcdiy::filterCommand(allow2, sizeof(allow2));
     CHECK(rcdiy::filterCount() == 2 && rcdiy::filterPass(0x0210A006, 1100) && rcdiy::filterPass(0x0210A006, 1101), "間隔 0 の PID は毎回通る");
@@ -2767,7 +2852,7 @@ int main() {
     // RaceChrono: スマホが未接続なら「正常」にしない。GPS は GPS のグループ(RaceChrono のまとめに入れない)
     SysInfo s1 = s0;
     s1.rc.enabled = true; s1.rc.bleOk = true; s1.rc.connected = false; s1.rc.gpsOn = true; s1.rc.gpsOk = true; s1.rc.fixType = 3; s1.rc.numSV = 9;
-    s1.rc.imuOk = true; s1.rc.imuLevel = true; s1.rc.imuForward = true;
+    s1.rc.imuOk = true; s1.rc.imuLevel = true; s1.rc.imuForward = true; s1.rc.imuPidOk = 3;  // 2.14.2: RaceChrono が IMU の PID 2 つを頼んでいる
     r = ui::testInfoSummary(3, l1, p0, s1, far, v, sizeof(v));
     CHECK(r == 0 && strcmp(v, "待ち") == 0, "RaceChrono のまとめ: スマホが未接続なら「待ち」");
     s1.rc.connected = true;
@@ -3849,19 +3934,19 @@ int main() {
     Signals d;
     memset(&d, 0, sizeof(d));
     uint32_t td = 130000000;
-    ui::testShow(ui::SC_SET_CAT, 7);
+    ui::testShow(ui::SC_SET_CAT, 8);
     holdOpen(d, td);
-    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadYellowMin == SET_LOADY_DEFAULT, "水温・過負荷の中の 3 項目目 = 過負荷時間 黄(10 分)の変更");
+    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadYellowMin == SET_LOADY_DEFAULT, "警告・過負荷の中の 4 項目目 = 過負荷時間 黄(10 分)の変更");
     for (int k = 0; k < 4; k++) ui::tap(LX, MY, td += 100);
     CHECK(set.loadYellowMin == 0, "高負荷時間 黄: 5 分ずつ下げて 0(「切」)で止まる");
     ui::tap(RX, MY, td += 100);
     CHECK(set.loadYellowMin == SET_LOAD_STEP, "高負荷時間 黄: 右半分で 5 分");
     ui::tap(TOPX, TOPY, td += 100);
     ui::update(d, ls, ps, si, td);
-    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 7 && set.loadYellowMin == SET_LOADY_DEFAULT, "上「‹ 戻る」で変えずに戻る");
-    ui::testShow(ui::SC_SET_CAT, 9);
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 8 && set.loadYellowMin == SET_LOADY_DEFAULT, "上「‹ 戻る」で変えずに戻る");
+    ui::testShow(ui::SC_SET_CAT, 10);
     holdOpen(d, td);
-    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadResetMin == SET_LOADRS_DEFAULT, "水温・過負荷の中の 5 項目目 = 過負荷がリセットされる時間(5 分)の変更");
+    CHECK(ui::screen() == ui::SC_SET_EDIT && set.loadResetMin == SET_LOADRS_DEFAULT, "警告・過負荷の中の 6 項目目 = 過負荷がリセットされる時間(5 分)の変更");
     for (int k = 0; k < 6; k++) ui::tap(LX, MY, td += 100);
     CHECK(set.loadResetMin == SET_LOADRS_MIN, "高負荷時間 リセット: 1 分で止まる(0 はない)");
     ui::tap(TOPX, TOPY, td += 100);
@@ -3870,22 +3955,23 @@ int main() {
     set.shiftRpm = 6500; set.brightnessPct = 40; set.illumPct = 70; set.warnTempC = 100; set.autoReturnMin = 9; set.demoOn = 1; set.rcOn = 0;
     set.loadYellowMin = 0; set.loadRedMin = 60; set.loadResetMin = 12; set.ringOne = 1; set.loadRpm = 4500;
     set.maintHours = 30;
+    set.fuelWarnPct = 40;  // 2.14.0
     trip::setTimes(5000, 7000);
     load::testSet(600000, false);
     const int resets0 = g_hostImuResets, saves0 = g_hostSaves, tsaves0 = g_hostTimeSaves;
-    ui::testShow(ui::SC_SET_CAT, 15);
+    ui::testShow(ui::SC_SET_CAT, 16);
     holdOpen(d, td);
     CHECK(ui::screen() == ui::SC_SET_RESET, "その他の中の 2 項目目 = デフォルトに戻す。下「長押しで開く」で確認の画面");
     ui::tap(TOPX, TOPY, td += 100);
     ui::update(d, ls, ps, si, td);
-    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 15 && set.shiftRpm == 6500 && g_hostSaves == saves0, "確認: 上「‹ 戻る」は戻さない");
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 16 && set.shiftRpm == 6500 && g_hostSaves == saves0, "確認: 上「‹ 戻る」は戻さない");
     holdOpen(d, td);
     ui::tap(BOTX, BOTY, td += 100);
     ui::update(d, ls, ps, si, td);
     Settings def;
     settingsDefaults(&def);
-    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 15 && memcmp(&set, &def, sizeof(Settings)) == 0 && g_hostSaves == saves0 + 1,
-          "確認: 下「戻す」で設定を全部初期値にして保存し、設定の項目へ(過負荷 回転数も 3000、メンテナンスまでの累積時間も 5 時間に)");
+    CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 16 && memcmp(&set, &def, sizeof(Settings)) == 0 && g_hostSaves == saves0 + 1,
+          "確認: 下「戻す」で設定を全部初期値にして保存し、設定の項目へ(過負荷 回転数も 3000、メンテナンスまでの累積時間も 5 時間、燃料の警告も 20 % に)");
     CHECK(g_hostBrightness == SET_BRIGHT_DEFAULT, "明るさも初期値で決め直す");
     CHECK(trip::aboveMs() == 5000 && trip::belowMs() == 7000 && g_hostImuResets == resets0, "累積時間と IMU の向きは戻さない");
     CHECK(load::valueMs() == 0 && g_hostTimeSaves == tsaves0 + 1,
@@ -4135,8 +4221,8 @@ int main() {
     };
     const uint32_t miss0 = gfx::missingGlyphs();
     // カテゴリを順に送り、それぞれの中を開いて全部の項目を見る(受信の状態・本体の状態はそのまま中へ)
-    static const int CAT_N[6] = { 3, 2, 7, 1, 1, 2 };
-    static const int CAT_FIRST[6] = { 0, 3, 5, 12, 13, 14 };
+    static const int CAT_N[6] = { 3, 2, 8, 1, 1, 2 };  // 2.14.0: 警告・過負荷は 8(燃料の警告)
+    static const int CAT_FIRST[6] = { 0, 3, 5, 13, 14, 15 };
     ui::testShow(ui::SC_SET_LIST, 0);
     ui::testTouch(tc);
     ui::update(d, ls, ps, si, tc);
@@ -4173,7 +4259,7 @@ int main() {
       gfx::dirtyClear();
     }
     CHECK(cats && ui::testSetCat() == 0, "カテゴリ: 6 つを左右で送り、最後の次は最初(上の帯でカテゴリの中から設定の段へ戻る)");
-    CHECK(items && seen == 16, "カテゴリの中: 画面 3・シフトポイント 2・水温・過負荷 7(過負荷 回転数・累積時間を含む)・その他 2 の項目(受信の状態・本体の状態はそのまま中へ)");
+    CHECK(items && seen == 17, "カテゴリの中: 画面 3・シフトポイント 2・警告・過負荷 8(燃料の警告・過負荷 回転数・累積時間を含む)・その他 2 の項目(受信の状態・本体の状態はそのまま中へ)");
     CHECK(same, "カテゴリの段・カテゴリの中の絵 = 最初から描いた絵");
     CHECK(gfx::missingGlyphs() == miss0, "カテゴリの名前・中の主な値・項目の名前の字はどれもある");
     // カテゴリの段の中の主な値: 値が変わったら描き直す
@@ -4301,7 +4387,7 @@ int main() {
     ui::update(d, ls, ps, si, tm += 100);
     CHECK(countIn(40, 236, 426, 300, RED) > 300 && sameM(d, tm), "設定の段: 水温・過負荷はメンテナンスに達したら赤の「メンテナンス」");
     // 累積時間 リセットの項目: 下の行はデータ画面と同じ
-    ui::testShow(ui::SC_SET_CAT, 11);
+    ui::testShow(ui::SC_SET_CAT, 12);
     ui::testTouch(tm);
     ui::update(d, ls, ps, si, tm += 100);
     CHECK(countIn(40, 270, 426, 320, RED) > 200 && sameM(d, tm), "累積時間 リセットの項目: 達していたら下の行は赤の「メンテナンス」");
@@ -4320,7 +4406,7 @@ int main() {
     trip::setTimes(5026000, 7000);
     {
       const int ts0 = g_hostTimeSaves;
-      ui::testShow(ui::SC_SET_EDIT, 11);
+      ui::testShow(ui::SC_SET_EDIT, 12);
       ui::testTouch(tm);
       ui::update(d, ls, ps, si, tm += 100);
       CHECK(ui::screen() == ui::SC_SET_EDIT && sameM(d, tm), "累積時間 リセットの変更の画面(0:00:00)= 最初から描いた絵");
@@ -4364,7 +4450,7 @@ int main() {
         for (int x = x0; x < x1; x++) n += fb[y * gfx::W + x] == col;
       return n;
     };
-    const uint16_t RED = gfx::rgb(0xE3241B), WHITE = gfx::rgb(0xFFFFFF);
+    const uint16_t RED = gfx::rgb(0xE3241B);
     const uint32_t miss0 = gfx::missingGlyphs();
     settingsDefaults(&set);
     load::testReset();
@@ -4381,9 +4467,9 @@ int main() {
     Signals f = d;
     f.fuelPct = 5;
     ui::update(f, ls, ps, si, tq += 100);
-    CHECK(countIn(170, 294, 296, 318, WHITE) > 80 && sameQ(f, tq), "サーキット: 燃料の警告の赤の上では白");
+    CHECK(countIn(170, 294, 296, 318, RED) > 80 && sameQ(f, tq), "サーキット: 燃料の警告でも赤のまま(2.14.0: 下を赤く塗らないので白にしない)");
     ui::update(f, ls, ps, si, tq += ALARM_BLINK_HALF_MS);
-    CHECK(countIn(170, 294, 296, 318, WHITE) > 80 && sameQ(f, tq), "サーキット: 燃料の警告の点滅の消灯側でも白");
+    CHECK(countIn(170, 294, 296, 318, RED) > 80 && sameQ(f, tq), "サーキット: 燃料の警告の点滅の消灯側でも赤のまま");
     Signals m = d;
     m.sim = true;
     m.scene = 7;

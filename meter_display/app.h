@@ -48,6 +48,7 @@ struct Settings {
   // 初期化の並びを変えないよう最後に置く
   int loadRpm;        // 過負荷 回転数(過負荷時間・累積時間・サーキットの ▼ の境目)
   int maintHours;     // メンテナンスまでの累積時間 [時間](累積時間がこれに達したらメンテナンスの時期。0 = 切)
+  int fuelWarnPct;    // 燃料の警告 [%](2.14.0。残量がこれ未満で警告(赤)、これ + 10 % 未満で注意(薄い黄))。初期化の並びを変えないよう最後に置く
 };
 // 2.10.0: 設定を全部初期値(config.h の SET_*_DEFAULT)にする(設定の「デフォルトに戻す」と、起動時の初期値)
 void settingsDefaults(Settings *s);
@@ -117,6 +118,9 @@ struct RcStats {
   bool imuLevel;        // 重力の向きを覚えた(停車中)
   bool imuForward;      // 前の向きを覚えた(発進の加速)
   float gLon, gLat;     // 車の座標での加速度 [g](前後、横)
+  // 2.14.2: IMU を RaceChrono へ送れているかを表示器で確かめる(本人 10/30「IMU の値が RaceChrono で記録されていない」)
+  uint8_t imuPidOk;     // ビット 0 = 加速度の PID(RC_PID_IMU_ACCEL)、ビット 1 = ヨーレートの PID(RC_PID_IMU_GYRO)を RaceChrono が頼んでいる
+  uint32_t imuPerSec;   // 直近 1 秒に送った IMU の通知の数(加速度 + ヨーレート)
   // 2.10.0: GPS(M100)を動かしている。RaceChrono の送信の入・切に関係なく動かす(時計と高負荷時間に時刻を使う)。
   // 落ちる起動が続いて RC_CRASH_LIMIT で止めたときだけ false(enabled は送信 = BLE・IMU を動かしているか)
   bool gpsOn;
@@ -356,7 +360,7 @@ uint32_t badCount();      // チェックサムの合わなかった数
 //                 最大 10 回/秒、OTP の高性能設定(下)で 20 回/秒。out は 96 バイト以上)
 size_t buildConfig(uint8_t *out, size_t cap, int rateHz);
 size_t buildSignals(uint8_t *out, size_t cap);
-// UART1 の速度だけを変える(工場出荷の 9600 bps から RC_GPS_BAUD へ)
+// UART1 の速度だけを変える(工場出荷の速度から RC_GPS_BAUD へ)
 size_t buildBaud(uint8_t *out, size_t cap, uint32_t baud);
 // 2.13.0: M10 の OTP の高性能設定(測位の回数の上限を上げる。SAM-M10Q 統合マニュアル 2.1.5。永久の設定で、元に戻せない。本人 10/29 の決定)
 size_t buildMonVerPoll(uint8_t *out, size_t cap);         // UBX-MON-VER の問い合わせ(版を読む)
@@ -403,6 +407,7 @@ void filterCommand(const uint8_t *data, size_t len);
 // minMs: RaceChrono が頼む間隔がこれより短いときは、この間隔にする(車の CAN は config.h の RC_CAN_MIN_MS、IMU は 0)
 bool filterPass(uint32_t pid, uint32_t nowMs, uint16_t minMs = 0);
 int filterCount();        // 許可している PID の数(全部許可のときは -1)
+bool filterAllowed(uint32_t pid);  // 2.14.2: この PID を RaceChrono が頼んでいるか(間隔は進めない。全部許可なら true)
 }
 
 // ---------------------------------------------------------------- imu(取り付け角の補正)

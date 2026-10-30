@@ -10,8 +10,8 @@
  *
  * 配線: 「595表示器 配線図」Rev.0.7 のとおり
  *   8 ピンヘッダ「IO16」 ← XIAO「D6」(UART。速度は XIAO 側で決まり、こちらは自動で合わせる)
- *   8 ピンヘッダ「IO18」 ← M100「TX」(GPS の UBX を受ける)【未確認】配線図の向きと合わせる。逆なら config.h の PIN_GPS_RX/TX を入れ替える
- *   8 ピンヘッダ「IO17」 → M100「RX」(M100 に設定を送る。25 回/秒、NMEA を止めて UBX だけ)
+ *   8 ピンヘッダ「IO17」 ← M100 の送信(GPS の UBX を受ける。2.14.4: 10/31 の試験で確定。配線図 Rev.1.7 の GPS の矢印とは逆)
+ *   8 ピンヘッダ「IO18」 → M100 の受信(M100 に設定を送る。20 回/秒、NMEA を止めて UBX だけ)
  *   8 ピンヘッダ「GND」  ← XIAO「GND」、M100「GND」
  *   8 ピンヘッダ「VBUS」 ← 5V(机の上で試すときは USB-C だけでよい。「VBUS」と USB-C は基板上で直結)
  *   M100 の電源は配線図のとおり(この版では触れていない)。
@@ -28,7 +28,8 @@
  *   サーキット・タコ・データでは、決まったら案内(上に「‹ スワイプ ›」、下に「長押し ▶ 設定」)が出る。指が 80 px 以上動くと
  *   長押しは取り消し(長押しの札が灰)。しきい値は config.h の TOUCH_CONFIRM_MS・HOLD_*・SWIPE_*。
  *   設定の並び(2.12.0: カテゴリにまとめた。設定の段で左右に送り、長押しでカテゴリの中へ。中は 1 画面 1 項目、上の帯「‹ カテゴリ名」で戻る):
- *   画面(明るさ・イルミネーションの明るさ・自動で戻る)、シフトポイント(シフトポイント・回転数の輪)、水温・過負荷(水温の警告・過負荷 回転数・
+ *   画面(明るさ・イルミネーションの明るさ・自動で戻る)、シフトポイント(シフトポイント・回転数の輪)、警告・過負荷(2.14.0 に「水温・過負荷」から改名。
+ *   水温の警告・燃料の警告(2.14.0)・過負荷 回転数・
  *   過負荷時間 黄・過負荷時間 赤・過負荷がリセットされる時間・メンテナンスまでの累積時間・累積時間 リセット(値を入れてから)。2.12.0 で「高負荷時間」を
  *   「過負荷時間」に、2.11.0 までの「時間の記録」を「累積時間」に。境目の回転数は「過負荷 回転数」1 つ)、
  *   受信の状態、本体の状態、その他(デモ・デフォルトに戻す)。受信の状態・本体の状態は長押しでその中へ(今までどおり)。
@@ -120,7 +121,6 @@
 #include <Preferences.h>
 #include <math.h>
 #include "driver/gpio.h"
-#include "hal/gpio_ll.h"  // GPS の送信ピンをオープンドレインにする(gpio_set_direction だと UART の信号の接続が外れるため LL を使う)
 #include "driver/spi_master.h"
 #include "driver/uart.h"
 #include "esp_heap_caps.h"
@@ -482,7 +482,7 @@ static SemaphoreHandle_t g_mutex = nullptr;
 static Preferences g_prefs;
 static Settings g_set = { SET_SHIFT_DEFAULT, SET_AUTORET_DEFAULT, SET_BRIGHT_DEFAULT, SET_WARN_DEFAULT, SET_DEMO_DEFAULT, SET_RC_DEFAULT, SET_ILLUM_DEFAULT,
                           SET_LOADY_DEFAULT, SET_LOADR_DEFAULT, SET_LOADRS_DEFAULT, SET_RING_DEFAULT, SET_LOADRPM_DEFAULT,
-                          SET_MAINT_DEFAULT };  // 初期値(app.cpp の settingsDefaults と同じ)
+                          SET_MAINT_DEFAULT, SET_FUELWARN_DEFAULT };  // 初期値(app.cpp の settingsDefaults と同じ)
 static PerfStats g_perf = {};
 
 void platLock() {
@@ -566,6 +566,7 @@ static void loadSettings() {
   g_set.ringOne = clampInt(g_prefs.getInt("ring", SET_RING_DEFAULT), 0, 1);  // 2.12.0
   g_set.loadRpm = clampInt(g_prefs.getInt("loadrpm", SET_LOADRPM_DEFAULT), SET_LOADRPM_MIN, SET_LOADRPM_MAX);  // 2.12.0: 過負荷 回転数
   g_set.maintHours = clampInt(g_prefs.getInt("maint", SET_MAINT_DEFAULT), SET_MAINT_MIN, SET_MAINT_MAX);  // 2.12.0: メンテナンスまでの累積時間
+  g_set.fuelWarnPct = clampInt(g_prefs.getInt("fuelwarn", SET_FUELWARN_DEFAULT), SET_FUELWARN_MIN, SET_FUELWARN_MAX);  // 2.14.0: 燃料の警告
   // 2.10.0: 高負荷時間を前の起動の続きから。時刻(0 = その起動では時刻が分からなかった)は、GPS の時刻が分かったときに電源が
   // 切れていた時間を求めるのに使う(load::onTime)
   g_loadSavedV = g_prefs.getULong("loadms", 0);
@@ -591,6 +592,7 @@ bool platSaveSettings(const Settings &s) {
   g_prefs.putInt("ring", s.ringOne);  // 2.12.0
   g_prefs.putInt("loadrpm", s.loadRpm);  // 2.12.0
   g_prefs.putInt("maint", s.maintHours);
+  g_prefs.putInt("fuelwarn", s.fuelWarnPct);  // 2.14.0
   // 2.10.0: 送信を入に戻したら、落ちる起動が続いて止めた GPS も次の起動から動かす
   const bool gpsBack = s.rcOn && g_gpsOffSaved;
   if (gpsBack) {
@@ -601,12 +603,13 @@ bool platSaveSettings(const Settings &s) {
             && g_prefs.getInt("warn", -1) == s.warnTempC && g_prefs.getInt("demo", -1) == s.demoOn && g_prefs.getInt("rc", -1) == s.rcOn
             && g_prefs.getInt("illum", -1) == s.illumPct && g_prefs.getInt("loady", -1) == s.loadYellowMin && g_prefs.getInt("loadr", -1) == s.loadRedMin
             && g_prefs.getInt("loadrs", -1) == s.loadResetMin && g_prefs.getInt("ring", -1) == s.ringOne
-            && g_prefs.getInt("loadrpm", -1) == s.loadRpm && g_prefs.getInt("maint", -1) == s.maintHours;
+            && g_prefs.getInt("loadrpm", -1) == s.loadRpm && g_prefs.getInt("maint", -1) == s.maintHours
+            && g_prefs.getInt("fuelwarn", -1) == s.fuelWarnPct;
   mlink::graceUntil(millis() + 200);
   char y[16], r[16];
   Serial.printf("設定の保存: %s(シフト点 %d、回転数の輪 %s、過負荷 回転数 %d、メンテナンスまでの累積時間 %d 時間、自動で戻る %d 分、明るさ %d %%、"
-                "イルミネーションの明るさ %d %%、警告温度 %d ℃、過負荷時間 黄 %s・赤 %s・リセットされる時間 %d 分、デモ %s、RaceChrono 送信 %s%s%s)\n",
-                ok ? "OK" : "失敗", s.shiftRpm, s.ringOne ? "片側" : "両側", s.loadRpm, s.maintHours, s.autoReturnMin, s.brightnessPct, s.illumPct, s.warnTempC, minText(s.loadYellowMin, y, sizeof(y)), minText(s.loadRedMin, r, sizeof(r)),
+                "イルミネーションの明るさ %d %%、警告温度 %d ℃、燃料の警告 %d %%、過負荷時間 黄 %s・赤 %s・リセットされる時間 %d 分、デモ %s、RaceChrono 送信 %s%s%s)\n",
+                ok ? "OK" : "失敗", s.shiftRpm, s.ringOne ? "片側" : "両側", s.loadRpm, s.maintHours, s.autoReturnMin, s.brightnessPct, s.illumPct, s.warnTempC, s.fuelWarnPct, minText(s.loadYellowMin, y, sizeof(y)), minText(s.loadRedMin, r, sizeof(r)),
                 s.loadResetMin, s.demoOn ? "入" : "切", s.rcOn ? "入" : "切",
                 s.rcOn != g_sys.rc.enabled ? "(次の起動から)" : "", gpsBack ? "。GPS も次の起動から動かす" : "");
   return ok;
@@ -852,18 +855,13 @@ static QueueHandle_t g_rcQueue = nullptr;
 static SemaphoreHandle_t g_rcMutex = nullptr;
 static NimBLECharacteristic *g_chCan = nullptr, *g_chFilter = nullptr, *g_chGps = nullptr, *g_chTime = nullptr, *g_chMonCfg = nullptr, *g_chMonVal = nullptr;
 static volatile bool g_bleOk = false, g_bleConnected = false;
-static uint32_t g_canSent = 0, g_gpsSent = 0, g_dropped = 0;  // 数えるだけ(別のタスクから読む。多少の取りこぼしは構わない)
+static uint32_t g_canSent = 0, g_gpsSent = 0, g_dropped = 0, g_imuSent = 0;  // 数えるだけ(別のタスクから読む。多少の取りこぼしは構わない)
 static uint32_t g_bleConnMs = 0;
 static bool g_gpsUartOk = false, g_imuOk = false;
 static bool g_rcSend = false;  // 2.10.0: 送信(BLE・IMU)を動かしている。切でも GPS だけは動かす(rcBegin)
 // GPS: 0 = 設定を送って NAV-PVT を待っている、1 = 届いている
 static int g_gpsState = 0;
 static uint32_t g_gpsCfgMs = 0, g_gpsLastPvtMs = 0, g_gpsAttempts = 0, g_gpsTimeMs = 0;
-// GPS の受信ピンの判定: 0 = していない、1 = 候補 A(PIN_GPS_RX)で聞いている、2 = 候補 B(PIN_GPS_TX)で聞いている
-static int g_gpsDetect = 0;
-static uint32_t g_gpsDetectMs = 0, g_gpsDetectLastMs = 0, g_gpsDetectBytesA = 0;
-static int g_gpsRxPin = PIN_GPS_RX, g_gpsTxPin = PIN_GPS_TX;
-static bool g_gpsPinsKnown = false;  // 信号のあるピンを見つけた
 static uint8_t g_gpsSync = 0;
 static uint32_t g_gpsPrevCode = 0xFFFFFFFF;
 // 2.13.0: M100 の OTP の高性能設定(otpManage)。状態は下の enum、結果は g_sys.rc.otp(受信の状態 → GPS の「OTP」)
@@ -1099,71 +1097,10 @@ static bool gpsUartBegin() {
   cfg.source_clk = UART_SCLK_DEFAULT;
   if (uart_driver_install(GPS_UART, 4096, 512, 0, nullptr, 0) != ESP_OK) return false;
   if (uart_param_config(GPS_UART, &cfg) != ESP_OK) return false;
-  gpio_pullup_en((gpio_num_t)PIN_GPS_RX);
-  gpio_pullup_en((gpio_num_t)PIN_GPS_TX);
-  return gpsApplyPins(PIN_GPS_RX, PIN_GPS_TX);
-}
-
-// 受信ピンと送信ピンを割り当てる。送信はオープンドレイン(+ プルアップ)で駆動する: 逆につないでも M100 の TX と出力同士で
-// ぶつからない(その場合は設定が届かないだけ)
-static bool gpsApplyPins(int rx, int tx) {
-  if (uart_set_pin(GPS_UART, tx, rx, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) return false;
-  gpio_ll_od_enable(&GPIO, (uint32_t)tx);  // 送信はオープンドレイン(休止中は駆動しない)
-  gpio_pullup_en((gpio_num_t)tx);
-  gpio_pullup_en((gpio_num_t)rx);
-  g_gpsRxPin = rx;
-  g_gpsTxPin = tx;
-  return true;
-}
-
-// 受信ピンの判定: 送信ピンの駆動をやめ、候補 A(PIN_GPS_RX)、候補 B(PIN_GPS_TX)の順に 400 ms ずつ受信だけして、バイトが
-// 来た方を受信に使う(M100 は電源が入れば UBX か NMEA を出し続けるので、来ていれば分かる。速度が違っても何かは来る)
-static void gpsDetectStart(uint32_t now) {
-  // 送信ピンはオープンドレインで休止中は駆動していないので、そのまま聞いてよい
-  uart_set_pin(GPS_UART, UART_PIN_NO_CHANGE, PIN_GPS_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-  uart_flush_input(GPS_UART);
-  g_gpsDetect = 1;
-  g_gpsDetectMs = now;
-  g_gpsDetectLastMs = now;
-}
-static void gpsDetectStep(uint32_t now) {
-  if ((uint32_t)(now - g_gpsDetectMs) < 400) return;
-  size_t n = 0;
-  uart_get_buffered_data_len(GPS_UART, &n);
-  if (g_gpsDetect == 1) {
-    g_gpsDetectBytesA = (uint32_t)n;
-    uart_set_pin(GPS_UART, UART_PIN_NO_CHANGE, PIN_GPS_TX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    uart_flush_input(GPS_UART);
-    g_gpsDetect = 2;
-    g_gpsDetectMs = now;
-    return;
-  }
-  uint32_t bytesB = (uint32_t)n;
-  g_gpsDetect = 0;
-  int rx = PIN_GPS_RX, tx = PIN_GPS_TX;
-  const char *what;
-  if (g_gpsDetectBytesA > 0 && bytesB == 0) {
-    what = "配線図どおり";
-    g_gpsPinsKnown = true;
-  } else if (bytesB > 0 && g_gpsDetectBytesA == 0) {
-    rx = PIN_GPS_TX;
-    tx = PIN_GPS_RX;
-    what = "配線図と逆。入れ替えて使う";
-    g_gpsPinsKnown = true;
-  } else if (bytesB == 0 && g_gpsDetectBytesA == 0) {
-    what = "どちらにも信号が無い(M100 がつながっていないか、電源が無い)。設定どおりのピンで待つ";
-  } else {
-    what = "どちらにも信号がある(ノイズか配線の誤り)。設定どおりのピンを使う";
-  }
-  gpsApplyPins(rx, tx);
-  uart_flush_input(GPS_UART);
-  gpsSendConfig();
-  static uint32_t printed = 0;
-  if (g_gpsPinsKnown || printed < 2 || (uint32_t)(now - printed) >= 60000) {
-    printed = now ? now : 1;
-    Serial.printf("GPS: 受信ピンの判定: 「IO%d」に %lu バイト、「IO%d」に %lu バイト → %s(受信「IO%d」、送信「IO%d」)\n", PIN_GPS_RX, (unsigned long)g_gpsDetectBytesA, PIN_GPS_TX,
-                  (unsigned long)bytesB, what, rx, tx);
-  }
+  // 2.14.3: 普通の UART(送信はプッシュプル、アイドル H)。u-blox の仕様どおりで、特別なことはしない(オープンドレイン・受信ピンの自動判定はやめた)。
+  // 2.14.4: 受信「IO17」← M100 の送信、送信「IO18」→ M100 の受信(10/31 の試験で確定。config.h の PIN_GPS_*)
+  gpio_pullup_en((gpio_num_t)PIN_GPS_RX);  // 線が外れているときに H(何も来ていない状態)に見せる
+  return uart_set_pin(GPS_UART, PIN_GPS_TX, PIN_GPS_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) == ESP_OK;
 }
 
 static void gpsSend(const uint8_t *d, size_t n) {
@@ -1177,7 +1114,7 @@ static void gpsSendConfig() {
   g_gpsCfgMs = millis();
 }
 
-// 設定を送っても届かないとき: M100 が別の速度(工場出荷の 9600 など)にいるとみなし、その速度で「RC_GPS_BAUD にせよ」を
+// 設定を送っても届かないとき: M100 が別の速度にいるとみなし(HGLRC の出荷設定は 115200、u-blox M10 素の既定は 9600)、その速度で「RC_GPS_BAUD にせよ」を
 // 送ってから、RC_GPS_BAUD に戻して設定を送り直す。候補を順に試す
 static void gpsRetry() {
   static const uint32_t TRY[] = { 9600, 38400, 57600, 230400 };
@@ -1193,7 +1130,7 @@ static void gpsRetry() {
   gpsSendConfig();
   if (g_gpsAttempts <= 4 || g_gpsAttempts % 30 == 0)
     Serial.printf("GPS: UBX が届かない(%lu 回目)。%lu bps で速度を %d に書き換えて設定を送り直した(受信「IO%d」、送信「IO%d」)。届かないままなら M100 の電源と配線を見る\n",
-                  (unsigned long)g_gpsAttempts, (unsigned long)baud, RC_GPS_BAUD, g_gpsRxPin, g_gpsTxPin);
+                  (unsigned long)g_gpsAttempts, (unsigned long)baud, RC_GPS_BAUD, PIN_GPS_RX, PIN_GPS_TX);
 }
 
 static void gpsOnPvt(uint32_t now) {
@@ -1201,9 +1138,8 @@ static void gpsOnPvt(uint32_t now) {
   if (!gnss::latest(&f)) return;
   if (g_gpsState != 1) {
     g_gpsState = 1;
-    g_gpsPinsKnown = true;
     g_gpsUpMs = now;  // 2.13.0: otpManage が、位置が届き始めてから RC_GPS_OTP_SETTLE_MS 待つのに使う
-    Serial.printf("GPS: 位置(NAV-PVT)が届き始めた(受信「IO%d」、送信「IO%d」。設定の ACK %lu、NAK %lu、衛星 %u)\n", g_gpsRxPin, g_gpsTxPin, (unsigned long)gnss::ackCount(),
+    Serial.printf("GPS: 位置(NAV-PVT)が届き始めた(受信「IO%d」、送信「IO%d」。設定の ACK %lu、NAK %lu、衛星 %u)\n", PIN_GPS_RX, PIN_GPS_TX, (unsigned long)gnss::ackCount(),
                   (unsigned long)gnss::nakCount(), f.numSV);
   }
   g_gpsLastPvtMs = now;
@@ -1349,23 +1285,13 @@ static void gpsManage(uint32_t now) {
     if ((uint32_t)(now - g_gpsLastPvtMs) > RC_GPS_LOST_MS) {
       g_gpsState = 0;
       g_gpsAttempts = 0;
-      g_gpsPinsKnown = false;
       Serial.println("GPS: 位置が途切れた。設定を送り直す");
       uart_set_baudrate(GPS_UART, RC_GPS_BAUD);
       gpsSendConfig();
     }
     return;
   }
-  if (g_gpsDetect) {
-    gpsDetectStep(now);
-    return;
-  }
-  // 位置が届かない間: 信号のあるピンがまだ分かっていなければ 20 秒ごとに判定し直す。そのあいだは速度を変えて設定を送り直す
-  if (RC_GPS_PIN_DETECT && !g_gpsPinsKnown && (g_gpsDetectLastMs == 0 || (uint32_t)(now - g_gpsDetectLastMs) >= 20000)) {
-    uart_set_baudrate(GPS_UART, RC_GPS_BAUD);
-    gpsDetectStart(now);
-    return;
-  }
+  // 位置が届かない間は、速度を変えて設定を送り直す
   if ((uint32_t)(now - g_gpsCfgMs) >= RC_GPS_RETRY_MS) gpsRetry();
 }
 
@@ -1516,12 +1442,14 @@ static void imuPoll(uint32_t now) {
       if (rcFilterPass(rcdiy::PID_IMU_ACCEL, now)) {
         int16_t v[3] = { i16c(lon * 1000.0f), i16c(lat * 1000.0f), i16c(vert * 1000.0f) };
         rcPush(RC_CAN, b, (uint8_t)rcdiy::encodeCan(rcdiy::PID_IMU_ACCEL, (const uint8_t *)v, 6, b));
+        g_imuSent++;
       }
       if (rcFilterPass(rcdiy::PID_IMU_GYRO, now)) {
         float glon, glat, gvert;
         imu::toCar(g_gyro[0] - g_gyroBias[0], g_gyro[1] - g_gyroBias[1], g_gyro[2] - g_gyroBias[2], &glon, &glat, &gvert);  // 「上」の軸まわりの回転 = ヨーレート(左回りが正)。零点を引く
         int16_t v[3] = { i16c(gvert * 100.0f), 0, 0 };
         rcPush(RC_CAN, b, (uint8_t)rcdiy::encodeCan(rcdiy::PID_IMU_GYRO, (const uint8_t *)v, 6, b));
+        g_imuSent++;
       }
     }
   }
@@ -1530,7 +1458,7 @@ static void imuPoll(uint32_t now) {
 
 // ---- 1 秒ごとの集計(「RaceChrono」の画面用)
 static void rcStatsTick(uint32_t now) {
-  static uint32_t lastMs = 0, canPrev = 0, gpsPrev = 0, pvtPrev = 0;
+  static uint32_t lastMs = 0, canPrev = 0, gpsPrev = 0, pvtPrev = 0, imuPrev = 0;
   if ((uint32_t)(now - lastMs) < 1000) return;
   lastMs = now;
   RcStats &r = g_sys.rc;
@@ -1541,6 +1469,13 @@ static void rcStatsTick(uint32_t now) {
   r.gpsPerSec = g_gpsSent - gpsPrev;
   gpsPrev = g_gpsSent;
   r.dropped = g_dropped;
+  r.imuPerSec = g_imuSent - imuPrev;  // 2.14.2
+  imuPrev = g_imuSent;
+  if (g_rcMutex) {
+    xSemaphoreTake(g_rcMutex, portMAX_DELAY);
+    r.imuPidOk = (rcdiy::filterAllowed(rcdiy::PID_IMU_ACCEL) ? 1 : 0) | (rcdiy::filterAllowed(rcdiy::PID_IMU_GYRO) ? 2 : 0);
+    xSemaphoreGive(g_rcMutex);
+  }
   uint32_t pvt = gnss::pvtCount();
   r.pvtPerSec = pvt - pvtPrev;
   pvtPrev = pvt;
@@ -1597,7 +1532,7 @@ static bool rcBegin(bool send, bool gps) {
   if (gps) {
     gnss::begin();
     g_gpsUartOk = gpsUartBegin();
-    if (g_gpsUartOk && !RC_GPS_PIN_DETECT) gpsSendConfig();  // 判定が入のときは、判定のあとで送る
+    if (g_gpsUartOk) gpsSendConfig();
   }
   bool t2 = true;
   if (send) {  // 切のときはキューを作らない(rcPush は何もしない)
@@ -1614,7 +1549,7 @@ static void rcPrintSelfCheck() {
   if (g_sys.rc.enabled) Serial.printf("BLE(RaceChrono DIY「%s」): %s\n", RC_BLE_NAME, !g_bleOk ? "開始できない" : g_bleConnected ? "接続中" : "接続待ち(未接続)");
   else Serial.println("RaceChrono の送信: 切(設定。BLE・IMU は動かしていない)");
   if (g_sys.rc.gpsOn)
-    Serial.printf("GPS(受信「IO%d」← M100 TX、送信「IO%d」→ M100 RX、%d bps、%d 回/秒): %s(設定の ACK %lu、NAK %lu、UBX の誤り %lu)\n", g_gpsRxPin, g_gpsTxPin, RC_GPS_BAUD,
+    Serial.printf("GPS(受信「IO%d」← M100 の送信、送信「IO%d」→ M100 の受信、%d bps、%d 回/秒): %s(設定の ACK %lu、NAK %lu、UBX の誤り %lu)\n", PIN_GPS_RX, PIN_GPS_TX, RC_GPS_BAUD,
                   RC_GPS_RATE_HZ, !g_gpsUartOk ? "UART を開けない" : g_gpsState == 1 ? "位置(NAV-PVT)が届いている" : "UBX が届いていない(起動直後は数秒かかる。続くなら M100 の電源と配線を見る)",
                   (unsigned long)gnss::ackCount(), (unsigned long)gnss::nakCount(), (unsigned long)gnss::badCount());
   else Serial.println("GPS: 切(落ちる起動が続いたため止めてある。設定 → 受信の状態 → RaceChrono の「送信」を入に戻すと、次の起動から動く)");
@@ -1631,8 +1566,9 @@ static void rcPrintStatusLine() {
   const RcStats &rc = g_sys.rc;
   char ble[128] = "送信 切", gps[128] = "切", imu[128] = "切";
   if (rc.enabled) {
-    snprintf(ble, sizeof(ble), "BLE %s 送った CAN %lu/秒 GPS %lu/秒 捨てた %lu", !rc.bleOk ? "なし" : rc.connected ? "接続中" : "未接続", (unsigned long)rc.canPerSec,
-             (unsigned long)rc.gpsPerSec, (unsigned long)rc.dropped);
+    snprintf(ble, sizeof(ble), "BLE %s 送った CAN %lu/秒 GPS %lu/秒 IMU %lu/秒(RaceChrono が頼んでいる IMU の PID: 加速度 %s ヨーレート %s)捨てた %lu",
+             !rc.bleOk ? "なし" : rc.connected ? "接続中" : "未接続", (unsigned long)rc.canPerSec, (unsigned long)rc.gpsPerSec, (unsigned long)rc.imuPerSec,
+             (rc.imuPidOk & 1) ? "有" : "無", (rc.imuPidOk & 2) ? "有" : "無", (unsigned long)rc.dropped);
     snprintf(imu, sizeof(imu), "%s 前後 %+.2f 横 %+.2f g 上 %s 前 %s", rc.imuOk ? "OK" : "なし", rc.gLon, rc.gLat, rc.imuLevel ? "済" : "未", rc.imuForward ? "済" : "未");
   }
   if (rc.gpsOn)
@@ -1726,9 +1662,9 @@ static void printSelfCheck() {
   Serial.printf("タッチ(CST9217、0x5A): %s\n", g_sys.touchOk ? "応答あり" : "応答なし(タップが効かない)");
   char y[16], r[16];
   Serial.printf("設定(%s): シフト点 %d rpm、回転数の輪 %s、過負荷 回転数 %d、メンテナンスまでの累積時間 %d 時間、自動で戻る %d 分、明るさ %d %%、"
-                "イルミネーションの明るさ %d %%、警告温度 %d ℃、過負荷時間 黄 %s・赤 %s・リセットされる時間 %d 分、デモ %s、RaceChrono 送信 %s\n",
+                "イルミネーションの明るさ %d %%、警告温度 %d ℃、燃料の警告 %d %%、過負荷時間 黄 %s・赤 %s・リセットされる時間 %d 分、デモ %s、RaceChrono 送信 %s\n",
                 g_sys.nvsOk ? "保存領域 OK" : "保存領域を開けない。初期値を使う", g_set.shiftRpm, g_set.ringOne ? "片側" : "両側", g_set.loadRpm, g_set.maintHours,
-                g_set.autoReturnMin, g_set.brightnessPct, g_set.illumPct, g_set.warnTempC,
+                g_set.autoReturnMin, g_set.brightnessPct, g_set.illumPct, g_set.warnTempC, g_set.fuelWarnPct,
                 minText(g_set.loadYellowMin, y, sizeof(y)), minText(g_set.loadRedMin, r, sizeof(r)), g_set.loadResetMin,
                 g_set.demoOn ? "入" : "切", g_set.rcOn ? "入" : "切");
   Serial.printf("UART 受信(「IO16」): %s\n", g_linkOk ? "開始。速度は自動で合わせる" : "開始していない");
