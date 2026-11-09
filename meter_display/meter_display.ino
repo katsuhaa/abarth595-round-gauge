@@ -718,20 +718,17 @@ static void odoPrint(const char *head) {
   odo::Status st;
   odo::status(&st);
   if (!st.storageOk) {
-    Serial.printf("走行記録: %s保存領域(パーティション spiffs)が%s
-", head, platOdoSize() ? "読めない" : "無い(Partition Scheme を確かめる)");
+    Serial.printf("走行記録: %s保存領域(パーティション spiffs)が%s\n", head, platOdoSize() ? "読めない" : "無い(Partition Scheme を確かめる)");
     return;
   }
   if (!st.lastUtc) {
-    Serial.printf("走行記録: %s記録 0 件(入る数 %lu 件)
-", head, (unsigned long)st.capacity);
+    Serial.printf("走行記録: %s記録 0 件(入る数 %lu 件)\n", head, (unsigned long)st.capacity);
     return;
   }
   int y, m, d, w;
   const uint32_t l = st.lastUtc + CLOCK_TZ_SEC;
   odo::civil((int32_t)(l / 86400u), &y, &m, &d, &w);
-  Serial.printf("走行記録: %s%04d-%02d-%02d %02lu:%02lu ODO %lu その日 %lu km 過走行 %lu 秒(%s)。記録 %lu / %lu 件、この起動で書いた %lu 件、書けなかった %lu 件
-",
+  Serial.printf("走行記録: %s%04d-%02d-%02d %02lu:%02lu ODO %lu その日 %lu km 過走行 %lu 秒(%s)。記録 %lu / %lu 件、この起動で書いた %lu 件、書けなかった %lu 件\n",
                 head, y, m, d, (unsigned long)(l / 3600 % 24), (unsigned long)(l / 60 % 60), (unsigned long)st.lastOdo, (unsigned long)st.lastKm,
                 (unsigned long)st.lastAboveS, odoReasonName(st.lastReason), (unsigned long)st.records, (unsigned long)st.capacity, (unsigned long)st.writes,
                 (unsigned long)st.failures);

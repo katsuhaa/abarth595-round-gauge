@@ -2853,7 +2853,7 @@ static const Item ITEMS[] = {
   { "デモ", &Settings::demoOn, 0, 1, 1, U_ONOFF, K_VALUE },
   { "デフォルトに戻す", nullptr, 0, 0, 0, U_NONE, K_DEFAULTS },  // 2.10.0
   // 走行記録(2.15.0。カテゴリは本体の状態の前。項目の番号を変えないよう最後に置く)。値は今の ODO
-  { "走行記録", nullptr, 0, 0, 0, U_NONE, K_ODO },
+  { "走行記録", nullptr, 0, 0, 0, U_NONE, K_ODO },  // 長押しで 1 年の画面(2.15.2)
 };
 static const int ODO_FIRST = 17;  // 走行記録の ITEMS の番号
 static const int N_ITEMS = sizeof(ITEMS) / sizeof(ITEMS[0]);
@@ -2868,7 +2868,7 @@ static const Cat CATS[] = {
   { "シフトポイント", 3, 2 },  // シフトポイント・回転数の輪(本人「シフトと言うメニューの名前はシフトポイントに」)
   { "警告・過負荷", 5, 8 },    // 水温の警告・燃料の警告(2.14.0)・過負荷 回転数・過負荷時間 黄・赤・過負荷がリセットされる時間・メンテナンスまでの累積時間・累積時間 リセット
   { "受信の状態", 13, 1 },
-  { "走行記録", ODO_FIRST, 1 },  // 2.15.0: 長押しで 3 ヶ月の画面(本人 11/8「設定に入れてください」。本体の状態の前)
+  { "走行記録", ODO_FIRST, 1 },  // 2.15.0: 長押しで 1 年の画面(本人 11/8「設定に入れてください」。本体の状態の前。2.15.2 までは 3 ヶ月)
   { "本体の状態", 14, 1 },
   { "その他", 15, 2 },         // デモ・デフォルトに戻す
 };
@@ -3042,15 +3042,16 @@ static void updSetCat(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
   drawOpenBand();  // 2.4.4: どの項目も下の帯の長押しで開く(値の項目・累積時間 リセットは変更の画面、デフォルトに戻すは確認の画面)
 }
 
-// ---- 走行記録(2.15.0。仕様書 odo_log_spec.md 第 5 版 7 章): 集計して出し、選んで細かいデータへ(本人 11/8「集計して出して、選択して
-// 細かいデータにアクセスするように」)。3 ヶ月 → 1 ヶ月 → 1 週 → 1 日。1 画面 1 期間: 期間・終わりの ODO(大きく)・始まり〜終わりの ODO・
-// 距離と ▲ 過走行時間。左右の半分のタップかスワイプで前・次の期間(今の期間より先、いちばん古い記録の期間より前へは進まない)。
-// 長押しで細かい方(その期間の中の、今日までで最後の期間から)。上の帯「‹ 3 ヶ月」などで粗い方(3 ヶ月なら設定の段)
-static int g_odoLevel = 0;       // 0 = 3 ヶ月、1 = 1 ヶ月、2 = 1 週、3 = 1 日
+// ---- 走行記録(2.15.0。仕様書 odo_log_spec.md 第 6 版 7 章): 集計して出し、選んで細かいデータへ(本人 11/8「集計して出して、選択して
+// 細かいデータにアクセスするように」)。1 年 → 3 ヶ月 → 1 ヶ月 → 1 週 → 1 日(2.15.2: 1 年を足した。本人 11/9「入れてください」)。
+// 1 画面 1 期間: 期間・終わりの ODO(大きく)・始まり〜終わりの ODO・距離と ▲ 過走行時間。左右の半分のタップかスワイプで前・次の期間
+// (今の期間より先、いちばん古い記録の期間より前へは進まない)。長押しで細かい方(その期間の中の、今日までで最後の期間から)。
+// 上の帯「‹ 1 年」などで粗い方(1 年なら設定の段)
+static int g_odoLevel = 0;       // odo::ODO_LV_*(0 = 1 年 … 4 = 1 日)
 static int32_t g_odoAnchor = 0;  // 見ている期間の中の日(日本時間の日数)。細かい方・粗い方へ移るときはこの日を含む期間
 static char g_odoKey[192];
-static const char *const ODO_NAME[4] = { "3 ヶ月", "1 ヶ月", "1 週", "1 日" };
-static const char *const ODO_NOW[4] = { "", "今月", "今週", "今日" };
+static const char *const ODO_NAME[odo::ODO_LV_COUNT] = { "1 年", "3 ヶ月", "1 ヶ月", "1 週", "1 日" };
+static const char *const ODO_NOW[odo::ODO_LV_COUNT] = { "今年", "", "今月", "今週", "今日" };
 static const char *const WDAY_JP[7] = { "日", "月", "火", "水", "木", "金", "土" };
 static void odoPeriodText(int level, const odo::Period &p, char *out, size_t n) {
   int y, m, d, w, y2, m2, d2, w2;
@@ -3058,9 +3059,10 @@ static void odoPeriodText(int level, const odo::Period &p, char *out, size_t n) 
   odo::civil(p.last, &y2, &m2, &d2, &w2);
   const char *now = p.current ? ODO_NOW[level] : "";
   const char *sp = now[0] ? "  " : "";
-  if (level == 0) snprintf(out, n, "%d 年 %d〜%d 月", y, m, m2);
-  else if (level == 1) snprintf(out, n, "%d 年 %d 月%s%s", y, m, sp, now);
-  else if (level == 2) snprintf(out, n, "%d/%d〜%d/%d%s%s", m, d, m2, d2, sp, now);
+  if (level == odo::ODO_LV_YEAR) snprintf(out, n, "%d 年%s%s", y, sp, now);
+  else if (level == odo::ODO_LV_QUARTER) snprintf(out, n, "%d 年 %d〜%d 月", y, m, m2);
+  else if (level == odo::ODO_LV_MONTH) snprintf(out, n, "%d 年 %d 月%s%s", y, m, sp, now);
+  else if (level == odo::ODO_LV_WEEK) snprintf(out, n, "%d/%d〜%d/%d%s%s", m, d, m2, d2, sp, now);
   else snprintf(out, n, "%d/%d/%d(%s)%s%s", y, m, d, WDAY_JP[w], sp, now);
 }
 static void drawOdoArrows(bool back, bool fwd) {
@@ -3072,11 +3074,11 @@ static void mixC(const FontData &fa, const FontData &fj, float base, const char 
 }
 static bool odoCanOpen() {  // 細かい方がある(1 日でない)、今日が分かっている
   int32_t d;
-  return g_odoLevel < 3 && odo::today(&d);
+  return g_odoLevel < odo::ODO_LV_DAY && odo::today(&d);
 }
 static void updOdo(uint32_t now) {
   (void)now;
-  if (g_odoLevel < 0 || g_odoLevel > 3) g_odoLevel = 0;
+  if (g_odoLevel < 0 || g_odoLevel >= odo::ODO_LV_COUNT) g_odoLevel = odo::ODO_LV_YEAR;
   odo::Period p;
   const bool known = odo::periodAt(g_odoLevel, g_odoAnchor, &p);
   odo::Status st;
@@ -4178,10 +4180,10 @@ static void itemOpen(const Item &it, Screen from) {
     g_resetKind = RK_DEFAULTS;
     g_resetFrom = from;
     go(SC_SET_RESET);
-  } else if (it.kind == K_ODO) {  // 2.15.0: 走行記録の 3 ヶ月の画面(今日を含む期間から)
+  } else if (it.kind == K_ODO) {  // 2.15.0: 走行記録の 1 年の画面(今年から。2.15.2 までは 3 ヶ月)
     int32_t d = 0;
     odo::today(&d);
-    g_odoLevel = 0;
+    g_odoLevel = odo::ODO_LV_YEAR;
     g_odoAnchor = d;
     go(SC_ODO);
   } else {
@@ -4444,7 +4446,7 @@ void tap(int x, int y, uint32_t nowMs) {
         swipe(z == Z_RIGHT ? 1 : -1, nowMs);
       }
       break;
-    case SC_ODO:  // 2.15.0: 上の帯「‹ 1 ヶ月」などで粗い方(3 ヶ月なら設定の段の走行記録)。左右の半分で前・次の期間
+    case SC_ODO:  // 2.15.0: 上の帯「‹ 1 ヶ月」などで粗い方(1 年なら設定の段の走行記録)。左右の半分で前・次の期間
       if (z == Z_TOP) {
         if (g_odoLevel > 0) {
           g_odoLevel--;
@@ -4819,10 +4821,10 @@ void testShow(Screen sc, int a, int b) {
     listCount();
   } else if (sc == SC_CAN_REDO) {
     g_canPp = a == 1;
-  } else if (sc == SC_ODO) {  // 2.15.0: a = 細かさ(0 = 3 ヶ月 … 3 = 1 日)、b = 今日から何日前の日を含む期間
+  } else if (sc == SC_ODO) {  // 2.15.0: a = 細かさ(odo::ODO_LV_*。0 = 1 年 … 4 = 1 日)、b = 今日から何日前の日を含む期間
     int32_t td = 0;
     odo::today(&td);
-    g_odoLevel = (a >= 0 && a <= 3) ? a : 0;
+    g_odoLevel = (a >= 0 && a < odo::ODO_LV_COUNT) ? a : 0;
     g_odoAnchor = td - (b > 0 ? b : 0);
     g_setItem = ODO_FIRST;
     g_setCat = catOf(g_setItem);

@@ -1387,17 +1387,18 @@ bool today(int32_t *d) {
   *d = g_curDay;
   return true;
 }
-// 日 d を含む期間の最初と最後の日(level: 0 = 3 ヶ月(1〜3 月・4〜6 月・7〜9 月・10〜12 月)、1 = 1 ヶ月、2 = 1 週(ODO_WEEK_START 始まり)、3 = 1 日)
+// 日 d を含む期間の最初と最後の日(level: 0 = 1 年、1 = 3 ヶ月(1〜3 月・4〜6 月・7〜9 月・10〜12 月)、2 = 1 ヶ月、3 = 1 週(ODO_WEEK_START 始まり)、
+// 4 = 1 日。2.15.2: 1 年を足した)
 void bounds(int level, int32_t d, int32_t *first, int32_t *last) {
   int y, m, dd, w;
   civil(d, &y, &m, &dd, &w);
-  if (level == 0 || level == 1) {
-    const int m0 = level == 0 ? (m - 1) / 3 * 3 + 1 : m;  // 期間の最初の月
-    const int n = level == 0 ? 3 : 1;
+  if (level <= ODO_LV_MONTH) {
+    const int m0 = level == ODO_LV_YEAR ? 1 : level == ODO_LV_QUARTER ? (m - 1) / 3 * 3 + 1 : m;  // 期間の最初の月
+    const int n = level == ODO_LV_YEAR ? 12 : level == ODO_LV_QUARTER ? 3 : 1;                  // 期間の月の数
     const int mi = y * 12 + (m0 - 1) + n;  // 次の期間の最初の月
     *first = daysFrom(y, m0, 1);
     *last = daysFrom(mi / 12, mi % 12 + 1, 1) - 1;
-  } else if (level == 2) {
+  } else if (level == ODO_LV_WEEK) {
     *first = d - ((w - ODO_WEEK_START + 7) % 7);
     *last = *first + 6;
   } else {

@@ -372,8 +372,9 @@ bool wroteSince(uint32_t *writes);  // 書いた数が *writes から増えて�
 // 1 日の値(km・秒)。今日はまだ書いていない分も入れる。記録の無い日は false(0 を入れる)
 bool day(int32_t d, uint32_t *km, uint32_t *aboveS);
 int32_t earliest();  // いちばん古い記録の日(記録が無ければ今日。今日も分からなければ 0)
-// 期間(2.15.0。仕様書 odo_log_spec.md 第 5 版 7 章)。level: 0 = 3 ヶ月(1〜3 月・4〜6 月・7〜9 月・10〜12 月)、1 = 1 ヶ月、2 = 1 週(ODO_WEEK_START 始まり)、
-// 3 = 1 日。anchor = 期間の中の日(今日より先は今日)
+// 期間(2.15.0。仕様書 odo_log_spec.md 第 6 版 7 章)。level は ODO_LV_*: 1 年、3 ヶ月(1〜3 月・4〜6 月・7〜9 月・10〜12 月)、1 ヶ月、
+// 1 週(ODO_WEEK_START 始まり)、1 日(2.15.2: 1 年を足した)。anchor = 期間の中の日(今日より先は今日)
+enum Level { ODO_LV_YEAR = 0, ODO_LV_QUARTER = 1, ODO_LV_MONTH = 2, ODO_LV_WEEK = 3, ODO_LV_DAY = 4, ODO_LV_COUNT = 5 };
 struct Period {
   int32_t first, last;  // 最初と最後の日(両端を含む)
   bool current;         // 今日を含む

@@ -620,14 +620,15 @@ int main(int argc, char **argv) {
     si.timeOk = true;
     si.utc = in.utc;
     shot("SetOdo", s, ui::SC_SET_LIST, 4);             // 設定の走行記録(今の ODO)
-    shot("OdoQuarter", s, ui::SC_ODO, 0, 0);           // 3 ヶ月(10〜12 月)
-    shot("OdoQuarterBack", s, ui::SC_ODO, 0, 45);      // 7〜9 月(記録の始まり。前へは送れない)
-    shot("OdoMonth", s, ui::SC_ODO, 1, 0);             // 1 ヶ月(今月)
-    shot("OdoMonthBack", s, ui::SC_ODO, 1, 10);        // 10 月
-    shot("OdoWeek", s, ui::SC_ODO, 2, 0);              // 1 週(今週)
-    shot("OdoWeekBack", s, ui::SC_ODO, 2, 7);          // 先週
-    shot("OdoDay", s, ui::SC_ODO, 3, 0);               // 1 日(今日)
-    shot("OdoDayNoRun", s, ui::SC_ODO, 3, 5);          // 走らなかった日(その前の ODO)
+    shot("OdoYear", s, ui::SC_ODO, 0, 0);              // 1 年(今年。2.15.2)
+    shot("OdoQuarter", s, ui::SC_ODO, 1, 0);           // 3 ヶ月(10〜12 月)
+    shot("OdoQuarterBack", s, ui::SC_ODO, 1, 45);      // 7〜9 月(記録の始まり。前へは送れない)
+    shot("OdoMonth", s, ui::SC_ODO, 2, 0);             // 1 ヶ月(今月)
+    shot("OdoMonthBack", s, ui::SC_ODO, 2, 10);        // 10 月
+    shot("OdoWeek", s, ui::SC_ODO, 3, 0);              // 1 週(今週)
+    shot("OdoWeekBack", s, ui::SC_ODO, 3, 7);          // 先週
+    shot("OdoDay", s, ui::SC_ODO, 4, 0);               // 1 日(今日)
+    shot("OdoDayNoRun", s, ui::SC_ODO, 4, 5);          // 走らなかった日(その前の ODO)
     shot("SysOdo", s, ui::SC_SET_GRP, 8, 4);
     printf("%-22s missing=%u\n", "Odo", (unsigned)gfx::missingGlyphs());
   }
