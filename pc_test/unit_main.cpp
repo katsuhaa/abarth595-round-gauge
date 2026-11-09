@@ -13,6 +13,9 @@ extern int g_hostBrightness, g_hostSaves, g_hostImuResets, g_hostBlank, g_hostBl
 extern bool g_hostSaveOk;
 extern size_t g_hostCanPreN;
 extern int g_hostCanPreSaves;
+extern unsigned char g_hostOdo[];  // 2.15.0: 走行記録の保存領域
+extern uint32_t g_hostOdoSize;
+extern bool g_hostOdoWriteOk;
 static uint16_t fb[gfx::W * gfx::H];
 static float scratch[gfx::W * (gfx::H + 2)];
 static Settings set;  // main で settingsDefaults(2.10.0)
@@ -56,6 +59,7 @@ int main() {
   gfx::begin(fb, scratch);
   mlink::begin();
   cantab::begin();
+  odo::begin();  // 2.15.0: 走行記録(PC 上では RAM の保存領域)
   ui::begin(&set);
   memset(&ps, 0, sizeof(ps));
   memset(&si, 0, sizeof(si));
@@ -356,7 +360,7 @@ int main() {
   longPress(live, t);
   CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "設定は前回見ていたカテゴリから(電源を切るまで覚える)");
   prev(t); prev(t); prev(t);
-  CHECK(ui::testSetCat() == 5, "右へスワイプで前へ(最初から最後のその他に回る。2.12.0: 6 カテゴリ)");
+  CHECK(ui::testSetCat() == 6, "右へスワイプで前へ(最初から最後のその他に回る。2.12.0: 6 カテゴリ。2.15.0: 走行記録で 7)");
   next(t);
   CHECK(ui::testSetCat() == 0, "左へスワイプ(最後の次は最初の画面)");
   // 指で押す(2.4.0: 離したときにタップ)。短いタッチと、HOLD_CANCEL_PX 以上動いたタッチは何もしない
@@ -570,21 +574,30 @@ int main() {
   CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 0, "CAN の中: 上「‹ CAN」で受信の状態の CAN のページ");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 3, "受信の状態: 上「‹ 受信の状態」で設定の受信の状態");
-  // 本体の状態(2.12.0: 5 つ目のカテゴリ。2.4.0: 受信と関係ない FPS・起動を受信の状態から出した): 下「開く」で中。上の帯で設定へ
+  // 走行記録(2.15.0: 5 つ目のカテゴリ。1 項目だけで、長押しでそのまま 3 ヶ月の画面)
+  next(t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 4, "5 つ目のカテゴリ = 走行記録(2.15.0)");
+  holdOpen(live, t);
+  CHECK(ui::screen() == ui::SC_ODO && ui::testOdoLevel() == 0, "走行記録の長押しで 3 ヶ月の画面");
+  holdOpen(live, t);
+  CHECK(ui::screen() == ui::SC_ODO && ui::testOdoLevel() == 0, "時刻が分からない間は、長押しで細かい方へは行かない");
+  ui::tap(TOPX, TOPY, t += 100); upd(live, t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 4, "3 ヶ月の画面: 上「‹ 3 ヶ月」で設定の走行記録");
+  // 本体の状態(2.12.0: 5 つ目のカテゴリ。2.15.0: 6 つ目。2.4.0: 受信と関係ない FPS・起動を受信の状態から出した): 下「開く」で中。上の帯で設定へ
   next(t);
   holdOpen(live, t);
-  CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 4 && ui::testPage() == 0, "5 つ目のカテゴリ = 本体の状態。下「長押しで開く」で中(1 ページ目 = FPS)");
+  CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 4 && ui::testPage() == 0, "6 つ目のカテゴリ = 本体の状態。下「長押しで開く」で中(1 ページ目 = FPS)");
   next(t);
   CHECK(ui::testPage() == 1, "本体の状態: 2 ページ目 = CPU(2.4.3)");
   prev(t); prev(t);
-  CHECK(ui::testPage() == 7, "本体の状態: 最初の前は最後の 起動(8 ページ。2.4.3)");
+  CHECK(ui::testPage() == 8, "本体の状態: 最初の前は最後の 走行記録(9 ページ。2.4.3。2.15.0: 走行記録)");
   next(t);
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 4, "本体の状態: 上「‹ 本体の状態」で設定の本体の状態");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 5, "本体の状態: 上「‹ 本体の状態」で設定の本体の状態");
 
   // ---------------- 7. 設定の変更(下「変更」→ 左右の半分で − +、下「決定」で保存して戻り、値が緑で点滅する(2.3.1)。上「‹ 戻る」で変えずに戻る)
   //                  2.4.0: 変更の画面は値を枠で囲み、下の「決定」を水色の帯にした(項目の画面と見た目が同じで、移ったのが分からなかった)
-  prev(t); prev(t); prev(t);
+  prev(t); prev(t); prev(t); prev(t);
   CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1, "2 つ目のカテゴリ = シフトポイント");
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 3, "シフトポイントの中の 1 項目目 = シフトポイント");
@@ -4221,22 +4234,25 @@ int main() {
     };
     const uint32_t miss0 = gfx::missingGlyphs();
     // カテゴリを順に送り、それぞれの中を開いて全部の項目を見る(受信の状態・本体の状態はそのまま中へ)
-    static const int CAT_N[6] = { 3, 2, 8, 1, 1, 2 };  // 2.14.0: 警告・過負荷は 8(燃料の警告)
-    static const int CAT_FIRST[6] = { 0, 3, 5, 13, 14, 15 };
+    static const int CAT_N[7] = { 3, 2, 8, 1, 1, 1, 2 };  // 2.14.0: 警告・過負荷は 8(燃料の警告)。2.15.0: 走行記録 1
+    static const int CAT_FIRST[7] = { 0, 3, 5, 13, 17, 14, 15 };
     ui::testShow(ui::SC_SET_LIST, 0);
     ui::testTouch(tc);
     ui::update(d, ls, ps, si, tc);
     gfx::dirtyClear();
     bool cats = true, items = true, same = true;
     int seen = 0;
-    for (int c = 0; c < 6; c++) {
+    for (int c = 0; c < 7; c++) {
       cats = cats && ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == c;
       same = same && sameK(tc);
       holdOpen(d, tc);
       if (c == 3) {
         items = items && ui::screen() == ui::SC_SET_INFO;
         seen++;
-      } else if (c == 4) {
+      } else if (c == 4) {  // 2.15.0: 走行記録は 3 ヶ月の画面(上の帯で設定の段へ戻る)
+        items = items && ui::screen() == ui::SC_ODO && ui::testOdoLevel() == 0;
+        seen++;
+      } else if (c == 5) {
         items = items && ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 4;
         seen++;
       } else {
@@ -4258,8 +4274,8 @@ int main() {
       ui::update(d, ls, ps, si, tc);
       gfx::dirtyClear();
     }
-    CHECK(cats && ui::testSetCat() == 0, "カテゴリ: 6 つを左右で送り、最後の次は最初(上の帯でカテゴリの中から設定の段へ戻る)");
-    CHECK(items && seen == 17, "カテゴリの中: 画面 3・シフトポイント 2・警告・過負荷 8(燃料の警告・過負荷 回転数・累積時間を含む)・その他 2 の項目(受信の状態・本体の状態はそのまま中へ)");
+    CHECK(cats && ui::testSetCat() == 0, "カテゴリ: 7 つを左右で送り、最後の次は最初(上の帯でカテゴリの中から設定の段へ戻る)");
+    CHECK(items && seen == 18, "カテゴリの中: 画面 3・シフトポイント 2・警告・過負荷 8(燃料の警告・過負荷 回転数・累積時間を含む)・その他 2 の項目(受信の状態・走行記録・本体の状態はそのまま中へ)");
     CHECK(same, "カテゴリの段・カテゴリの中の絵 = 最初から描いた絵");
     CHECK(gfx::missingGlyphs() == miss0, "カテゴリの名前・中の主な値・項目の名前の字はどれもある");
     // カテゴリの段の中の主な値: 値が変わったら描き直す
@@ -4574,6 +4590,300 @@ int main() {
     load::testReset();
     settingsDefaults(&set);
     ui::update(d, ls, ps, si, tc += 100);
+    gfx::dirtyClear();
+  }
+
+  // ---------------- 2.15.0: 走行記録(仕様書 odo_log_spec.md 第 3 版)
+  {
+    // ODO の読み取り(B-CAN 0C014003 の b1 の下位 4 ビット + b2 + b3)。10/22 のログのフレーム 00 00 59 96 81 A9 00 00 = 22934 km
+    veh::begin();
+    uint32_t tv = 1000;
+    veh::OdoInfo oi;
+    veh::odoInfo(&oi, tv);
+    CHECK(!oi.have && !oi.seen, "ODO: 受ける前は値なし");
+    uint8_t fr[8] = { 0x00, 0x00, 0x59, 0x96, 0x81, 0xA9, 0x00, 0x00 };
+    veh::onFrame(1, 1, VEH_ID_ODO, 8, fr, tv);
+    veh::odoInfo(&oi, tv);
+    CHECK(oi.have && oi.seen && oi.km == 22934, "ODO: 10/22 のログのフレーム 59 96 = 22934 km");
+    fr[1] = 0x50;  // 上位 4 ビットは使わない(走行中に動いているが意味は未確認)
+    fr[3] = 0x97;
+    veh::onFrame(1, 1, VEH_ID_ODO, 8, fr, tv += 100);
+    veh::odoInfo(&oi, tv);
+    CHECK(oi.km == 22935, "ODO: 1 増えたら使う(b1 の上位 4 ビットは見ない)");
+    fr[3] = 0xA9;  // +18 km
+    veh::onFrame(1, 1, VEH_ID_ODO, 8, fr, tv += 100);
+    fr[3] = 0x90;  // 減った
+    veh::onFrame(1, 1, VEH_ID_ODO, 8, fr, tv += 100);
+    veh::odoInfo(&oi, tv);
+    CHECK(oi.km == 22935 && oi.rejected == 2, "ODO: ODO_MAX_JUMP_KM を超えて増えた値・減った値は捨てる");
+    fr[3] = 0xA9;
+    for (int i = 0; i < ODO_ACCEPT_REPEAT; i++) veh::onFrame(1, 1, VEH_ID_ODO, 8, fr, tv += 100);
+    veh::odoInfo(&oi, tv);
+    CHECK(oi.km == 22953, "ODO: 捨てた値も ODO_ACCEPT_REPEAT 回続いたら使う");
+    veh::odoInfo(&oi, tv + ODO_STALE_MS + 1);
+    CHECK(oi.have && !oi.seen, "ODO: ODO_STALE_MS 受けなければ古い");
+    veh::begin();
+
+    // 日付の計算
+    int y, m, dd, w;
+    odo::civil(0, &y, &m, &dd, &w);
+    CHECK(y == 1970 && m == 1 && dd == 1 && w == 4, "日付: 0 日 = 1970-01-01(木)");
+    const int32_t nov8 = odo::daysFrom(2026, 11, 8);
+    odo::civil(nov8, &y, &m, &dd, &w);
+    CHECK(y == 2026 && m == 11 && dd == 8 && w == 0, "日付: 2026-11-08 は日曜");
+    odo::civil(odo::daysFrom(2028, 2, 29), &y, &m, &dd, &w);
+    CHECK(y == 2028 && m == 2 && dd == 29, "日付: うるう日");
+    CHECK(odo::daysFrom(2027, 1, 1) - odo::daysFrom(2026, 12, 31) == 1, "日付: 年をまたぐ");
+
+    // 書く条件
+    memset(g_hostOdo, 0xFF, g_hostOdoSize);
+    odo::begin();
+    odo::Status st;
+    odo::status(&st);
+    CHECK(st.storageOk && st.records == 0 && st.capacity == 28672, "走行記録: 空の保存領域(28,672 件入る)");
+    const uint32_t utc0 = gtime::epoch(2026, 11, 8, 1, 0, 0);  // 日本時間 11/8 10:00
+    uint32_t to = 5000;
+    odo::Input in;
+    memset(&in, 0, sizeof(in));
+    in.odoOk = in.odoHave = true;
+    in.odoKm = 23500;
+    in.speedOk = true;
+    in.speedKmh = 0;
+    auto run = [&](uint32_t ms, uint32_t stepMs = 100) {  // ms のあいだ update を呼ぶ(時刻も進める)
+      for (uint32_t e = 0; e < ms; e += stepMs) {
+        to += stepMs;
+        if (in.timeOk) in.utc = utc0 + (to - 5000) / 1000;
+        odo::update(in, to);
+      }
+    };
+    run(5000);
+    odo::status(&st);
+    CHECK(st.writes == 0 && !st.timeKnown, "走行記録: GPS の時刻が分かる前は書かない");
+    in.timeOk = true;
+    run(5000);
+    odo::status(&st);
+    CHECK(st.writes == 0 && st.timeKnown && st.today == nov8, "走行記録: 時刻が分かっても、走っていなければ書かない");
+    in.speedKmh = 50;
+    in.odoKm = 23510;
+    in.aboveMs = 120000;
+    run(2000);
+    odo::status(&st);
+    CHECK(st.writes == 0 && st.todayKm == 10 && st.todayAboveS == 120, "走行記録: 走っている間は書かない(今日 10 km・過走行 120 秒は数えている)");
+    in.speedKmh = 12;
+    run(1000);
+    odo::status(&st);
+    CHECK(st.writes == 0, "走行記録: 12 km/h(低速の 10 km/h より速い)では書かない");
+    in.speedKmh = 8;
+    run(100);
+    odo::status(&st);
+    CHECK(st.writes == 1 && st.records == 1 && st.lastKm == 10 && st.lastAboveS == 120 && st.lastOdo == 23510 && st.lastReason == odo::R_LOW,
+          "走行記録: 10 km/h 以下になったら 1 件(今日 10 km、過走行 120 秒、きっかけ 低速)");
+    in.speedKmh = 0;
+    in.odoKm = 23511;
+    run(30000);
+    odo::status(&st);
+    CHECK(st.writes == 1, "走行記録: 前の書き込みから ODO_MIN_INTERVAL_MS たつまでは書かない");
+    run(31000);
+    odo::status(&st);
+    CHECK(st.writes == 2 && st.lastKm == 11 && st.lastReason == odo::R_STILL, "走行記録: 60 秒たったら書く(0.5 km/h 未満なのできっかけは停車)");
+    run(120000);
+    odo::status(&st);
+    CHECK(st.writes == 2, "走行記録: 増えていなければ書かない");
+    in.speedKmh = 20;
+    in.reverse = true;
+    in.aboveMs = 125000;
+    run(100);
+    odo::status(&st);
+    CHECK(st.writes == 3 && st.lastAboveS == 125 && st.lastReason == odo::R_REVERSE, "走行記録: リバースなら 20 km/h でも書く");
+    in.reverse = false;
+    in.speedKmh = 0;
+    // 電源を切って入れ直す(同じ日): 今日の始まりの ODO と過走行時間を引き継ぐ。trip::aboveMs は NVS から戻った値
+    odo::begin();
+    in.timeOk = false;
+    odo::update(in, to += 100);
+    odo::status(&st);
+    CHECK(st.records == 3 && st.lastOdo == 23511 && !st.timeKnown, "走行記録: 起動時に保存領域から 3 件と最後の記録を読む");
+    in.timeOk = true;
+    in.odoKm = 23513;
+    run(200);
+    odo::status(&st);
+    CHECK(st.todayKm == 13 && st.todayAboveS == 125, "走行記録: 同じ日の続き(今日 13 km、過走行 125 秒)");
+    uint32_t km = 0, ab = 0;
+    CHECK(odo::day(nov8, &km, &ab) && km == 13 && ab == 125, "走行記録: 今日の値はまだ書いていない分も");
+    CHECK(!odo::day(nov8 - 1, &km, &ab) && km == 0, "走行記録: 記録の無い日は 0 km");
+    odo::Period pd;
+    CHECK(odo::periodAt(2, nov8, &pd) && pd.first == nov8 && pd.last == nov8 + 6 && pd.km == 13 && pd.odoEnd == 23513 && pd.odoStart == 23500 && !pd.canBack && !pd.canFwd && pd.current,
+          "走行記録: 今週 = 日曜 11/8〜土曜 11/14(本人 11/8)、ODO 23500〜23513、前の週へは送れない");
+    CHECK(odo::periodAt(1, nov8, &pd) && pd.first == odo::daysFrom(2026, 11, 1) && pd.last == odo::daysFrom(2026, 11, 30) && pd.km == 13, "走行記録: 今月 = 11/1〜11/30");
+    CHECK(odo::periodAt(0, nov8, &pd) && pd.first == odo::daysFrom(2026, 10, 1) && pd.last == odo::daysFrom(2026, 12, 31), "走行記録: 3 ヶ月 = 10〜12 月");
+    CHECK(odo::periodAt(0, odo::daysFrom(2026, 2, 14), &pd) && pd.first == odo::daysFrom(2026, 1, 1) && pd.last == odo::daysFrom(2026, 3, 31) && !pd.odoKnown,
+          "走行記録: 3 ヶ月 = 1〜3 月(記録より前は ODO が分からない)");
+    CHECK(odo::prevAnchor(1, odo::daysFrom(2026, 1, 20)) == odo::daysFrom(2025, 12, 31) && odo::nextAnchor(0, odo::daysFrom(2026, 9, 3)) == nov8,
+          "走行記録: 前の期間 = その最後の日(年をまたぐ)、次の期間は今日まで");
+    // 日付が変わる(走ったまま 0 時をまたぐ): 次に書いてよい状態になったら、前の日の締めの記録を書き、新しい日は 0 km から
+    in.speedKmh = 40;
+    in.odoKm = 23520;
+    in.utc = utc0 + 14 * 3600 - 1;  // 日本時間 11/8 23:59:59
+    odo::update(in, to);
+    in.odoKm = 23521;
+    in.utc = utc0 + 14 * 3600 + 1;  // 11/9 0:00:01
+    odo::update(in, to += 2000);
+    odo::status(&st);
+    const uint32_t w0 = st.writes;
+    CHECK(st.today == nov8 + 1 && st.todayKm == 1, "走行記録: 0 時をまたいだら新しい日(0 時の ODO から。今日 1 km)");
+    CHECK(odo::day(nov8, &km, &ab) && km == 20, "走行記録: 前の日の値は 0 時の時点の ODO まで(20 km)");
+    in.speedKmh = 5;
+    in.odoKm = 23522;
+    odo::update(in, to += 100);
+    odo::status(&st);
+    CHECK(st.writes == w0 + 1 && st.lastReason == odo::R_CLOSE && st.lastKm == 20, "走行記録: 次に低速になったとき、前の日の締めの記録を書く(間隔は待たない)");
+    to += ODO_MIN_INTERVAL_MS;
+    odo::update(in, to);
+    odo::status(&st);
+    CHECK(st.writes == w0 + 2 && st.lastKm == 2 && st.today == nov8 + 1, "走行記録: 新しい日の記録(2 km)");
+    CHECK(odo::periodAt(3, nov8, &pd) && pd.km == 20 && pd.odoEnd == 23520 && odo::periodAt(2, nov8 + 1, &pd) && pd.km == 22 && pd.odoEnd == 23522,
+          "走行記録: 昨日 20 km(ODO 23520)、今週 22 km(今の ODO 23522)");
+    // 書きかけの記録(電源が切れた): 次の区切りから書く
+    odo::begin();
+    odo::update(in, to += 100);
+    odo::status(&st);
+    const uint32_t r0 = st.records;
+    const uint32_t nextOff = st.records * ODO_REC_BYTES;  // ここまで 1 区切りの中に続けて書いてある
+    g_hostOdo[nextOff] = 0x12;  // 次に書く所が空いていない
+    odo::begin();
+    in.odoKm = 23523;
+    to += ODO_MIN_INTERVAL_MS;
+    odo::update(in, to);
+    odo::status(&st);
+    CHECK(st.writes == 1 && st.failures == 0 && st.records == r0 + 1, "走行記録: 次に書く所が空いていなければ、次の区切りを消して書く");
+    CHECK(g_hostOdo[ODO_SECTOR_BYTES] == 0x44 && g_hostOdo[ODO_SECTOR_BYTES + 1] == 0x4F, "走行記録: 次の区切りの先頭に書いた(印 0x4F44)");
+    odo::begin();
+    odo::status(&st);
+    CHECK(st.records == r0 + 1 && st.lastOdo == 23523, "走行記録: 読み直しても同じ(書きかけは読み飛ばす)");
+    // 書けない
+    g_hostOdoWriteOk = false;
+    in.odoKm = 23524;
+    to += ODO_MIN_INTERVAL_MS;
+    odo::update(in, to);
+    odo::status(&st);
+    CHECK(st.failures == 1 && st.writes == 0, "走行記録: 書けなかった数を数える");
+    g_hostOdoWriteOk = true;
+    // 輪の一周: 28,672 件より多く書いても、いちばん新しい記録から続く
+    memset(g_hostOdo, 0xFF, g_hostOdoSize);
+    odo::begin();
+    in.speedKmh = 0;
+    in.reverse = true;  // 停車 3 秒を待たずに書く
+    uint32_t odoKm = 30000;
+    for (int i = 0; i < 28672 + 300; i++) {
+      in.odoKm = ++odoKm;
+      in.utc += 61;
+      to += ODO_MIN_INTERVAL_MS + 1000;
+      odo::update(in, to);
+    }
+    odo::status(&st);
+    const uint32_t wTotal = st.writes;
+    CHECK(wTotal >= 28672 + 290 && st.failures == 0 && st.records <= 28672 && st.records > 28672 - 128, "走行記録: 一周しても書き続ける(古い区切りから消す)");
+    odo::begin();
+    odo::status(&st);
+    CHECK(st.lastOdo == odoKm && st.records > 28672 - 128, "走行記録: 一周したあとも、読み直すといちばん新しい記録から");
+    in.odoKm = ++odoKm;
+    to += ODO_MIN_INTERVAL_MS + 1000;
+    odo::update(in, to);
+    odo::begin();
+    odo::status(&st);
+    CHECK(st.lastOdo == odoKm, "走行記録: 読み直したあとも続けて書ける");
+    in.reverse = false;
+
+    // 画面(設定 → 走行記録): 3 ヶ月 → 1 ヶ月 → 1 週 → 1 日。日ごとの記録: 9/10(22000〜22050)、10/20(〜22340)、11/3(〜22520)、今日 11/8(〜22615)
+    memset(g_hostOdo, 0xFF, g_hostOdoSize);
+    odo::begin();
+    in.timeOk = true;
+    in.speedKmh = 0;
+    in.aboveMs = 0;
+    struct DayRun {
+      int m, d;
+      uint32_t from, to;
+    };
+    static const DayRun RUNS[] = { { 9, 10, 22000, 22050 }, { 10, 20, 22050, 22340 }, { 11, 3, 22340, 22520 }, { 11, 8, 22520, 22615 } };
+    for (const DayRun &r : RUNS) {
+      in.utc = gtime::epoch(2026, (uint8_t)r.m, (uint8_t)r.d, 1, 0, 0);
+      in.odoKm = r.from;
+      odo::update(in, to += ODO_MIN_INTERVAL_MS + 1000);
+      in.odoKm = r.to;
+      in.utc += 3600;
+      odo::update(in, to += ODO_MIN_INTERVAL_MS + 1000);
+    }
+    const int32_t sep10 = odo::daysFrom(2026, 9, 10);
+    CHECK(odo::periodAt(3, nov8 - 3, &pd) && pd.odoKnown && pd.odoEnd == 22520 && pd.km == 0 && !pd.hasRecord, "走行記録: 記録の無い日(11/5)の ODO = その前の記録の ODO(22520)、0 km");
+    CHECK(odo::periodAt(2, nov8 - 1, &pd) && pd.odoStart == 22340 && pd.odoEnd == 22520 && pd.km == 180, "走行記録: 11/1〜11/7 = 22340〜22520(180 km)");
+    CHECK(odo::periodAt(1, odo::daysFrom(2026, 10, 5), &pd) && pd.odoStart == 22050 && pd.odoEnd == 22340 && pd.km == 290, "走行記録: 10 月 = 22050〜22340(290 km)");
+    CHECK(odo::periodAt(0, nov8, &pd) && pd.odoStart == 22050 && pd.odoEnd == 22615 && pd.km == 565 && pd.canBack && !pd.canFwd, "走行記録: 10〜12 月 = 22050〜今 22615(565 km)、前へ送れる");
+    CHECK(odo::periodAt(0, sep10, &pd) && pd.odoStart == 22000 && pd.odoEnd == 22050 && !pd.canBack && pd.canFwd, "走行記録: 7〜9 月 = 22000〜22050(前に記録が無いので始まりは最初の記録)、前へは送れない");
+    Signals d;
+    memset(&d, 0, sizeof(d));
+    const uint32_t miss0 = gfx::missingGlyphs();
+    uint32_t tu = 70000000;
+    ui::testShow(ui::SC_SET_LIST, 4);
+    ui::testTouch(tu);
+    ui::update(d, ls, ps, si, tu += 100);
+    holdOpen(d, tu);
+    CHECK(ui::screen() == ui::SC_ODO && ui::testOdoLevel() == 0 && ui::testOdoDaysBack() == 0, "走行記録の画面: 3 ヶ月(今日を含む 10〜12 月)から");
+    holdOpen(d, tu);
+    CHECK(ui::testOdoLevel() == 1 && ui::testOdoDaysBack() == 0, "長押しで 1 ヶ月(今月)");
+    ui::tap(386, 233, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoLevel() == 1 && ui::testOdoDaysBack() == 0, "今の期間より先へは送らない");
+    ui::tap(80, 233, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoLevel() == 1 && ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 10, 31), "左の半分で前の月(10 月。その最後の日)");
+    holdOpen(d, tu);
+    CHECK(ui::testOdoLevel() == 2 && ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 10, 31), "長押しで 1 週(10 月の最後の週 10/25〜10/31)");
+    holdOpen(d, tu);
+    CHECK(ui::testOdoLevel() == 3 && ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 10, 31), "長押しで 1 日(10/31)");
+    holdOpen(d, tu);
+    CHECK(ui::testOdoLevel() == 3, "1 日より細かい方は無い");
+    ui::swipe(-1, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 10, 30), "1 日: 右へスワイプで前の日(記録の無い日も 1 日ずつ)");
+    ui::tap(233, 60, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoLevel() == 2, "上の帯で 1 週");
+    ui::tap(233, 60, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    ui::tap(233, 60, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoLevel() == 0 && odo::periodAt(0, odo::daysFrom(2026, 10, 30), &pd) && pd.first == odo::daysFrom(2026, 10, 1), "上の帯で 1 ヶ月 → 3 ヶ月(10〜12 月)");
+    ui::tap(80, 233, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 9, 30), "3 ヶ月: 前の期間(7〜9 月)");
+    ui::tap(80, 233, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 9, 30), "3 ヶ月: いちばん古い記録の期間より前へは送らない");
+    holdOpen(d, tu);
+    holdOpen(d, tu);
+    CHECK(ui::testOdoLevel() == 2 && odo::periodAt(2, odo::daysFrom(2026, 9, 30), &pd) && pd.first == odo::daysFrom(2026, 9, 27), "9 月 → その最後の週(9/27〜10/3)");
+    ui::tap(233, 60, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoLevel() == 1 && ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 9, 30), "上の帯で、来た月(9 月)へ戻る(週が 10 月にまたがっていても)");
+    for (int lv = 0; lv < 4; lv++)
+      for (int back : { 0, 3, 40, 70 }) {
+        ui::testShow(ui::SC_ODO, lv, back);
+        ui::update(d, ls, ps, si, tu += 100);
+      }
+    CHECK(gfx::missingGlyphs() == miss0, "走行記録の画面: 字はどれもある");
+    ui::tap(233, 60, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    ui::testShow(ui::SC_ODO, 0, 0);
+    ui::tap(233, 60, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 4, "3 ヶ月の上の帯で設定の走行記録");
+    char v[64];
+    CHECK(ui::testInfoItem(4, 8, ls, ps, si, tu, v, sizeof(v)) >= 0 && strstr(v, "件") != nullptr, "本体の状態の 9 ページ目 = 走行記録(件数)");
+    CHECK(gfx::missingGlyphs() == miss0, "走行記録の項目・本体の状態: 字はどれもある");
+    memset(g_hostOdo, 0xFF, g_hostOdoSize);
+    odo::begin();
+    ui::testShow(ui::SC_DRIVE);
+    ui::update(d, ls, ps, si, tu += 100);
     gfx::dirtyClear();
   }
 

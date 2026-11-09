@@ -61,6 +61,7 @@ int main(int argc, char **argv) {
   gfx::begin(fb, scratch);
   mlink::begin();
   cantab::begin();
+  odo::begin();  // 2.15.0
   ui::begin(&set);
   gfx::setTabularDigits(tabular);
   memset(&ls, 0, sizeof(ls));
@@ -567,7 +568,7 @@ int main(int argc, char **argv) {
   {
     Signals s = sig(4200, '3', 92, 62);
     const uint32_t at = HOLD_SHOW_MS + (HOLD_MS - HOLD_SHOW_MS) * 6 / 10;
-    ui::testShow(ui::SC_SET_LIST, 4);
+    ui::testShow(ui::SC_SET_LIST, 5);  // 2.15.0: 本体の状態は 6 つ目のカテゴリ
     ui::testTouch(now);
     ui::update(s, ls, ps, si, now);
     ui::touchDown(366, 233, now + 10);
@@ -586,9 +587,49 @@ int main(int argc, char **argv) {
     saveShot("MenuCancel");
     printf("%-22s guide=%d mode=%d holding=%d missing=%u\n", "MenuCancel", (int)ui::testGuide(), ui::testGuideMode(), (int)ui::testHolding(), (unsigned)gfx::missingGlyphs());
     ui::touchUp(now + 10 + at + 20);
-    ui::testShow(ui::SC_SET_LIST, 4);
+    ui::testShow(ui::SC_SET_LIST, 5);
     gfx::dirtyClear();
     now += 5000;
+  }
+
+  // ---- 走行記録(2.15.0。仕様書 odo_log_spec.md 第 3 版 7 章)。50 日分の記録を作る(日本時間 11/8(日)が今日)
+  {
+    Signals s = sig(850, 'N', 88, 62);
+    shot("OdoWait", s, ui::SC_ODO, 0, 0);  // GPS の時刻が分かる前
+    odo::Input in;
+    memset(&in, 0, sizeof(in));
+    in.odoOk = in.odoHave = in.speedOk = in.timeOk = true;
+    in.odoKm = 23000;
+    const uint32_t day0 = gtime::epoch(2026, 9, 19, 1, 0, 0);  // 日本時間 9/19 10:00
+    uint32_t to = 1000, above = 0;
+    for (int dd = 0; dd <= 50; dd++) {
+      const int km = (dd % 7 == 3) ? 0 : 8 + (dd * 37) % 45;  // 走らない日もある
+      in.utc = day0 + (uint32_t)dd * 86400u;
+      in.speedKmh = 0;
+      odo::update(in, to += 1000);
+      in.odoKm += (uint32_t)km;
+      above += km > 30 ? (uint32_t)(km * 9000) : 0;
+      in.aboveMs = above;
+      in.speedKmh = 40;
+      odo::update(in, to += 1000);
+      in.speedKmh = 0;
+      to += ODO_MIN_INTERVAL_MS;
+      in.utc += 3600;
+      odo::update(in, to);
+    }
+    si.timeOk = true;
+    si.utc = in.utc;
+    shot("SetOdo", s, ui::SC_SET_LIST, 4);             // 設定の走行記録(今の ODO)
+    shot("OdoQuarter", s, ui::SC_ODO, 0, 0);           // 3 ヶ月(10〜12 月)
+    shot("OdoQuarterBack", s, ui::SC_ODO, 0, 45);      // 7〜9 月(記録の始まり。前へは送れない)
+    shot("OdoMonth", s, ui::SC_ODO, 1, 0);             // 1 ヶ月(今月)
+    shot("OdoMonthBack", s, ui::SC_ODO, 1, 10);        // 10 月
+    shot("OdoWeek", s, ui::SC_ODO, 2, 0);              // 1 週(今週)
+    shot("OdoWeekBack", s, ui::SC_ODO, 2, 7);          // 先週
+    shot("OdoDay", s, ui::SC_ODO, 3, 0);               // 1 日(今日)
+    shot("OdoDayNoRun", s, ui::SC_ODO, 3, 5);          // 走らなかった日(その前の ODO)
+    shot("SysOdo", s, ui::SC_SET_GRP, 8, 4);
+    printf("%-22s missing=%u\n", "Odo", (unsigned)gfx::missingGlyphs());
   }
 
   // ---- そのほかの状態

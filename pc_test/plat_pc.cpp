@@ -39,3 +39,34 @@ size_t platLoadCanPre(void *data, size_t maxN) {
   memcpy(data, g_hostCanPre, g_hostCanPreN);
   return g_hostCanPreN;
 }
+// 走行記録の保存領域(2.15.0)。基板のパーティション spiffs(917,504 バイト)の代わり。フラッシュと同じく、書くとビットは 1 → 0 にしか
+// ならない(消すと 0xFF)。電源を切っても残る(odo::begin のあとも残る)
+uint32_t g_hostOdoSize = 0xE0000;
+unsigned char g_hostOdo[0xE0000];
+bool g_hostOdoInit = false;
+bool g_hostOdoWriteOk = true;   // false で書けない(試験用)
+int g_hostOdoWrites = 0, g_hostOdoErases = 0;
+static void hostOdoInit() {
+  if (!g_hostOdoInit) memset(g_hostOdo, 0xFF, sizeof(g_hostOdo)), g_hostOdoInit = true;
+}
+uint32_t platOdoSize() { return g_hostOdoSize; }
+bool platOdoRead(uint32_t off, void *data, size_t n) {
+  hostOdoInit();
+  if (off + n > g_hostOdoSize) return false;
+  memcpy(data, g_hostOdo + off, n);
+  return true;
+}
+bool platOdoWrite(uint32_t off, const void *data, size_t n) {
+  hostOdoInit();
+  if (!g_hostOdoWriteOk || off + n > g_hostOdoSize) return false;
+  for (size_t i = 0; i < n; i++) g_hostOdo[off + i] &= ((const unsigned char *)data)[i];
+  g_hostOdoWrites++;
+  return true;
+}
+bool platOdoErase(uint32_t off, size_t n) {
+  hostOdoInit();
+  if (off % 4096 || n % 4096 || off + n > g_hostOdoSize) return false;
+  memset(g_hostOdo + off, 0xFF, n);
+  g_hostOdoErases++;
+  return true;
+}

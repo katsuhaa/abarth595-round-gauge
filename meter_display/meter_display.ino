@@ -102,7 +102,8 @@
  *     USB CDC On Boot  → Enabled
  *     PSRAM            → OPI PSRAM
  *     Partition Scheme → Huge APP (3MB No OTA/1MB SPIFFS)か Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)(2.10.0 から。
- *                        SPIFFS はこのスケッチでは使わない)
+ *                        2.15.0: SPIFFS の領域(Huge APP は 896KB、Minimal SPIFFS は 128KB)を走行記録に使う(ファイルシステムは使わず直接書く)。
+ *                        Huge APP で 28,672 件、Minimal SPIFFS で 4,096 件。Partition Scheme を切り替えると走行記録は消える)
  *   どれも、違っているとコンパイルがエラーで止まる(下の #error。Partition Scheme は既定の 1.2MB APP のときだけ止める)。
  *   「USB Mode」が既定値(Hardware CDC and JTAG)でないときも同じ。
  *   スケッチは 2.10.0 で 1,339,367 バイトになり、既定の Partition Scheme(1.2MB APP。1,310,720 バイト)に入らない(2.7.0 で 97 %。
@@ -125,6 +126,7 @@
 #include "driver/uart.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
+#include "esp_partition.h"
 #include "config.h"
 #if RC_ENABLE
 #include "esp32-hal-alloc-ble-mem.h"  // arduino-esp32 3.x: 外部の BLE ライブラリを使うときは、これで BLE 用のメモリーを残す
@@ -672,6 +674,85 @@ size_t platLoadCanPre(void *data, size_t maxN) {
   const size_t n = g_prefs.getBytesLength("canpre");
   if (n == 0 || n > maxN) return 0;
   return g_prefs.getBytes("canpre", data, n);
+}
+
+// ================================================================ 走行記録の保存領域(2.15.0。パーティション spiffs をそのまま使う)
+static const esp_partition_t *g_odoPart = nullptr;
+static bool g_odoPartSearched = false;
+static const esp_partition_t *odoPart() {
+  if (!g_odoPartSearched) {
+    g_odoPartSearched = true;
+    g_odoPart = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+  }
+  return g_odoPart;
+}
+uint32_t platOdoSize() {
+  const esp_partition_t *p = odoPart();
+  return p ? p->size : 0;
+}
+bool platOdoRead(uint32_t off, void *data, size_t n) {
+  const esp_partition_t *p = odoPart();
+  return p && esp_partition_read(p, off, data, n) == ESP_OK;
+}
+bool platOdoWrite(uint32_t off, const void *data, size_t n) {
+  const esp_partition_t *p = odoPart();
+  if (!p) return false;
+  mlink::graceUntil(millis() + 1000);  // フラッシュへ書く間の UART の取りこぼしを線の品質に入れない
+  const bool ok = esp_partition_write(p, off, data, n) == ESP_OK;
+  mlink::graceUntil(millis() + 200);
+  return ok;
+}
+bool platOdoErase(uint32_t off, size_t n) {
+  const esp_partition_t *p = odoPart();
+  if (!p) return false;
+  mlink::graceUntil(millis() + 1000);
+  const bool ok = esp_partition_erase_range(p, off, n) == ESP_OK;
+  mlink::graceUntil(millis() + 200);
+  return ok;
+}
+static const char *odoReasonName(uint8_t r) {
+  return r == odo::R_STILL ? "停車" : r == odo::R_LOW ? "低速" : r == odo::R_REVERSE ? "リバース" : r == odo::R_CLOSE ? "日付の締め" : "?";
+}
+// 走行記録の 1 行(起動時と、書いたとき)
+static void odoPrint(const char *head) {
+  odo::Status st;
+  odo::status(&st);
+  if (!st.storageOk) {
+    Serial.printf("走行記録: %s保存領域(パーティション spiffs)が%s
+", head, platOdoSize() ? "読めない" : "無い(Partition Scheme を確かめる)");
+    return;
+  }
+  if (!st.lastUtc) {
+    Serial.printf("走行記録: %s記録 0 件(入る数 %lu 件)
+", head, (unsigned long)st.capacity);
+    return;
+  }
+  int y, m, d, w;
+  const uint32_t l = st.lastUtc + CLOCK_TZ_SEC;
+  odo::civil((int32_t)(l / 86400u), &y, &m, &d, &w);
+  Serial.printf("走行記録: %s%04d-%02d-%02d %02lu:%02lu ODO %lu その日 %lu km 過走行 %lu 秒(%s)。記録 %lu / %lu 件、この起動で書いた %lu 件、書けなかった %lu 件
+",
+                head, y, m, d, (unsigned long)(l / 3600 % 24), (unsigned long)(l / 60 % 60), (unsigned long)st.lastOdo, (unsigned long)st.lastKm,
+                (unsigned long)st.lastAboveS, odoReasonName(st.lastReason), (unsigned long)st.records, (unsigned long)st.capacity, (unsigned long)st.writes,
+                (unsigned long)st.failures);
+}
+// loop() のたびに: 走行記録(書く条件は odo::update)
+static void odoPoll(const Signals &s, uint32_t now) {
+  static uint32_t s_writes = 0;
+  veh::OdoInfo oi;
+  veh::odoInfo(&oi, now);
+  odo::Input in;
+  in.odoOk = oi.seen;
+  in.odoHave = oi.have;
+  in.odoKm = oi.km;
+  in.speedOk = s.speedOk;
+  in.speedKmh = s.speedKmh;
+  in.reverse = s.gearOk && s.gear == 'R';
+  in.timeOk = g_sys.timeOk && !g_sys.timeDemo;  // デモの時刻では書かない
+  in.utc = g_sys.utc;
+  in.aboveMs = trip::aboveMs();
+  odo::update(in, now);
+  if (odo::wroteSince(&s_writes)) odoPrint("書いた ");
 }
 
 // ================================================================ 受信(UART、別タスク)
@@ -1681,6 +1762,7 @@ static void printSelfCheck() {
     Serial.printf("RaceChrono の送信と GPS: 切にした(落ちる起動が %d 回続いたため。設定 → 受信の状態 → RaceChrono の「送信」を入に戻すと、次の起動から両方動く)\n",
                   RC_CRASH_LIMIT);
   else rcPrintSelfCheck();
+  odoPrint("");  // 2.15.0
   Serial.printf("自己診断: %s\n", selfCheckOk() ? "OK" : "NG(上の行を見る)");
   Serial.println();
 }
@@ -1703,6 +1785,7 @@ void setup() {
   g_sys.touchOk = touchBegin();
   veh::begin();
   loadSettings();
+  odo::begin();  // 2.15.0: 走行記録(保存領域を全部読んで日ごとの表を作る。PSRAM を使う)
 
   g_fb = (uint16_t *)platAlloc(sizeof(uint16_t) * gfx::W * gfx::H);
   float *scratch = (float *)platAlloc(sizeof(float) * gfx::W * (gfx::H + 2));
@@ -1816,6 +1899,7 @@ void loop() {
   trip::update(s, now, g_set.loadRpm);  // 2.12.0: 累積時間の境目は設定の過負荷 回転数
   load::update(s, g_set, now);  // 2.10.0: 高負荷時間
   timePoll(now);                // 2.10.0: 時計の時刻と、電源が切れていた時間の引き算
+  odoPoll(s, now);              // 2.15.0: 走行記録
   saveTimes(now, false);
   uint32_t tu = micros();  // サーキット・タコの「1 回描いて送る時間」はここから(タッチ・受信・保存の時間は入れない)
   ui::update(s, ls, g_perf, g_sys, now);  // この中で ui::blinkPoll も呼ばれる(切り替わると platBlink)

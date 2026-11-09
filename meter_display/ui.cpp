@@ -2481,13 +2481,13 @@ static void drawDefaultsDesc(int y) {
 enum Group : uint8_t { G_CAN, G_GPS, G_IMU, G_RC, G_SYS, G_COUNT };
 static const int N_LINK_GROUPS = 4;  // 受信の状態のグループ(CAN・GPS・IMU・RaceChrono)
 static const char *const GROUP_NAME[G_COUNT] = { "CAN", "GPS", "IMU", "RaceChrono", "本体の状態" };
-static const int GROUP_N[G_COUNT] = { 9, 4, 2, 3, 8 };  // グループの中のページの数(2.6.0: CAN に「前後で比べる」。2.9.0: CAN に「ライト」。2.13.0: GPS に「OTP」)
+static const int GROUP_N[G_COUNT] = { 9, 4, 2, 3, 9 };  // 2.15.0: 本体の状態に「走行記録」  // グループの中のページの数(2.6.0: CAN に「前後で比べる」。2.9.0: CAN に「ライト」。2.13.0: GPS に「OTP」)
 static const int GRP_MAX = 9;
 enum { P_CAN_BAUD, P_CAN_RX, P_CAN_ERR, P_CAN_READER, P_CAN_BUS, P_CAN_FUEL, P_CAN_LIGHT, P_CAN_CHECK, P_CAN_PP };  // CAN の中のページ
 enum { P_GPS_FIX, P_GPS_POS, P_GPS_SPEED, P_GPS_OTP };                                        // GPS(2.13.0: OTP = M100 の高性能設定)
 enum { P_IMU_ACC, P_IMU_CAL };                                                                // IMU
 enum { P_RC_SEND, P_RC_LINK, P_RC_RATE };                                                     // RaceChrono
-enum { P_SYS_FPS, P_SYS_CPU, P_SYS_CLOCK, P_SYS_TEMP, P_SYS_RAM, P_SYS_PSRAM, P_SYS_FLASH, P_SYS_BOOT };  // 本体の状態
+enum { P_SYS_FPS, P_SYS_CPU, P_SYS_CLOCK, P_SYS_TEMP, P_SYS_RAM, P_SYS_PSRAM, P_SYS_FLASH, P_SYS_BOOT, P_SYS_ODO };  // 本体の状態(2.15.0: 走行記録)
 enum Verdict : uint8_t { V_WAIT, V_OK, V_NG };
 enum PageAct : uint8_t { A_NONE, A_OPEN_GRP, A_OPEN_CAN, A_EDIT_RC, A_IMU_RESET, A_OPEN_CANPP };  // ページの下の帯の操作
 struct InfoItem {
@@ -2500,7 +2500,9 @@ struct InfoItem {
 static uint32_t g_errTotal = 0, g_errIncMs = 0;    // 誤り・欠落の合計と、最後に増えた時刻
 static uint32_t g_dropTotal = 0, g_dropIncMs = 0;  // RaceChrono で捨てた数と、最後に増えた時刻
 static bool g_errSeen = false, g_dropSeen = false;
+static uint32_t g_infoNow = 0;  // 最後の update の時刻(2.15.0: 本体の状態の「走行記録」の ODO の受信に使う)
 static void infoTrack(const LinkStats &ls, const SysInfo &si, uint32_t now) {  // update のたびに呼ぶ
+  g_infoNow = now;
   uint32_t e = ls.crcErrors + ls.lostFrames;
   if (e != g_errTotal) {
     if (g_errSeen && e > g_errTotal) g_errIncMs = now;
@@ -2656,11 +2658,42 @@ static void rcItems(const SysInfo &si, uint32_t now, InfoItem *it) {
   else snprintf(n.value, sizeof(n.value), "CAN %u/s GPS %u/s IMU %u/s", (unsigned)r.canPerSec, (unsigned)r.gpsPerSec, (unsigned)r.imuPerSec);
   n.v = recent(g_dropIncMs, now) ? V_NG : (r.connected ? (imu ? V_WAIT : V_OK) : V_WAIT);
 }
+// 2.15.0: 本体の状態の「走行記録」(仕様書 odo_log_spec.md 9 章): 記録の数と今日の距離、ODO の受信。下の行(odoSub)に最後に書いた記録。
+// 保存領域が無い・書けなかったら赤、ODO をまだ受けていない・古いなら灰
+static void odoItem(const SysInfo &si, InfoItem &o) {
+  (void)si;
+  odo::Status st;
+  odo::status(&st);
+  veh::OdoInfo oi;
+  veh::odoInfo(&oi, g_infoNow);
+  if (!st.storageOk) snprintf(o.value, sizeof(o.value), "%s", "保存領域なし"), o.v = V_NG;
+  else if (st.failures) snprintf(o.value, sizeof(o.value), "書けない %u 回", (unsigned)st.failures), o.v = V_NG;
+  else if (!oi.have) snprintf(o.value, sizeof(o.value), "%u 件 ODO 未受信", (unsigned)st.records);
+  else if (!oi.seen) snprintf(o.value, sizeof(o.value), "%u 件 ODO 古い", (unsigned)st.records);
+  else snprintf(o.value, sizeof(o.value), "%u 件 今日 %u km", (unsigned)st.records, (unsigned)st.todayKm), o.v = V_OK;
+}
+static void odoSub(char *out, size_t n) {
+  odo::Status st;
+  odo::status(&st);
+  veh::OdoInfo oi;
+  veh::odoInfo(&oi, g_infoNow);
+  char od[16] = "– –";
+  if (oi.have) snprintf(od, sizeof(od), "%u", (unsigned)oi.km);
+  if (!st.lastUtc) {
+    snprintf(out, n, "ODO %s km 最後 – –", od);
+    return;
+  }
+  int y, m, d, w;
+  const uint32_t l = st.lastUtc + CLOCK_TZ_SEC;
+  odo::civil((int32_t)(l / 86400u), &y, &m, &d, &w);
+  snprintf(out, n, "ODO %s km 最後 %d/%d %02u:%02u", od, m, d, (unsigned)(l / 3600 % 24), (unsigned)(l / 60 % 60));
+}
 // 本体の状態(2.4.0: 受信の状態から移した): FPS・起動。2.4.3: CPU・クロック・温度・RAM・PSRAM・フラッシュ(本人「クロック数など CPU に
 // 関わるデータ、型式など」)。値は基板が SysInfo の cpu に入れる(起動時と 1 秒ごと)
 static void sysItems(const PerfStats &ps, const SysInfo &si, InfoItem *it) {
-  static const char *const L[] = { "FPS", "CPU", "クロック", "温度", "RAM", "PSRAM", "フラッシュ", "起動" };
+  static const char *const L[] = { "FPS", "CPU", "クロック", "温度", "RAM", "PSRAM", "フラッシュ", "起動", "走行記録" };
   initItems(it, GROUP_N[G_SYS], L);
+  odoItem(si, it[P_SYS_ODO]);  // 2.15.0
   // FPS(2.3.0。前は「描画」。2.4.3: 直近 PERF_FPS_SECS 秒の 1 秒ごとの値): サーキット・タコで 1 回描いて送る時間から出した回/秒。
   // 平均 = 全部の回の平均、最低 = 1 秒ごとの値で一番低い秒。平均が INFO_FPS_MIN 未満なら赤(2.3.0〜2.4.2 は最低で決めていて、
   // 背景の色を塗り直す回(全体の描き直し)があると毎回赤になっていた)。数えた回が FPS_MIN_FRAMES 未満なら「– –」の灰。下にグラフ
@@ -2781,7 +2814,7 @@ static void linkPages(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
 // なくした(クールダウンは黄に達したあとの冷ましている途中の表示にした。config.h の LOAD_COOL_SHOW_MS)。累積時間 リセットは値を入れてから
 // リセットする(本人「今の累積走行時間を入れる入力を」「累積時間の入力はリセットと同じ画面に」)。17 項目(2.14.0: 燃料の警告を足した)
 enum Unit : uint8_t { U_NONE, U_RPM, U_MIN, U_PCT, U_DEGC, U_ONOFF, U_MIN_OFF, U_SIDE, U_HOUR_OFF };  // U_MIN_OFF: 分。0 は「切」(2.10.0)。U_SIDE: 両側・片側(2.12.0)。U_HOUR_OFF: 時間。0 は「切」(2.12.0)
-enum ItemKind : uint8_t { K_VALUE, K_TIME, K_LINK, K_SYS, K_DEFAULTS };  // K_TIME: 累積時間 リセット(2.12.0: 変更の画面で値を入れる。値は秒)
+enum ItemKind : uint8_t { K_VALUE, K_TIME, K_LINK, K_SYS, K_DEFAULTS, K_ODO };  // K_ODO: 走行記録(2.15.0。1 項目だけのカテゴリ。長押しで 3 ヶ月の画面)  // K_TIME: 累積時間 リセット(2.12.0: 変更の画面で値を入れる。値は秒)
 struct Item {
   const char *label;  // 項目の名前
   int Settings::*field;
@@ -2819,26 +2852,30 @@ static const Item ITEMS[] = {
   // その他
   { "デモ", &Settings::demoOn, 0, 1, 1, U_ONOFF, K_VALUE },
   { "デフォルトに戻す", nullptr, 0, 0, 0, U_NONE, K_DEFAULTS },  // 2.10.0
+  // 走行記録(2.15.0。カテゴリは本体の状態の前。項目の番号を変えないよう最後に置く)。値は今の ODO
+  { "走行記録", nullptr, 0, 0, 0, U_NONE, K_ODO },
 };
+static const int ODO_FIRST = 17;  // 走行記録の ITEMS の番号
 static const int N_ITEMS = sizeof(ITEMS) / sizeof(ITEMS[0]);
 // 2.12.0: カテゴリ(設定の段に 1 画面ずつ)。中の項目は ITEMS の first から count 個
 struct Cat {
   const char *name;
   uint8_t first, count;
 };
-enum { CAT_SCREEN, CAT_SHIFT, CAT_WARN, CAT_LINK, CAT_SYS, CAT_OTHER };
+enum { CAT_SCREEN, CAT_SHIFT, CAT_WARN, CAT_LINK, CAT_ODO, CAT_SYS, CAT_OTHER };
 static const Cat CATS[] = {
   { "画面", 0, 3 },            // 明るさ・イルミネーションの明るさ・自動で戻る
   { "シフトポイント", 3, 2 },  // シフトポイント・回転数の輪(本人「シフトと言うメニューの名前はシフトポイントに」)
   { "警告・過負荷", 5, 8 },    // 水温の警告・燃料の警告(2.14.0)・過負荷 回転数・過負荷時間 黄・赤・過負荷がリセットされる時間・メンテナンスまでの累積時間・累積時間 リセット
   { "受信の状態", 13, 1 },
+  { "走行記録", ODO_FIRST, 1 },  // 2.15.0: 長押しで 3 ヶ月の画面(本人 11/8「設定に入れてください」。本体の状態の前)
   { "本体の状態", 14, 1 },
   { "その他", 15, 2 },         // デモ・デフォルトに戻す
 };
 static const int N_CATS = sizeof(CATS) / sizeof(CATS[0]);
-static bool catDirect(int c) {  // 設定の段から長押しでそのまま中へ(受信の状態・本体の状態)
+static bool catDirect(int c) {  // 設定の段から長押しでそのまま中へ(受信の状態・本体の状態・走行記録)
   const ItemKind k = ITEMS[CATS[c].first].kind;
-  return k == K_LINK || k == K_SYS;
+  return k == K_LINK || k == K_SYS || k == K_ODO;
 }
 static int catOf(int item) {  // 項目のカテゴリ
   for (int c = 0; c < N_CATS; c++)
@@ -2872,6 +2909,11 @@ static int editGet() {  // 変更の画面で変えている値(累積時間 リ
 static void editSet(int v) {
   if (g_editItem->kind == K_TIME) g_tripEditSec = v;
   else g_set->*(g_editItem->field) = v;
+}
+static void fmtOdo(char *out, size_t n, uint32_t km) {  // ODO を 3 桁ごとのコンマで(2.15.0。「23,612」)
+  if (km >= 1000000u) snprintf(out, n, "%u,%03u,%03u", (unsigned)(km / 1000000u), (unsigned)(km / 1000u % 1000u), (unsigned)(km % 1000u));
+  else if (km >= 1000u) snprintf(out, n, "%u,%03u", (unsigned)(km / 1000u), (unsigned)(km % 1000u));
+  else snprintf(out, n, "%u", (unsigned)km);
 }
 static void fmtHms(char *out, size_t n, int sec) {  // 累積時間 リセットの値は 0:00:00 の形(本人「最初0:00:00が出て」)
   snprintf(out, n, "%d:%02d:%02d", sec / 3600, (sec / 60) % 60, sec % 60);
@@ -2920,6 +2962,11 @@ static void setItemValue(const Item &it, const LinkStats &ls, const PerfStats &p
     linkSummary(ls, ps, si, now, v, n, col);
   } else if (it.kind == K_DEFAULTS) {
     v[0] = 0;
+  } else if (it.kind == K_ODO) {  // 2.15.0: 今の ODO(km)。まだ受けていなければ「– –」
+    odo::Status st;
+    odo::status(&st);
+    if (st.curOk) fmtOdo(v, n, st.cur);
+    else snprintf(v, n, "– –"), *col = C_LABEL2;
   } else {
     groupSummary(G_SYS, ls, ps, si, now, v, n, col);
   }
@@ -2961,7 +3008,7 @@ static void updSetList(const LinkStats &ls, const PerfStats &ps, const SysInfo &
   g_tagsDirty = true;
   drawTopSet();
   drawName(ct.name);
-  if (direct) drawBigValue(v, "", 290, col);
+  if (direct) drawBigValue(v, ITEMS[ct.first].kind == K_ODO && isAsciiLike(v) && v[0] != '-' && (uint8_t)v[0] != 0xE2 ? "km" : "", 290, col, 330);  // 2.15.0: 走行記録は今の ODO
   else fitTextC(FP_VALUE + 1, 2, 330, 233, 280, v, col);  // 中の主な値(44 px。入らなければ 34 px)
   drawSideArrows();
   drawDots(N_CATS, g_setCat, nullptr, 330);
@@ -2993,6 +3040,93 @@ static void updSetCat(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
   drawSideArrows();
   drawDots(ct.count, g_setItem - ct.first, nullptr, 330);
   drawOpenBand();  // 2.4.4: どの項目も下の帯の長押しで開く(値の項目・累積時間 リセットは変更の画面、デフォルトに戻すは確認の画面)
+}
+
+// ---- 走行記録(2.15.0。仕様書 odo_log_spec.md 第 5 版 7 章): 集計して出し、選んで細かいデータへ(本人 11/8「集計して出して、選択して
+// 細かいデータにアクセスするように」)。3 ヶ月 → 1 ヶ月 → 1 週 → 1 日。1 画面 1 期間: 期間・終わりの ODO(大きく)・始まり〜終わりの ODO・
+// 距離と ▲ 過走行時間。左右の半分のタップかスワイプで前・次の期間(今の期間より先、いちばん古い記録の期間より前へは進まない)。
+// 長押しで細かい方(その期間の中の、今日までで最後の期間から)。上の帯「‹ 3 ヶ月」などで粗い方(3 ヶ月なら設定の段)
+static int g_odoLevel = 0;       // 0 = 3 ヶ月、1 = 1 ヶ月、2 = 1 週、3 = 1 日
+static int32_t g_odoAnchor = 0;  // 見ている期間の中の日(日本時間の日数)。細かい方・粗い方へ移るときはこの日を含む期間
+static char g_odoKey[192];
+static const char *const ODO_NAME[4] = { "3 ヶ月", "1 ヶ月", "1 週", "1 日" };
+static const char *const ODO_NOW[4] = { "", "今月", "今週", "今日" };
+static const char *const WDAY_JP[7] = { "日", "月", "火", "水", "木", "金", "土" };
+static void odoPeriodText(int level, const odo::Period &p, char *out, size_t n) {
+  int y, m, d, w, y2, m2, d2, w2;
+  odo::civil(p.first, &y, &m, &d, &w);
+  odo::civil(p.last, &y2, &m2, &d2, &w2);
+  const char *now = p.current ? ODO_NOW[level] : "";
+  const char *sp = now[0] ? "  " : "";
+  if (level == 0) snprintf(out, n, "%d 年 %d〜%d 月", y, m, m2);
+  else if (level == 1) snprintf(out, n, "%d 年 %d 月%s%s", y, m, sp, now);
+  else if (level == 2) snprintf(out, n, "%d/%d〜%d/%d%s%s", m, d, m2, d2, sp, now);
+  else snprintf(out, n, "%d/%d/%d(%s)%s%s", y, m, d, WDAY_JP[w], sp, now);
+}
+static void drawOdoArrows(bool back, bool fwd) {
+  if (back) bigChevron(34, 233, 80, -1, C_ACCENT, 14.0f, 3.5f);
+  if (fwd) bigChevron(432, 233, 80, 1, C_ACCENT, 14.0f, 3.5f);
+}
+static void mixC(const FontData &fa, const FontData &fj, float base, const char *t, uint16_t c) {
+  mixDraw(fa, fj, 233 - mixWidth(fa, fj, t) * 0.5f, base, t, c);
+}
+static bool odoCanOpen() {  // 細かい方がある(1 日でない)、今日が分かっている
+  int32_t d;
+  return g_odoLevel < 3 && odo::today(&d);
+}
+static void updOdo(uint32_t now) {
+  (void)now;
+  if (g_odoLevel < 0 || g_odoLevel > 3) g_odoLevel = 0;
+  odo::Period p;
+  const bool known = odo::periodAt(g_odoLevel, g_odoAnchor, &p);
+  odo::Status st;
+  odo::status(&st);
+  char key[sizeof(g_odoKey)];
+  snprintf(key, sizeof(key), "O%d|%ld|%d|%ld|%d|%lu|%lu|%lu|%d|%d|%d|%d|%lu|%d", g_odoLevel, (long)g_odoAnchor, (int)known, (long)p.first, (int)p.odoKnown,
+           (unsigned long)p.odoEnd, (unsigned long)p.odoStart, (unsigned long)p.aboveS, (int)p.hasRecord, (int)p.canBack, (int)p.canFwd, (int)p.current,
+           (unsigned long)st.cur, (int)st.curOk);
+  if (!g_full && strcmp(key, g_odoKey) == 0) return;
+  g_full = false;
+  memcpy(g_odoKey, key, sizeof(g_odoKey));
+  gfx::fillAll(C_BG);
+  g_tagsDirty = true;
+  drawTopBack(ODO_NAME[g_odoLevel]);
+  char t[64], a[24], b[24];
+  if (!known) {  // GPS の時刻がまだ分からない: 期間は出せない。今の ODO と起動からの距離
+    mixC(FONT_NUM600_34, FONT_JP600_34, 162, "時刻 待ち", C_LABEL2);
+    if (st.curOk) {
+      fmtOdo(t, sizeof(t), st.cur);
+      drawBigValue(t, "km", 250, C_WHITE, 330);
+      snprintf(t, sizeof(t), "起動から %u km", (unsigned)st.todayKm);
+      mixC(FONT_NUM600_34, FONT_JP600_34, 300, t, C_LABEL);
+    } else {
+      textC(FONT_JP600_44, 233, 240, "記録なし", C_LABEL);
+    }
+    return;
+  }
+  odoPeriodText(g_odoLevel, p, t, sizeof(t));
+  mixC(FONT_NUM600_34, FONT_JP600_34, 162, t, C_LABEL2);
+  if (!p.odoKnown) {
+    textC(FONT_JP600_44, 233, 240, "記録なし", C_LABEL);
+  } else {
+    fmtOdo(t, sizeof(t), p.odoEnd);
+    drawBigValue(t, "km", 250, C_WHITE, 330);  // 期間の終わり(今の期間は今)の ODO
+    fmtOdo(a, sizeof(a), p.odoStart);
+    fmtOdo(b, sizeof(b), p.odoEnd);
+    snprintf(t, sizeof(t), "%s 〜 %s", a, b);
+    mixC(FONT_NUM600_30, FONT_JP600_30, 292, t, C_LABEL);
+    // 距離と ▲ 過走行時間(データ画面の ▲ と同じ黄)
+    fmtOdo(a, sizeof(a), p.km);
+    strncat(a, " km", sizeof(a) - strlen(a) - 1);
+    fmtHms(b, sizeof(b), (int)(p.aboveS > 359999u ? 359999u : p.aboveS));
+    const float wa = gfx::textWidth(FONT_NUM600_34, a), wb = gfx::textWidth(FONT_NUM600_34, b);
+    const float x0 = 233 - (wa + 28 + 22 + 8 + wb) * 0.5f;
+    gfx::drawText(FONT_NUM600_34, x0, 332, a, C_WHITE);
+    triUp(x0 + wa + 28 + 11, 332 - 11, 22, C_TIME_UP);
+    gfx::drawText(FONT_NUM600_34, x0 + wa + 28 + 22 + 8, 332, b, C_TIME_UP);
+  }
+  drawOdoArrows(p.canBack, p.canFwd);
+  if (odoCanOpen()) drawOpenBand();  // 細かい方へ(1 日の画面には無い)
 }
 
 // ---- 設定: 変更の画面(項目の名前のまま、左右が − +(入・切は 切・入)、下「決定」= 保存、上「‹ 戻る」= 変えずに戻る)。
@@ -3181,6 +3315,7 @@ static void updSetGrp(const LinkStats &ls, const PerfStats &ps, const SysInfo &s
   const bool fps = g_grp == G_SYS && g_grpPage == P_SYS_FPS && it[g_grpPage].value[0] != 0;
   char sub[48] = "";
   if (g_grp == G_CAN && g_grpPage == P_CAN_LIGHT) lightSub(now, sub, sizeof(sub));
+  if (g_grp == G_SYS && g_grpPage == P_SYS_ODO) odoSub(sub, sizeof(sub));  // 2.15.0
   drawPage(GROUP_NAME[g_grp], it, cnt, g_grpPage, fps ? &ps : nullptr, sub);
 }
 
@@ -4025,6 +4160,8 @@ static bool menuOpenable() {
       return g_grpAct != A_NONE;
     case SC_CAN_ID:
       return g_canIdx < g_listN;
+    case SC_ODO:  // 2.15.0: 細かい方へ
+      return odoCanOpen();
     default:
       return false;
   }
@@ -4041,6 +4178,12 @@ static void itemOpen(const Item &it, Screen from) {
     g_resetKind = RK_DEFAULTS;
     g_resetFrom = from;
     go(SC_SET_RESET);
+  } else if (it.kind == K_ODO) {  // 2.15.0: 走行記録の 3 ヶ月の画面(今日を含む期間から)
+    int32_t d = 0;
+    odo::today(&d);
+    g_odoLevel = 0;
+    g_odoAnchor = d;
+    go(SC_ODO);
   } else {
     openGroup(G_SYS, from);
   }
@@ -4071,6 +4214,16 @@ static void menuOpen() {
         g_resetKind = RK_IMU;  // 確かめてから捨てる(2.4.3。前は押すとすぐ捨てていた)
         g_resetFrom = SC_SET_GRP;
         go(SC_SET_RESET);
+      }
+      break;
+    case SC_ODO:  // 2.15.0: 細かい方へ(同じ日を含む期間 = その期間の中の、今日までで最後の期間)
+      if (odoCanOpen()) {
+        int32_t f, l, td = 0;
+        odo::today(&td);
+        odo::bounds(g_odoLevel, g_odoAnchor, &f, &l);
+        g_odoAnchor = l < td ? l : td;
+        g_odoLevel++;
+        g_full = true;
       }
       break;
     case SC_CAN_ID:
@@ -4291,6 +4444,18 @@ void tap(int x, int y, uint32_t nowMs) {
         swipe(z == Z_RIGHT ? 1 : -1, nowMs);
       }
       break;
+    case SC_ODO:  // 2.15.0: 上の帯「‹ 1 ヶ月」などで粗い方(3 ヶ月なら設定の段の走行記録)。左右の半分で前・次の期間
+      if (z == Z_TOP) {
+        if (g_odoLevel > 0) {
+          g_odoLevel--;
+          g_full = true;
+        } else {
+          go(SC_SET_LIST);
+        }
+      } else if (z == Z_LEFT || z == Z_RIGHT) {
+        swipe(z == Z_RIGHT ? 1 : -1, nowMs);
+      }
+      break;
     case SC_SET_EDIT: {
       const Item &it = *g_editItem;
       if (g_saveFlash) break;  // 保存したあとの点滅の間は受けない(終わったら元の画面へ)
@@ -4430,6 +4595,13 @@ void swipe(int dir, uint32_t nowMs) {
       g_full = true;
       break;
     }
+    case SC_ODO: {  // 2.15.0: 次 = 新しい期間(今の期間まで)、前 = 古い期間(いちばん古い記録の期間まで)
+      odo::Period p;
+      if (!odo::periodAt(g_odoLevel, g_odoAnchor, &p)) break;
+      if (d > 0 && p.canFwd) g_odoAnchor = odo::nextAnchor(g_odoLevel, g_odoAnchor), g_full = true;
+      else if (d < 0 && p.canBack) g_odoAnchor = odo::prevAnchor(g_odoLevel, g_odoAnchor), g_full = true;
+      break;
+    }
     case SC_SET_INFO:
       g_infoPage = (g_infoPage + N_LINK_GROUPS + d) % N_LINK_GROUPS;
       g_full = true;
@@ -4519,7 +4691,7 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
   g_fuelLvl = s.fuelOk ? fuelLevelHyst(s.fuelPct, g_fuelLvl) : 0;
 
   // 設定から時間で戻る(2.3)。戻る先は覚えている画面。CAN確認は戻らない(操作を待っていることがある)
-  if (g_sc == SC_SET_LIST || g_sc == SC_SET_CAT || g_sc == SC_SET_EDIT || g_sc == SC_SET_INFO || g_sc == SC_SET_GRP || g_sc == SC_SET_RESET) {
+  if (g_sc == SC_SET_LIST || g_sc == SC_SET_CAT || g_sc == SC_SET_EDIT || g_sc == SC_SET_INFO || g_sc == SC_SET_GRP || g_sc == SC_SET_RESET || g_sc == SC_ODO) {
     if (!g_touch.down && (uint32_t)(now - g_lastActMs) >= (uint32_t)g_set->autoReturnMin * 60000u) {
       // 変えた設定は保存する。累積時間 リセットは「リセット」を押していないので捨てる(2.12.0)
       if (g_sc == SC_SET_EDIT && g_editItem->kind != K_TIME && g_set->*(g_editItem->field) != g_editOrig) platSaveSettings(*g_set);
@@ -4577,6 +4749,7 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
       case SC_SET_RESET: updSetReset(); break;
       case SC_SET_INFO: updSetInfo(ls, ps, si, now); break;
       case SC_SET_GRP: updSetGrp(ls, ps, si, now); break;
+      case SC_ODO: updOdo(now); break;  // 2.15.0
       default: break;
     }
   } else if (g_sc == SC_DATA) {
@@ -4646,6 +4819,13 @@ void testShow(Screen sc, int a, int b) {
     listCount();
   } else if (sc == SC_CAN_REDO) {
     g_canPp = a == 1;
+  } else if (sc == SC_ODO) {  // 2.15.0: a = 細かさ(0 = 3 ヶ月 … 3 = 1 日)、b = 今日から何日前の日を含む期間
+    int32_t td = 0;
+    odo::today(&td);
+    g_odoLevel = (a >= 0 && a <= 3) ? a : 0;
+    g_odoAnchor = td - (b > 0 ? b : 0);
+    g_setItem = ODO_FIRST;
+    g_setCat = catOf(g_setItem);
   } else if (sc == SC_OPENING) {  // オープニングの種類(0 サーキット、1 タコ、2 データ)。覚えた画面もそれにする(終わったらそこへ)
     g_homeSaved = a == 1 ? SC_BOOST : (a == 2 ? SC_DATA : SC_DRIVE);
     g_homeCur = g_homeSaved;
@@ -4673,6 +4853,14 @@ int testPage() {
 }
 int testGroup() {
   return g_grp;
+}
+int testOdoLevel() {
+  return g_odoLevel;
+}
+int testOdoDaysBack() {
+  int32_t td = 0;
+  odo::today(&td);
+  return (int)(td - g_odoAnchor);
 }
 bool testHolding() {
   return g_holdShown;

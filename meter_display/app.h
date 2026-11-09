@@ -173,6 +173,12 @@ void platSaveTimes();
 bool platSaveCanPre(const void *data, size_t n);
 // 保存した前の記録を読む。戻り値は読んだバイト数(無い・入らないときは 0)
 size_t platLoadCanPre(void *data, size_t maxN);
+// 走行記録の保存領域(2.15.0。基板ではパーティション spiffs。PC 上の試験では RAM)。off は先頭からのバイト。
+// platOdoErase は ODO_SECTOR_BYTES の区切りの単位(off・n とも区切りに合っている)。どれも、できたら true
+uint32_t platOdoSize();  // 大きさ(0 = 無い)
+bool platOdoRead(uint32_t off, void *data, size_t n);
+bool platOdoWrite(uint32_t off, const void *data, size_t n);
+bool platOdoErase(uint32_t off, size_t n);
 
 // ---------------------------------------------------------------- mlink
 namespace mlink {
@@ -224,6 +230,14 @@ struct LightInfo {
   uint32_t changes;  // 切り替えた回数(最初の値は数えない)
 };
 void lightInfo(LightInfo *out, uint32_t nowMs);
+// ODO(2.15.0: B-CAN 0C014003 の 20 ビット = km。config.h の VEH_ID_ODO)。走行記録に使う
+struct OdoInfo {
+  bool have;          // 使える値を受けたことがある
+  bool seen;          // ODO_STALE_MS 以内に受けている(have で seen でなければ「古い」)
+  uint32_t km;        // 使っている値
+  uint32_t rejected;  // 捨てた値(減った・ODO_MAX_JUMP_KM を超えて増えた)のフレームの数
+};
+void odoInfo(OdoInfo *out, uint32_t nowMs);
 }
 
 // ---------------------------------------------------------------- bright(画面の明るさ。2.9.0)
@@ -314,6 +328,74 @@ void onTime(uint32_t utc, const Settings &set, uint32_t nowMs);
 void capMs(uint32_t ms);
 void testSet(uint32_t valueMs, bool hot);  // 試験用: 値と「リセットのあとに黄になった」を決める(数えた記録は消す)
 void testReset();                               // 試験用: 全部 0 に
+}
+
+// ---------------------------------------------------------------- odo(走行記録。2.15.0。仕様書 odo_log_spec.md 第 3 版。config.h の ODO_*)
+// 日付(日本時間の 1970-01-01 からの日数)ごとの走行距離(ODO の差、km)と過走行時間(trip::aboveMs の増えた分、秒)を、保存領域(platOdo*)に
+// 32 バイトの記録で追記する。記録は毎回その日の累計(その日のいちばん新しい記録がその日の値)。起動時に全部を読んで日ごとの表(PSRAM)を作る
+namespace odo {
+struct Input {
+  bool odoOk;      // ODO を ODO_STALE_MS 以内に受けている
+  bool odoHave;    // ODO を受けたことがある
+  uint32_t odoKm;
+  bool speedOk;
+  float speedKmh;
+  bool reverse;    // リバースに入っている
+  bool timeOk;     // GPS の時刻が分かっている(デモの時刻は false)
+  uint32_t utc;
+  uint32_t aboveMs;  // trip::aboveMs()(増えた分を過走行時間に足す。減ったときはリセットとみなして足さない)
+};
+// 書いたきっかけ(記録の 3 バイト目)
+enum Reason : uint8_t { R_STILL = 1, R_LOW = 2, R_REVERSE = 3, R_CLOSE = 4 };
+void begin();                                // 保存領域を全部読み、日ごとの表と続きの状態を作る
+void update(const Input &in, uint32_t nowMs);  // loop() のたびに呼ぶ。条件を満たしたら 1 件書く
+struct Status {
+  bool storageOk;     // 保存領域がある(読めた)
+  uint32_t records;   // 保存領域にある正しい記録の数
+  uint32_t capacity;  // 入る記録の数
+  uint32_t writes;    // この起動で書いた数
+  uint32_t failures;  // 書けなかった数(書いて読み返して違った)
+  bool timeKnown;     // 今日が分かっている(GPS の時刻)
+  int32_t today;      // 今日(日本時間の日数。timeKnown のときだけ)
+  uint32_t todayKm;   // 今日の距離(まだ書いていない分も)。時刻が分かる前は起動からの分
+  uint32_t todayAboveS;
+  uint32_t lastUtc;   // 最後に書いた記録の時刻(0 = まだ)
+  uint8_t lastReason;
+  uint32_t lastKm;    // 最後に書いた記録のその日の距離
+  uint32_t lastAboveS;
+  uint32_t lastOdo;   // 最後に書いた記録の ODO
+  bool curOk;         // 今の ODO を受けたことがある
+  uint32_t cur;       // 今の ODO
+};
+void status(Status *out);
+bool wroteSince(uint32_t *writes);  // 書いた数が *writes から増えていたら true にして *writes を今の数にする(シリアルの 1 行用)
+// 1 日の値(km・秒)。今日はまだ書いていない分も入れる。記録の無い日は false(0 を入れる)
+bool day(int32_t d, uint32_t *km, uint32_t *aboveS);
+int32_t earliest();  // いちばん古い記録の日(記録が無ければ今日。今日も分からなければ 0)
+// 期間(2.15.0。仕様書 odo_log_spec.md 第 5 版 7 章)。level: 0 = 3 ヶ月(1〜3 月・4〜6 月・7〜9 月・10〜12 月)、1 = 1 ヶ月、2 = 1 週(ODO_WEEK_START 始まり)、
+// 3 = 1 日。anchor = 期間の中の日(今日より先は今日)
+struct Period {
+  int32_t first, last;  // 最初と最後の日(両端を含む)
+  bool current;         // 今日を含む
+  bool odoKnown;        // 終わりの ODO が分かる(その期間か、それより前に記録がある。今日は今の ODO)
+  uint32_t odoEnd;      // 期間の終わり(今の期間は今)の ODO
+  uint32_t odoStart;    // 期間の始まりの ODO(前の日の終わりの ODO)
+  uint32_t km;          // odoEnd − odoStart
+  uint32_t aboveS;      // 過走行時間の合計
+  bool hasRecord;       // 期間の中に記録のある日がある(今日の分を含む)
+  bool canBack;         // 前の期間がある(いちばん古い記録の日が前にある)
+  bool canFwd;          // 次の期間がある(今日より前の期間)
+};
+bool today(int32_t *d);                                     // 今日(日本時間の日数)。時刻が分からなければ false
+bool periodAt(int level, int32_t anchor, Period *out);      // 今日が分からなければ false
+void bounds(int level, int32_t d, int32_t *first, int32_t *last);
+int32_t prevAnchor(int level, int32_t anchor);              // 前の期間の最後の日
+int32_t nextAnchor(int level, int32_t anchor);              // 次の期間の最後の日(今日より先は今日)
+// 日付(日本時間の日数)→ 年・月・日・曜日(0 = 日曜)
+void civil(int32_t d, int *y, int *m, int *dd, int *wday);
+int32_t daysFrom(int y, int m, int d);  // 年・月・日 → 日数
+// 試験用
+void testReset();
 }
 
 // ---------------------------------------------------------------- perf(本体の状態の「FPS」。2.3.0。2.4.3: 1 秒ごとにまとめる)

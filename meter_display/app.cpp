@@ -306,6 +306,13 @@ struct State {
   bool lightPend;         // lightOn と違う値を受けて、VEH_LIGHT_SETTLE_MS 待っている
   uint32_t lightPendMs;   // その値を最初に受けた時刻
   uint32_t lightChanges;  // 切り替えた回数(最初の値は数えない)
+  // ODO(2.15.0: B-CAN 0C014003)
+  bool odoHave;           // 使える値を受けた
+  uint32_t odoKm;         // 使っている値
+  uint32_t odoMs;         // 使える値を最後に受けた時刻
+  uint32_t odoRejected;   // 捨てた値のフレームの数
+  uint32_t odoCand;       // 捨てた値(同じ値が続いた数を数える)
+  uint16_t odoCandN;
 };
 static State g;              // 受信タスクが書き、loop() が読む(platLock で守る)
 static char g_gear = 0;      // 推定したギア('1'〜'5'、'N'、0 = 分からない)。getSignals だけが使う
@@ -357,6 +364,26 @@ void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *
       }
       g.lightLastB0 = d[VEH_LIGHT_BYTE];
       g.lightSeenMs = stamp(now);
+      platUnlock();
+    } else if (id == VEH_ID_ODO && dlc >= 4) {  // ODO(2.15.0)。b1 の下位 4 ビット + b2 + b3 = km
+      const uint32_t km = ((uint32_t)(d[1] & 0x0F) << 16) | ((uint32_t)d[2] << 8) | d[3];
+      platLock();
+      if (!g.odoHave || (km >= g.odoKm && km - g.odoKm <= (uint32_t)ODO_MAX_JUMP_KM)) {
+        g.odoKm = km;
+        g.odoHave = true;
+        g.odoMs = stamp(now);
+        g.odoCandN = 0;
+      } else {
+        g.odoRejected++;
+        // 同じ値が ODO_ACCEPT_REPEAT 回続いたら使う(最初に受けた値が壊れていたとき・ODO が本当に変わったとき)
+        if (g.odoCandN && km == g.odoCand) g.odoCandN++;
+        else g.odoCand = km, g.odoCandN = 1;
+        if (g.odoCandN >= ODO_ACCEPT_REPEAT) {
+          g.odoKm = km;
+          g.odoMs = stamp(now);
+          g.odoCandN = 0;
+        }
+      }
       platUnlock();
     }
     return;
@@ -495,6 +522,15 @@ void lightInfo(LightInfo *out, uint32_t now) {
   out->lastB0 = g.lightLastB0;
   out->firstMs = g.lightFirstMs;
   out->changes = g.lightChanges;
+  platUnlock();
+}
+
+void odoInfo(OdoInfo *out, uint32_t now) {
+  platLock();
+  out->have = g.odoHave;
+  out->seen = g.odoHave && within(g.odoMs, now, ODO_STALE_MS);
+  out->km = g.odoKm;
+  out->rejected = g.odoRejected;
   platUnlock();
 }
 
@@ -935,6 +971,496 @@ void settingsDefaults(Settings *s) {
   s->maintHours = SET_MAINT_DEFAULT;
   s->fuelWarnPct = SET_FUELWARN_DEFAULT;  // 2.14.0
 }
+
+// ================================================================ odo(走行記録。2.15.0。説明は app.h。仕様書 odo_log_spec.md 第 3 版)
+namespace odo {
+
+static const uint16_t MAGIC = 0x4F44;  // "OD"
+static const uint8_t VER = 1;
+static const int SLOTS_PER_SECTOR = ODO_SECTOR_BYTES / ODO_REC_BYTES;
+
+struct Rec {
+  uint8_t reason;
+  uint32_t seq;     // 通し番号(書くたびに +1)
+  uint32_t utc;     // 書いた時刻
+  int32_t day;      // 日付(日本時間の日数)
+  uint32_t odo;     // 今の ODO
+  uint32_t start;   // その日の始まりの ODO
+  uint32_t aboveS;  // その日の過走行時間 [秒]
+};
+// 日ごとの表(PSRAM)。日 d は d % ODO_TABLE_DAYS の所。day1 = d + 1(0 = 空き)
+struct DayEnt {
+  int32_t day1;
+  uint32_t seq;    // その値の記録の通し番号(いちばん新しい記録の値にする)
+  uint32_t start;  // その日の始まりの ODO
+  uint32_t odo;    // その日の最後の ODO
+  uint32_t aboveS;
+};
+
+static DayEnt *g_tab = nullptr;
+static uint8_t g_buf[ODO_SECTOR_BYTES];  // 起動時の読み込みと、消す前の数え
+static bool g_storageOk = false;
+static uint32_t g_slots = 0;        // 入る記録の数
+static uint32_t g_pos = 0;          // 次に書く所(バイト)
+static uint32_t g_seq = 0;          // 最後の通し番号
+static uint32_t g_records = 0, g_writes = 0, g_failures = 0;
+static int32_t g_earliest = 0;      // いちばん古い記録の日
+static bool g_haveEarliest = false;
+static bool g_haveLatest = false;   // 起動時に読んだいちばん新しい記録(今日の続きに使う)
+static Rec g_latest;
+static bool g_haveLast = false;     // 最後に書いた記録(状態の表示)
+static Rec g_last;
+// 今の日
+static bool g_dayKnown = false;     // 今日が分かっている
+static int32_t g_curDay = 0;
+static bool g_startSet = false;     // その日の始まりの ODO がある
+static uint32_t g_start = 0;
+static uint32_t g_aboveMs = 0;      // その日の過走行時間 [ms](時刻が分かる前は起動からの分)
+static bool g_aboveInit = false;
+static uint32_t g_lastAbove = 0;    // 前の update の trip::aboveMs
+static uint32_t g_cur = 0;          // 今の ODO
+static bool g_wrote = false;        // この起動で書こうとした
+static uint32_t g_lastWriteMs = 0;
+static bool g_closePending = false; // 前の日の締めの記録を書く
+static Rec g_close;
+// 最後に書いた記録の値(増えたかの判定)
+static bool g_lwHave = false;
+static int32_t g_lwDay = 0;
+static uint32_t g_lwOdo = 0, g_lwAbove = 0;
+
+static void put16(uint8_t *p, uint16_t v) {
+  p[0] = (uint8_t)v;
+  p[1] = (uint8_t)(v >> 8);
+}
+static void put32(uint8_t *p, uint32_t v) {
+  for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+static uint16_t get16(const uint8_t *p) {
+  return (uint16_t)(p[0] | (p[1] << 8));
+}
+static uint32_t get32(const uint8_t *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static uint16_t crc16(const uint8_t *p, size_t n) {  // CRC-16/CCITT-FALSE
+  uint16_t c = 0xFFFF;
+  for (size_t i = 0; i < n; i++) {
+    c ^= (uint16_t)p[i] << 8;
+    for (int b = 0; b < 8; b++) c = (c & 0x8000) ? (uint16_t)((c << 1) ^ 0x1021) : (uint16_t)(c << 1);
+  }
+  return c;
+}
+// 32 バイト(仕様書 5 章): 印 2・版 1・きっかけ 1・通し番号 4・時刻 4・日付 2・ODO 4・始まりの ODO 4・過走行時間 4・予備 4(0xFF)・CRC 2
+static void encode(const Rec &r, uint8_t *o) {
+  memset(o, 0xFF, ODO_REC_BYTES);
+  put16(o, MAGIC);
+  o[2] = VER;
+  o[3] = r.reason;
+  put32(o + 4, r.seq);
+  put32(o + 8, r.utc);
+  put16(o + 12, (uint16_t)r.day);
+  put32(o + 14, r.odo);
+  put32(o + 18, r.start);
+  put32(o + 22, r.aboveS);
+  put16(o + 30, crc16(o, 30));
+}
+static bool decode(const uint8_t *in, Rec *r) {
+  if (get16(in) != MAGIC || in[2] != VER || get16(in + 30) != crc16(in, 30)) return false;
+  r->reason = in[3];
+  r->seq = get32(in + 4);
+  r->utc = get32(in + 8);
+  r->day = get16(in + 12);
+  r->odo = get32(in + 14);
+  r->start = get32(in + 18);
+  r->aboveS = get32(in + 22);
+  return true;
+}
+static uint32_t recKm(const Rec &r) {
+  return r.odo >= r.start ? r.odo - r.start : 0;
+}
+static DayEnt *slotOf(int32_t d) {
+  if (!g_tab) return nullptr;
+  int32_t i = d % ODO_TABLE_DAYS;
+  if (i < 0) i += ODO_TABLE_DAYS;
+  return &g_tab[i];
+}
+static void tabPut(int32_t d, uint32_t seq, uint32_t start, uint32_t odo, uint32_t aboveS) {
+  DayEnt *e = slotOf(d);
+  if (!e) return;
+  if (e->day1 == d + 1) {
+    if ((int32_t)(seq - e->seq) < 0) return;  // 古い記録
+  } else if (e->day1 != 0 && e->day1 - 1 > d) {
+    return;  // その所にはもっと新しい日がある
+  }
+  e->day1 = d + 1;
+  e->seq = seq;
+  e->start = start;
+  e->odo = odo;
+  e->aboveS = aboveS;
+  if (!g_haveEarliest || d < g_earliest) g_earliest = d, g_haveEarliest = true;
+}
+static int32_t dayOf(uint32_t utc) {
+  return (int32_t)(((uint64_t)utc + CLOCK_TZ_SEC) / 86400u);
+}
+// 区切り off の正しい記録の数(消す前に、数から引く)
+static uint32_t countValid(uint32_t off) {
+  if (!platOdoRead(off, g_buf, ODO_SECTOR_BYTES)) return 0;
+  uint32_t n = 0;
+  Rec r;
+  for (int i = 0; i < SLOTS_PER_SECTOR; i++) n += decode(g_buf + i * ODO_REC_BYTES, &r) ? 1 : 0;
+  return n;
+}
+static bool eraseAt(uint32_t off) {
+  const uint32_t n = countValid(off);
+  if (!platOdoErase(off, ODO_SECTOR_BYTES)) return false;
+  g_records = g_records > n ? g_records - n : 0;
+  return true;
+}
+static bool blank(const uint8_t *p) {
+  for (int i = 0; i < ODO_REC_BYTES; i++)
+    if (p[i] != 0xFF) return false;
+  return true;
+}
+// 1 件書く。書いた(読み返して合った)ら true
+static bool writeRec(Rec r, uint32_t nowMs) {
+  g_wrote = true;
+  g_lastWriteMs = nowMs;
+  if (!g_storageOk || g_slots == 0) return false;
+  const uint32_t total = g_slots * ODO_REC_BYTES;
+  if (g_pos >= total) g_pos = 0;
+  if (g_pos % ODO_SECTOR_BYTES == 0) {
+    if (!eraseAt(g_pos)) {
+      g_failures++;
+      return false;
+    }
+  } else {
+    uint8_t cur[ODO_REC_BYTES];
+    if (!platOdoRead(g_pos, cur, ODO_REC_BYTES) || !blank(cur)) {  // 書きかけ(電源が切れた)などで空いていない: 次の区切りから
+      g_pos = (g_pos / ODO_SECTOR_BYTES + 1) * ODO_SECTOR_BYTES;
+      if (g_pos >= total) g_pos = 0;
+      if (!eraseAt(g_pos)) {
+        g_failures++;
+        return false;
+      }
+    }
+  }
+  r.seq = ++g_seq;
+  uint8_t o[ODO_REC_BYTES], back[ODO_REC_BYTES];
+  encode(r, o);
+  const uint32_t at = g_pos;
+  g_pos += ODO_REC_BYTES;
+  if (g_pos >= total) g_pos = 0;
+  if (!platOdoWrite(at, o, ODO_REC_BYTES) || !platOdoRead(at, back, ODO_REC_BYTES) || memcmp(o, back, ODO_REC_BYTES) != 0) {
+    g_failures++;
+    return false;
+  }
+  g_records++;
+  g_writes++;
+  tabPut(r.day, r.seq, r.start, r.odo, r.aboveS);
+  g_last = r;
+  g_haveLast = true;
+  g_lwHave = true;
+  g_lwDay = r.day;
+  g_lwOdo = r.odo;
+  g_lwAbove = r.aboveS;
+  return true;
+}
+
+static void resetState() {
+  g_storageOk = false;
+  g_slots = g_pos = g_seq = 0;
+  g_records = g_writes = g_failures = 0;
+  g_haveEarliest = g_haveLatest = g_haveLast = false;
+  g_earliest = 0;
+  g_dayKnown = g_startSet = g_aboveInit = false;
+  g_curDay = 0;
+  g_start = g_aboveMs = g_lastAbove = g_cur = 0;
+  g_wrote = false;
+  g_lastWriteMs = 0;
+  g_closePending = false;
+  g_lwHave = false;
+  g_lwDay = 0;
+  g_lwOdo = g_lwAbove = 0;
+}
+
+void begin() {
+  resetState();
+  if (!g_tab) g_tab = (DayEnt *)platAlloc(sizeof(DayEnt) * ODO_TABLE_DAYS);
+  if (g_tab) memset(g_tab, 0, sizeof(DayEnt) * ODO_TABLE_DAYS);
+  const uint32_t size = platOdoSize();
+  g_slots = size / ODO_SECTOR_BYTES * SLOTS_PER_SECTOR;
+  if (g_slots == 0) return;
+  bool readOk = true;
+  uint32_t latestSlot = 0;
+  for (uint32_t sec = 0; sec < g_slots / SLOTS_PER_SECTOR; sec++) {
+    if (!platOdoRead(sec * ODO_SECTOR_BYTES, g_buf, ODO_SECTOR_BYTES)) {
+      readOk = false;
+      continue;
+    }
+    for (int i = 0; i < SLOTS_PER_SECTOR; i++) {
+      Rec r;
+      if (!decode(g_buf + i * ODO_REC_BYTES, &r)) continue;
+      g_records++;
+      tabPut(r.day, r.seq, r.start, r.odo, r.aboveS);
+      if (!g_haveLatest || (int32_t)(r.seq - g_latest.seq) > 0) {
+        g_latest = r;
+        g_haveLatest = true;
+        latestSlot = sec * SLOTS_PER_SECTOR + i;
+      }
+    }
+  }
+  g_storageOk = readOk;
+  if (g_haveLatest) {
+    g_seq = g_latest.seq;
+    g_pos = ((latestSlot + 1) % g_slots) * ODO_REC_BYTES;
+    g_lwHave = true;
+    g_lwDay = g_latest.day;
+    g_lwOdo = g_latest.odo;
+    g_lwAbove = g_latest.aboveS;
+    g_last = g_latest;
+    g_haveLast = true;
+  }
+}
+
+void update(const Input &in, uint32_t nowMs) {
+  // 今の日(GPS の時刻、日本時間)
+  if (in.timeOk) {
+    const int32_t d = dayOf(in.utc);
+    if (!g_dayKnown) {
+      g_dayKnown = true;
+      g_curDay = d;
+      // 前の起動の記録が今日なら、その日の始まりの ODO と過走行時間を引き継ぐ(時刻が分かる前に数えた分は足す)
+      if (g_haveLatest && g_latest.day == d && (!in.odoHave || in.odoKm >= g_latest.start)) {
+        g_start = g_latest.start;
+        g_startSet = true;
+        g_aboveMs += g_latest.aboveS * 1000u;
+      }
+    } else if (d != g_curDay) {
+      // 日付が変わった: 前の日の締めの記録(増えていれば。次に書いてよい状態になったら書く)と、新しい日の始まり
+      if (g_startSet) {
+        Rec c;
+        c.reason = R_CLOSE;
+        c.seq = 0;
+        c.utc = in.utc;
+        c.day = g_curDay;
+        c.odo = g_cur;
+        c.start = g_start;
+        c.aboveS = g_aboveMs / 1000u;
+        const uint32_t km = recKm(c);
+        const bool changed = (!g_lwHave || g_lwDay != g_curDay) ? (km > 0 || c.aboveS > 0) : (c.odo > g_lwOdo || c.aboveS > g_lwAbove);
+        if (changed) {
+          g_close = c;
+          g_closePending = true;
+          tabPut(c.day, g_seq, c.start, c.odo, c.aboveS);  // 表には今すぐ(書いたら通し番号の新しい値で置き換わる)
+        }
+        g_start = g_cur;
+      }
+      g_curDay = d;
+      g_aboveMs = 0;
+    }
+  }
+  // 過走行時間(trip::aboveMs の増えた分。減ったのは累積時間のリセット: 足さない)
+  if (!g_aboveInit) {
+    g_aboveInit = true;
+  } else if (in.aboveMs >= g_lastAbove) {
+    g_aboveMs += in.aboveMs - g_lastAbove;
+  }
+  g_lastAbove = in.aboveMs;
+  // ODO
+  if (in.odoHave) {
+    g_cur = in.odoKm;
+    if (!g_startSet) {
+      g_start = in.odoKm;
+      g_startSet = true;
+    }
+  }
+  // 書いてよい状態: 低速(ODO_LOW_KMH 以下。停車も入る)・リバース。きっかけは ODO_STILL_KMH 未満なら停車
+  const bool low = in.speedOk && in.speedKmh <= ODO_LOW_KMH;
+  if (!(low || in.reverse) || !g_storageOk) return;
+  const uint8_t reason = (in.speedOk && in.speedKmh < ODO_STILL_KMH) ? R_STILL : in.reverse ? R_REVERSE : R_LOW;
+  if (g_closePending) {  // 前の日の締め(間隔は待たない)
+    g_closePending = false;
+    writeRec(g_close, nowMs);
+    return;
+  }
+  if (!in.timeOk || !g_dayKnown || !g_startSet || !in.odoOk) return;
+  Rec r;
+  r.reason = reason;
+  r.seq = 0;
+  r.utc = in.utc;
+  r.day = g_curDay;
+  r.odo = g_cur;
+  r.start = g_start;
+  r.aboveS = g_aboveMs / 1000u;
+  const uint32_t km = recKm(r);
+  const bool changed = (!g_lwHave || g_lwDay != g_curDay) ? (km > 0 || r.aboveS > 0) : (r.odo > g_lwOdo || r.aboveS > g_lwAbove);
+  if (!changed) return;
+  if (g_wrote && (uint32_t)(nowMs - g_lastWriteMs) < ODO_MIN_INTERVAL_MS) return;
+  writeRec(r, nowMs);
+}
+
+void status(Status *o) {
+  memset(o, 0, sizeof(*o));
+  o->storageOk = g_storageOk;
+  o->records = g_records;
+  o->capacity = g_slots;
+  o->writes = g_writes;
+  o->failures = g_failures;
+  o->timeKnown = g_dayKnown;
+  o->today = g_curDay;
+  o->todayKm = g_startSet && g_cur >= g_start ? g_cur - g_start : 0;
+  o->todayAboveS = g_aboveMs / 1000u;
+  o->curOk = g_startSet;
+  o->cur = g_cur;
+  if (g_haveLast) {
+    o->lastUtc = g_last.utc;
+    o->lastReason = g_last.reason;
+    o->lastKm = recKm(g_last);
+    o->lastAboveS = g_last.aboveS;
+    o->lastOdo = g_last.odo;
+  }
+}
+bool wroteSince(uint32_t *writes) {
+  if (g_writes == *writes) return false;
+  *writes = g_writes;
+  return true;
+}
+// 日 d の記録(今日はまだ書いていない分も)。start・odo = その日の始まりと最後の ODO
+static bool dayRec(int32_t d, uint32_t *start, uint32_t *odo, uint32_t *aboveS) {
+  bool rec = false;
+  *start = *odo = *aboveS = 0;
+  const DayEnt *e = slotOf(d);
+  if (e && e->day1 == d + 1) {
+    *start = e->start;
+    *odo = e->odo;
+    *aboveS = e->aboveS;
+    rec = true;
+  }
+  if (g_dayKnown && d == g_curDay && g_startSet) {  // 今日: 表の値は書いたときの値
+    if (!rec || g_cur != *odo || g_aboveMs / 1000u != *aboveS) {
+      *start = g_start;
+      *odo = g_cur;
+      *aboveS = g_aboveMs / 1000u;
+      if (g_cur > g_start || *aboveS > 0) rec = true;
+    }
+  }
+  return rec;
+}
+bool day(int32_t d, uint32_t *km, uint32_t *aboveS) {
+  uint32_t st, od;
+  const bool rec = dayRec(d, &st, &od, aboveS);
+  *km = od >= st ? od - st : 0;
+  return rec;
+}
+int32_t earliest() {
+  if (g_haveEarliest) return g_dayKnown && g_curDay < g_earliest ? g_curDay : g_earliest;
+  return g_dayKnown ? g_curDay : 0;
+}
+
+// 日数 ⇔ 年月日(1970-01-01 = 0。H. Hinnant の days_from_civil / civil_from_days)
+int32_t daysFrom(int y, int m, int d) {
+  y -= m <= 2;
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = (unsigned)(y - era * 400);
+  const unsigned doy = (unsigned)((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1);
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + (int32_t)doe - 719468;
+}
+void civil(int32_t z, int *y, int *m, int *d, int *wday) {
+  const int32_t zz = z + 719468;
+  const int era = (zz >= 0 ? zz : zz - 146096) / 146097;
+  const unsigned doe = (unsigned)(zz - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  const int dd = (int)(doy - (153 * mp + 2) / 5 + 1);
+  const int mm = (int)(mp < 10 ? mp + 3 : mp - 9);
+  *y = (int)yoe + era * 400 + (mm <= 2);
+  *m = mm;
+  *d = dd;
+  int w = (int)((z + 4) % 7);  // 1970-01-01 は木曜
+  if (w < 0) w += 7;
+  *wday = w;
+}
+
+bool today(int32_t *d) {
+  if (!g_dayKnown) return false;
+  *d = g_curDay;
+  return true;
+}
+// 日 d を含む期間の最初と最後の日(level: 0 = 3 ヶ月(1〜3 月・4〜6 月・7〜9 月・10〜12 月)、1 = 1 ヶ月、2 = 1 週(ODO_WEEK_START 始まり)、3 = 1 日)
+void bounds(int level, int32_t d, int32_t *first, int32_t *last) {
+  int y, m, dd, w;
+  civil(d, &y, &m, &dd, &w);
+  if (level == 0 || level == 1) {
+    const int m0 = level == 0 ? (m - 1) / 3 * 3 + 1 : m;  // 期間の最初の月
+    const int n = level == 0 ? 3 : 1;
+    const int mi = y * 12 + (m0 - 1) + n;  // 次の期間の最初の月
+    *first = daysFrom(y, m0, 1);
+    *last = daysFrom(mi / 12, mi % 12 + 1, 1) - 1;
+  } else if (level == 2) {
+    *first = d - ((w - ODO_WEEK_START + 7) % 7);
+    *last = *first + 6;
+  } else {
+    *first = *last = d;
+  }
+}
+// 日 d の終わりの時点の ODO(その日か、それより前でいちばん近い記録の日の最後の ODO。今日は今の ODO)
+static bool odoAt(int32_t d, uint32_t *odo) {
+  if (!g_haveEarliest && !(g_dayKnown && g_startSet)) return false;
+  const int32_t lo = earliest();
+  for (int32_t x = d; x >= lo && x > d - ODO_TABLE_DAYS; x--) {
+    uint32_t st, a;
+    if (dayRec(x, &st, odo, &a)) return true;
+    if (g_dayKnown && x == g_curDay && g_startSet) {  // 今日で、まだ増えていない
+      *odo = g_cur;
+      return true;
+    }
+  }
+  return false;
+}
+bool periodAt(int level, int32_t anchor, Period *o) {
+  memset(o, 0, sizeof(*o));
+  if (!g_dayKnown) return false;
+  const int32_t today = g_curDay;
+  if (anchor > today) anchor = today;
+  bounds(level, anchor, &o->first, &o->last);
+  const int32_t end = o->last < today ? o->last : today;
+  o->current = o->last >= today;
+  // 終わりの ODO と、始まりの ODO(期間の前の日の終わりの ODO。前に記録が無ければ、期間の中の最初の記録の始まり)
+  o->odoKnown = odoAt(end, &o->odoEnd);
+  bool startOk = odoAt(o->first - 1, &o->odoStart);
+  for (int32_t d = o->first; d <= end; d++) {
+    uint32_t st, od, a;
+    if (!dayRec(d, &st, &od, &a)) continue;
+    o->hasRecord = true;
+    o->aboveS += a;
+    if (!startOk) o->odoStart = st, startOk = true;
+  }
+  if (!startOk) o->odoStart = o->odoEnd;
+  o->km = o->odoKnown && o->odoEnd >= o->odoStart ? o->odoEnd - o->odoStart : 0;
+  o->canBack = earliest() < o->first;
+  o->canFwd = o->last < today;
+  return true;
+}
+int32_t prevAnchor(int level, int32_t anchor) {  // 前の期間の、今日までで最後の日
+  int32_t f, l;
+  bounds(level, anchor, &f, &l);
+  bounds(level, f - 1, &f, &l);
+  return l;
+}
+int32_t nextAnchor(int level, int32_t anchor) {  // 次の期間の、今日までで最後の日
+  int32_t f, l;
+  bounds(level, anchor, &f, &l);
+  bounds(level, l + 1, &f, &l);
+  return g_dayKnown && l > g_curDay ? g_curDay : l;
+}
+
+void testReset() {
+  resetState();
+  if (g_tab) memset(g_tab, 0, sizeof(DayEnt) * ODO_TABLE_DAYS);
+}
+
+}  // namespace odo
 
 // ================================================================ load(高負荷時間。2.10.0。説明は app.h)
 namespace load {
