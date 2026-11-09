@@ -2862,13 +2862,13 @@ struct Cat {
   const char *name;
   uint8_t first, count;
 };
-enum { CAT_SCREEN, CAT_SHIFT, CAT_WARN, CAT_LINK, CAT_ODO, CAT_SYS, CAT_OTHER };
+enum { CAT_ODO, CAT_SCREEN, CAT_SHIFT, CAT_WARN, CAT_LINK, CAT_SYS, CAT_OTHER };
 static const Cat CATS[] = {
+  { "走行記録", ODO_FIRST, 1 },  // 2.15.0: 長押しで 1 年の画面(本人 11/8「設定に入れてください」。2.15.1 までは 3 ヶ月)。2.15.3: 一番最初(本人 11/9。2.15.2 までは本体の状態の前)
   { "画面", 0, 3 },            // 明るさ・イルミネーションの明るさ・自動で戻る
   { "シフトポイント", 3, 2 },  // シフトポイント・回転数の輪(本人「シフトと言うメニューの名前はシフトポイントに」)
   { "警告・過負荷", 5, 8 },    // 水温の警告・燃料の警告(2.14.0)・過負荷 回転数・過負荷時間 黄・赤・過負荷がリセットされる時間・メンテナンスまでの累積時間・累積時間 リセット
   { "受信の状態", 13, 1 },
-  { "走行記録", ODO_FIRST, 1 },  // 2.15.0: 長押しで 1 年の画面(本人 11/8「設定に入れてください」。本体の状態の前。2.15.2 までは 3 ヶ月)
   { "本体の状態", 14, 1 },
   { "その他", 15, 2 },         // デモ・デフォルトに戻す
 };
@@ -4180,7 +4180,7 @@ static void itemOpen(const Item &it, Screen from) {
     g_resetKind = RK_DEFAULTS;
     g_resetFrom = from;
     go(SC_SET_RESET);
-  } else if (it.kind == K_ODO) {  // 2.15.0: 走行記録の 1 年の画面(今年から。2.15.2 までは 3 ヶ月)
+  } else if (it.kind == K_ODO) {  // 2.15.0: 走行記録の 1 年の画面(今年から。2.15.1 までは 3 ヶ月)
     int32_t d = 0;
     odo::today(&d);
     g_odoLevel = odo::ODO_LV_YEAR;

@@ -335,7 +335,7 @@ int main() {
   CHECK(ui::screen() == ui::SC_BOOST, "設定: 上の帯「‹ 設定」でタコへ");
   // 設定(長押しで入る。前回見ていたカテゴリから)。2.12.0: 6 カテゴリ(画面・シフトポイント・水温・過負荷・受信の状態・本体の状態・その他)
   longPress(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "長押しで設定へ");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "長押しで設定へ(最初は 1 つ目のカテゴリ = 走行記録。2.15.3)");
   // 項目の送り: スワイプ(2.4.0。本人「設定の項目移動もスワイプにしないとオペレーションがあわない」。左へ = 次、右へ = 前)と、
   // 左右の「‹」「›」(左半分・右半分)のタップ(2.4.1: 2.4.0 でやめたのを戻した。本人「ボタンの方がわかりやすい」)
   next(t); next(t);
@@ -467,22 +467,21 @@ int main() {
     ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
     ui::touchUp(t += HOLD_SHOW_MS - 50);
     upd(live, t);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1, "外周が出る前(HOLD_SHOW_MS より前)に離したのはタップ(次)");
-    prev(t);
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1, "外周が出る前(HOLD_SHOW_MS より前)に離したのはタップ(次。2.15.3: 2 つ目 = 画面)");
     for (int k = 0; k < 3; k++) {  // 上の帯・真ん中・左半分の長押しでも開く
       static const int px[3] = { TOPX, MY, LX }, py[3] = { TOPY, MY, MY };
       ui::touchDown(px[k], py[k], t += 100);
       ui::update(live, ls, ps, si, t + TOUCH_CONFIRM_MS + 10);
       ui::update(live, ls, ps, si, t + HOLD_SHOW_MS + 10);
       ui::update(live, ls, ps, si, t + HOLD_MS);
-      CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetCat() == 0 && ui::testSetItem() == 0,
+      CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetCat() == 1 && ui::testSetItem() == 0,
             k == 0 ? "上の帯の長押しで開く(カテゴリの中の明るさ。2.4.5・2.12.0)" : k == 1 ? "真ん中の長押しで開く(2.4.5)" : "左半分の長押しで開く(2.4.5)");
       ui::touchUp(t += HOLD_MS + 20);
       upd(live, t);
       CHECK(ui::screen() == ui::SC_SET_CAT, "開いたあとに離しても、タップにはならない");
       ui::tap(TOPX, TOPY, t += 100); upd(live, t);
     }
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "カテゴリの中の上「‹ 画面」で設定の段の画面へ(2.12.0)");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1, "カテゴリの中の上「‹ 画面」で設定の段の画面へ(2.12.0)");
   }
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 0, "設定の段の長押しでカテゴリの中(画面 → 明るさ。2.12.0)");
@@ -503,11 +502,11 @@ int main() {
   prev(t);
   CHECK(ui::testSetItem() == 2, "カテゴリの中: 最初の前は最後");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "カテゴリの中: 上「‹ 画面」で設定の段");
-  // 受信の状態(2.12.0: 4 つ目のカテゴリ): CAN・GPS・IMU・RaceChrono の 4 グループ(まとめ。下「開く」で中へ)。中は 1 ページ 1 項目
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1, "カテゴリの中: 上「‹ 画面」で設定の段");
+  // 受信の状態(2.12.0: 4 つ目のカテゴリ。2.15.3: 5 つ目): CAN・GPS・IMU・RaceChrono の 4 グループ(まとめ。下「開く」で中へ)。中は 1 ページ 1 項目
   next(t); next(t); next(t);
   holdOpen(live, t);
-  CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 0, "4 つ目のカテゴリ(受信の状態)の下「長押しで開く」で受信の状態(1 ページ目 = CAN)");
+  CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 0, "5 つ目のカテゴリ(受信の状態)の下「長押しで開く」で受信の状態(1 ページ目 = CAN)");
   next(t);
   CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 1, "受信の状態: 左へスワイプで次のグループ(GPS)");
   ui::tap(RX, MY, t += 100); upd(live, t);
@@ -573,18 +572,18 @@ int main() {
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_SET_INFO && ui::testPage() == 0, "CAN の中: 上「‹ CAN」で受信の状態の CAN のページ");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 3, "受信の状態: 上「‹ 受信の状態」で設定の受信の状態");
-  // 走行記録(2.15.0: 5 つ目のカテゴリ。1 項目だけで、長押しでそのまま 1 年の画面。2.15.2 までは 3 ヶ月)
-  next(t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 4, "5 つ目のカテゴリ = 走行記録(2.15.0)");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 4, "受信の状態: 上「‹ 受信の状態」で設定の受信の状態");
+  // 走行記録(2.15.0。2.15.3: 1 つ目のカテゴリ。1 項目だけで、長押しでそのまま 1 年の画面。2.15.1 までは 3 ヶ月)
+  next(t); next(t); next(t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "最後(その他)の次は 1 つ目のカテゴリ = 走行記録(2.15.3)");
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_ODO && ui::testOdoLevel() == odo::ODO_LV_YEAR, "走行記録の長押しで 1 年の画面");
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_ODO && ui::testOdoLevel() == odo::ODO_LV_YEAR, "時刻が分からない間は、長押しで細かい方へは行かない");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 4, "1 年の画面: 上「‹ 1 年」で設定の走行記録");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "1 年の画面: 上「‹ 1 年」で設定の走行記録");
   // 本体の状態(2.12.0: 5 つ目のカテゴリ。2.15.0: 6 つ目。2.4.0: 受信と関係ない FPS・起動を受信の状態から出した): 下「開く」で中。上の帯で設定へ
-  next(t);
+  prev(t); prev(t);
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_GRP && ui::testGroup() == 4 && ui::testPage() == 0, "6 つ目のカテゴリ = 本体の状態。下「長押しで開く」で中(1 ページ目 = FPS)");
   next(t);
@@ -597,8 +596,8 @@ int main() {
 
   // ---------------- 7. 設定の変更(下「変更」→ 左右の半分で − +、下「決定」で保存して戻り、値が緑で点滅する(2.3.1)。上「‹ 戻る」で変えずに戻る)
   //                  2.4.0: 変更の画面は値を枠で囲み、下の「決定」を水色の帯にした(項目の画面と見た目が同じで、移ったのが分からなかった)
-  prev(t); prev(t); prev(t); prev(t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1, "2 つ目のカテゴリ = シフトポイント");
+  prev(t); prev(t); prev(t);
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "3 つ目のカテゴリ = シフトポイント(2.15.3)");
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 3, "シフトポイントの中の 1 項目目 = シフトポイント");
   auto countIn = [&](uint16_t c, int x0, int y0, int x1, int y1) {
@@ -717,7 +716,7 @@ int main() {
   // 明るさ(画面の中の 1 項目目): 変えたその場で反映、「‹ 戻る」で元に戻る
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   prev(t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "設定の段に戻って 1 つ目のカテゴリ(画面)");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 1, "設定の段に戻って 2 つ目のカテゴリ(画面。2.15.3)");
   holdOpen(live, t);
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_EDIT && ui::testSetItem() == 0, "画面の中の 1 項目目(明るさ)の変更");
@@ -761,7 +760,7 @@ int main() {
   // メンテナンスまでの累積時間・累積時間 リセット(2.11.0 までの「時間の記録」)
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   next(t); next(t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "3 つ目のカテゴリ = 警告・過負荷(2.14.0: 水温・過負荷から改名)");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 3, "4 つ目のカテゴリ = 警告・過負荷(2.14.0: 水温・過負荷から改名。2.15.3: 4 つ目)");
   holdOpen(live, t);
   CHECK(ui::screen() == ui::SC_SET_CAT && ui::testSetItem() == 5, "警告・過負荷の中の 1 項目目 = 水温の警告");
   next(t);
@@ -887,7 +886,7 @@ int main() {
   set.loadRpm = SET_LOADRPM_DEFAULT;
   set.maintHours = SET_MAINT_DEFAULT;
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
-  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 2, "カテゴリの中: 上「‹ 水温・過負荷」で設定の段");
+  CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 3, "カテゴリの中: 上「‹ 水温・過負荷」で設定の段");
   ui::tap(TOPX, TOPY, t += 100); upd(live, t);
   CHECK(ui::screen() == ui::SC_BOOST, "設定: 上の帯「‹ 設定」で来た画面へ");
 
@@ -4234,8 +4233,8 @@ int main() {
     };
     const uint32_t miss0 = gfx::missingGlyphs();
     // カテゴリを順に送り、それぞれの中を開いて全部の項目を見る(受信の状態・本体の状態はそのまま中へ)
-    static const int CAT_N[7] = { 3, 2, 8, 1, 1, 1, 2 };  // 2.14.0: 警告・過負荷は 8(燃料の警告)。2.15.0: 走行記録 1
-    static const int CAT_FIRST[7] = { 0, 3, 5, 13, 17, 14, 15 };
+    static const int CAT_N[7] = { 1, 3, 2, 8, 1, 1, 2 };  // 2.14.0: 警告・過負荷は 8(燃料の警告)。2.15.0: 走行記録 1(2.15.3: 一番最初)
+    static const int CAT_FIRST[7] = { 17, 0, 3, 5, 13, 14, 15 };
     ui::testShow(ui::SC_SET_LIST, 0);
     ui::testTouch(tc);
     ui::update(d, ls, ps, si, tc);
@@ -4246,10 +4245,10 @@ int main() {
       cats = cats && ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == c;
       same = same && sameK(tc);
       holdOpen(d, tc);
-      if (c == 3) {
+      if (c == 4) {
         items = items && ui::screen() == ui::SC_SET_INFO;
         seen++;
-      } else if (c == 4) {  // 2.15.0: 走行記録は 1 年の画面(上の帯で設定の段へ戻る)
+      } else if (c == 0) {  // 2.15.0: 走行記録は 1 年の画面(上の帯で設定の段へ戻る。2.15.3: 一番最初)
         items = items && ui::screen() == ui::SC_ODO && ui::testOdoLevel() == odo::ODO_LV_YEAR;
         seen++;
       } else if (c == 5) {
@@ -4279,7 +4278,7 @@ int main() {
     CHECK(same, "カテゴリの段・カテゴリの中の絵 = 最初から描いた絵");
     CHECK(gfx::missingGlyphs() == miss0, "カテゴリの名前・中の主な値・項目の名前の字はどれもある");
     // カテゴリの段の中の主な値: 値が変わったら描き直す
-    ui::testShow(ui::SC_SET_LIST, 1);
+    ui::testShow(ui::SC_SET_LIST, 2);  // 2.15.3: シフトポイントは 3 つ目
     ui::update(d, ls, ps, si, tc += 100);
     gfx::dirtyClear();
     set.shiftRpm = 6200;
@@ -4397,8 +4396,8 @@ int main() {
     set.maintHours = 5;
     ui::update(d, ls, ps, si, tm += 100);
     gfx::dirtyClear();
-    // 設定の段: 水温・過負荷のカテゴリは、達していたら中の主な値が赤の「メンテナンス」
-    ui::testShow(ui::SC_SET_LIST, 2);
+    // 設定の段: 水温・過負荷のカテゴリは、達していたら中の主な値が赤の「メンテナンス」(2.15.3: 4 つ目)
+    ui::testShow(ui::SC_SET_LIST, 3);
     ui::testTouch(tm);
     ui::update(d, ls, ps, si, tm += 100);
     CHECK(countIn(40, 236, 426, 300, RED) > 300 && sameM(d, tm), "設定の段: 水温・過負荷はメンテナンスに達したら赤の「メンテナンス」");
@@ -4414,7 +4413,7 @@ int main() {
     ui::update(d, ls, ps, si, tm += 100);
     CHECK(gfx::dirtyCount() > 0 && sameM(d, tm), "累積時間 リセットの項目: メンテナンスを切にしたら ▼ に描き直す");
     set.maintHours = 5;
-    ui::testShow(ui::SC_SET_LIST, 2);
+    ui::testShow(ui::SC_SET_LIST, 3);
     ui::testTouch(tm);
     ui::update(d, ls, ps, si, tm += 100);
     CHECK(countIn(40, 236, 426, 300, RED) == 0 && sameM(d, tm), "設定の段: 達していなければ水温・過負荷の中の主な値は今までどおり");
@@ -4827,7 +4826,7 @@ int main() {
     memset(&d, 0, sizeof(d));
     const uint32_t miss0 = gfx::missingGlyphs();
     uint32_t tu = 70000000;
-    ui::testShow(ui::SC_SET_LIST, 4);
+    ui::testShow(ui::SC_SET_LIST, 0);  // 2.15.3: 走行記録は 1 つ目
     ui::testTouch(tu);
     ui::update(d, ls, ps, si, tu += 100);
     holdOpen(d, tu);
@@ -4890,7 +4889,7 @@ int main() {
     ui::testShow(ui::SC_ODO, odo::ODO_LV_YEAR, 0);
     ui::tap(233, 60, tu += 100);
     ui::update(d, ls, ps, si, tu += 100);
-    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 4, "1 年の上の帯で設定の走行記録");
+    CHECK(ui::screen() == ui::SC_SET_LIST && ui::testSetCat() == 0, "1 年の上の帯で設定の走行記録");
     char v[64];
     CHECK(ui::testInfoItem(4, 8, ls, ps, si, tu, v, sizeof(v)) >= 0 && strstr(v, "件") != nullptr, "本体の状態の 9 ページ目 = 走行記録(件数)");
     CHECK(gfx::missingGlyphs() == miss0, "走行記録の項目・本体の状態: 字はどれもある");

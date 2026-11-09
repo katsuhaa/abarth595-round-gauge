@@ -363,16 +363,17 @@ int main(int argc, char **argv) {
   {
     Signals s = sig(4200, '3', 92, 62);
     trip::setTimes(5025000, 45296000);
-    // 2.12.0: 設定の段 = カテゴリ 6 つ(SetCat*)、カテゴリの中 = 項目(ITEMS の並び。受信の状態・本体の状態はカテゴリの段から中へ)
-    const char *cats[] = { "SetCat1Screen", "SetCat2Shift", "SetCat3Warn", "SetCat4Info", "SetCat5Sys", "SetCat6Other" };
-    for (int c = 0; c < 6; c++) shot(cats[c], s, ui::SC_SET_LIST, c);
+    // 2.12.0: 設定の段 = カテゴリ(SetCat*)、カテゴリの中 = 項目(ITEMS の並び。受信の状態・本体の状態・走行記録はカテゴリの段から中へ)。
+    // 2.15.3: 走行記録が 1 つ目(7 つ)
+    const char *cats[] = { "SetCat0Odo", "SetCat1Screen", "SetCat2Shift", "SetCat3Warn", "SetCat4Info", "SetCat5Sys", "SetCat6Other" };
+    for (int c = 0; c < 7; c++) shot(cats[c], s, ui::SC_SET_LIST, c);
     const char *items[] = { "Set1Bright", "SetIllum", "Set7Auto", "Set4Shift", "SetRing", "Set5Warn", "SetFuelWarn", "SetLoadRpm", "SetLoadY", "SetLoadR",
                             "SetLoadRs", "SetMaint", "Set6Time", nullptr, nullptr, "Set8Demo", "SetDefaults" };  // 2.14.0: SetFuelWarn(燃料の警告)
     for (int i = 0; i < 17; i++)
       if (items[i]) shot(items[i], s, ui::SC_SET_CAT, i);
     // 2.12.0: 累積時間がメンテナンスの時間に達した(水温・過負荷のカテゴリ・累積時間 リセットの項目と確認の画面は赤の「メンテナンス」)
     trip::setTimes(18000000u, 45296000);
-    shot("SetCat3WarnDue", s, ui::SC_SET_LIST, 2);
+    shot("SetCat3WarnDue", s, ui::SC_SET_LIST, 3);  // 2.15.3: 警告・過負荷は 4 つ目
     shot("Set6TimeDue", s, ui::SC_SET_CAT, 12);
     trip::setTimes(5025000, 45296000);
     set.maintHours = 0;  // メンテナンスが切: 今までどおり ▲▼ と「2 つとも 0 に戻す」
@@ -479,7 +480,7 @@ int main(int argc, char **argv) {
     ls.locked = false; ls.infoValid = false; si.axpOk = false; ls.crcErrors = 3; ls.bytesPerSec = 1480; ls.framesPerSec = 0;
     shot("CanNoLink", s, ui::SC_SET_GRP, 2, 0);
     shot("InfoCanNg", s, ui::SC_SET_INFO, 0);
-    shot("Set2InfoNg", s, ui::SC_SET_LIST, 3);  // 2.12.0: 受信の状態は 4 つ目のカテゴリ
+    shot("Set2InfoNg", s, ui::SC_SET_LIST, 4);  // 2.12.0: 受信の状態は 4 つ目のカテゴリ(2.15.3: 5 つ目)
     si.rc.enabled = true; si.rc.bleOk = true; si.rc.connected = true; si.rc.canPerSec = 62; si.rc.gpsPerSec = 25; si.rc.gpsOn = true; si.rc.gpsOk = true; si.rc.fixType = 3; si.rc.numSV = 11;
     si.rc.pvtPerSec = 25; si.rc.lat = 355812345; si.rc.lon = 1396821234; si.rc.gpsKmh = 48.3f; si.rc.imuOk = true; si.rc.imuLevel = true; si.rc.imuForward = true;
     si.rc.gLon = 0.32f; si.rc.gLat = -0.85f;
@@ -619,7 +620,7 @@ int main(int argc, char **argv) {
     }
     si.timeOk = true;
     si.utc = in.utc;
-    shot("SetOdo", s, ui::SC_SET_LIST, 4);             // 設定の走行記録(今の ODO)
+    shot("SetOdo", s, ui::SC_SET_LIST, 0);             // 設定の走行記録(今の ODO。2.15.3: 1 つ目)
     shot("OdoYear", s, ui::SC_ODO, 0, 0);              // 1 年(今年。2.15.2)
     shot("OdoQuarter", s, ui::SC_ODO, 1, 0);           // 3 ヶ月(10〜12 月)
     shot("OdoQuarterBack", s, ui::SC_ODO, 1, 45);      // 7〜9 月(記録の始まり。前へは送れない)
