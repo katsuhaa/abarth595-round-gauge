@@ -739,41 +739,57 @@ int main(int argc, char **argv) {
     ui::tap(233, 233, t0 + 60000);
     ui::testShow(ui::SC_DRIVE);
   }
-  // ---- CAN確認の「前後で比べる」(2.6.0): 待ち(残りの秒)・記録なし・前を記録した・候補・一覧・やり直す・CAN のページ。
-  //      表を空にするので最後に描く(ほかの CAN確認の絵を変えない)
+  // ---- CAN確認の「前後で比べる」(2.6.0。2.16.0 で作り直し): 待ち(残りの秒)・記録なし・記録中・前を記録した・候補・一覧(ビット・
+  //      後は受信なし(今は受けていない)・前は受信なし)・やり直す・CAN のページ。表を空にするので最後に描く(ほかの CAN確認の絵を変えない)
   {
     Signals s = sig(4200, '3', 92, 62);
     g_hostCanPreN = 0;
     cantab::begin();
-    auto feed = [&](uint32_t from, uint32_t to, uint8_t fuel, uint8_t reset) {
+    // st = 0: ふだん(前)、1: 制御 OFF(後)。0A18A006 b0 01 / 03・b1 00 / 0C、0030A002 は前だけ、0x456 は後だけ
+    auto feed = [&](uint32_t from, uint32_t to, int st) {
       for (uint32_t tt = from; tt < to; tt += 20) {
-        uint8_t a[8] = { 0x20, 0x0D, 0x40, 0x7B, 0x00, fuel, 0x20, 0x3D };
+        uint8_t a[8] = { (uint8_t)(st ? 0x03 : 0x01), (uint8_t)(st ? 0x0C : 0x00), (uint8_t)(tt / 20), 0, 0, 0, (uint8_t)((tt / 100) & 0x1F), 0 };
         uint8_t b[8] = { (uint8_t)(tt / 20), (uint8_t)(tt / 7), 1, 2, 3, 4, 5, 6 };
-        uint8_t c[8] = { 0x2B, 0x0C, 0x0B, reset, 0x0C, 0x0B, 0x2B, 0x00 };
-        canFrame(0x0A18A000, a, 8, tt);
+        canFrame(0x0A18A006, a, 8, tt);
         canFrame(0x0A18A001, b, 8, tt);
-        canFrame(0x0A18A006, c, 8, tt);
+        if (st == 0) {
+          uint8_t e[8] = { 0x1C, 0x40, 0, 0, 0, 0, 0, 0 };
+          canFrame(0x0030A002, e, 8, tt);
+        } else {
+          const uint8_t f[3] = { 0xAA, 0x55, 0x01 };
+          cantab::onFrame(0, 0, 0x456, 3, f, tt);
+        }
         cantab::tick(tt);
       }
     };
     const uint32_t t0 = now;
-    feed(t0, t0 + 3000, 31, 43);
+    feed(t0, t0 + 3000, 0);
     now = t0 + 3000;
     shot("CanPpWait", s, ui::SC_CAN_PP);  // 下の帯に「待ち 12 秒」(灰)
-    feed(t0 + 3000, t0 + 16000, 31, 43);
+    feed(t0 + 3000, t0 + 16000, 0);
     now = t0 + 16000;
     shot("CanPp0", s, ui::SC_CAN_PP);  // 記録なし、下「前を記録」
-    cantab::ppRecordPre(now);
+    cantab::ppStart(now);
+    feed(now, now + 3000, 0);
+    now += 3000;
+    shot("CanPpRec", s, ui::SC_CAN_PP);  // 前を記録中、下「記録中 7 秒」(灰)
+    feed(now, now + CAN_PP_WIN_MS - 3000, 0);
+    now += CAN_PP_WIN_MS - 3000;
+    cantab::ppPoll(now);
     shot("CanPp1", s, ui::SC_CAN_PP);  // 前を記録した、下「後を記録」
-    cantab::begin();  // 電源を入れ直す(前の記録は残る)
+    cantab::begin();  // 電源を入れ直す(記録は残る)
     const uint32_t t2 = now + 600000;
-    feed(t2, t2 + 4000, 0, 0);
-    feed(t2 + 4000, t2 + 16000, 100, 0);
+    feed(t2, t2 + 16000, 1);
     now = t2 + 16000;
-    cantab::ppRecordPost(now);
-    shot("CanPpResult", s, ui::SC_CAN_PP);       // 候補 2 件(増えた 1、減った 1)
-    shot("CanPpList", s, ui::SC_CAN_ID, 0, 1);   // 1/2  b5  31 → 100  +69
-    shot("CanPpList2", s, ui::SC_CAN_ID, 1, 1);  // 2/2  b3  43 → 0  -43
+    cantab::ppStart(now);
+    feed(now, now + CAN_PP_WIN_MS, 1);
+    now += CAN_PP_WIN_MS;
+    cantab::ppPoll(now);
+    shot("CanPpResult", s, ui::SC_CAN_PP);       // 候補 4 件、前 1 回 後 1 回、件数の移り変わり
+    shot("CanPpList", s, ui::SC_CAN_ID, 0, 1);   // 1/4  前は受信なし(0x456)
+    shot("CanPpList2", s, ui::SC_CAN_ID, 1, 1);  // 2/4  後は受信なし(0030A002、今は受信していない)
+    shot("CanPpList3", s, ui::SC_CAN_ID, 2, 1);  // 3/4  b0&02  01 → 03
+    shot("CanPpList4", s, ui::SC_CAN_ID, 3, 1);  // 4/4  b1&0C  00 → 0C
     shot("CanPpRedo", s, ui::SC_CAN_REDO, 1);
     shot("CanPpPage", s, ui::SC_SET_GRP, 8, 0);
     g_hostCanPreN = 0;

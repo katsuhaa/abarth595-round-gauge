@@ -560,6 +560,11 @@ struct Entry {
   uint8_t base[8];        // 前の記録の値
   uint16_t changes[8];    // 前の記録から変わった回数
   uint8_t hist[8][CAN_HIST_SAMPLES];
+  // 前後で比べるの記録中(2.16.0): 記録を始めてから最初に受けた値、それから変わったビット、受けた回数、長さ
+  uint8_t wFirst[8];
+  uint8_t wTog[8];
+  uint16_t wCnt;
+  uint8_t wDlc;
 };
 
 static Entry *g_e = nullptr;
@@ -572,35 +577,59 @@ static int g_recHistN = 0;
 static bool g_firstSeen = false;         // begin のあとにフレームを受けた(2.6.0)
 static uint32_t g_firstMs = 0;           // 最初のフレームを受けた時刻(2.6.0。前後で比べるのは CAN_PP_SETTLE_MS たってから)
 
-// ---- 前後で比べる(2.6.0)。前の記録は、この形のまま NVS に書く(PpHead のあとに PpRec が n 個)
+// ---- 前後で比べる(2.6.0。2.16.0 で作り直し)。記録は、この形のまま NVS に書く(PpHead のあとに PpRec が n 個)
 struct PpHead {
   uint16_t magic;  // PP_MAGIC
   uint8_t ver;     // PP_VER
-  uint8_t pad;
+  uint8_t nHist;   // hist に入れた数
   uint16_t n;      // PpRec の数
-  uint16_t pad2;
+  uint8_t nPre;    // 前を記録した回数
+  uint8_t nPost;   // 後を記録した回数
+  uint16_t hist[CAN_REC_HIST];  // 件数の移り変わり(古い順。後を記録してからの記録ごと)
 };
 struct PpRec {
   uint32_t id;
   uint8_t bus, ext, dlc;
-  uint8_t quiet;  // bit b = バイト b の幅が CAN_PP_QUIET 以下
-  uint8_t md[8];  // 真ん中の値(幅が CAN_PP_QUIET 以下のバイトだけ)
+  uint8_t seenPre, seenPost;  // その ID を受けた、前・後の記録の回数
+  uint8_t pad[3];
+  uint8_t cand[8];  // 候補のビット(バイトごと)。毎回の記録の間ずっと変わらず、前では ref と同じ、後では ref の逆だったビット
+  uint8_t ref[8];   // 1 回目の前の値
+  uint8_t post[8];  // 1 回目の後の値(一覧に出す)
 };
 static const uint16_t PP_MAGIC = 0x5050;
-static const uint8_t PP_VER = 1;
+static const uint8_t PP_VER = 2;  // 2.16.0(1 = 2.6.0〜2.15.x の前の記録。読み戻さない)
 static const size_t PP_BYTES = sizeof(PpHead) + sizeof(PpRec) * CAN_MAX_IDS;
-static uint8_t *g_ppBuf = nullptr;  // 前の記録(PP_BYTES)
-static bool g_ppHave = false;       // 前の記録がある
-static PpResult g_ppRes[CAN_PP_MAX];
-static int g_ppResN = 0, g_ppUp = 0, g_ppDown = 0;
-static bool g_ppDone = false;       // 後を記録して、候補を作った
+static uint8_t *g_ppBuf = nullptr;  // 記録(PP_BYTES)
+static bool g_ppRec = false;        // 記録中
+static bool g_ppRecPost = false;    // 記録中のものは「後」
+static uint32_t g_ppRecStart = 0;   // 記録を始めた時刻
+static uint32_t g_ppRecFrames = 0;  // 記録中に受けたフレームの数(0 なら数に入れない)
 
-static bool ppLoad() {  // 保存した前の記録を読み戻す(begin から)
-  if (!g_ppBuf) g_ppBuf = (uint8_t *)platAlloc(PP_BYTES);
-  if (!g_ppBuf) return false;
+static PpHead *ppHead() {
+  return (PpHead *)g_ppBuf;
+}
+static PpRec *ppRecs() {
+  return (PpRec *)(g_ppBuf + sizeof(PpHead));
+}
+static void ppReset() {  // 記録を空にする(保存はしない)
+  memset(g_ppBuf, 0, PP_BYTES);
+  ppHead()->magic = PP_MAGIC;
+  ppHead()->ver = PP_VER;
+}
+static bool ppBuf() {  // 記録の置き場所を用意する(できなければ false)
+  if (!g_ppBuf) {
+    g_ppBuf = (uint8_t *)platAlloc(PP_BYTES);
+    if (g_ppBuf) ppReset();
+  }
+  return g_ppBuf != nullptr;
+}
+static void ppLoad() {  // 保存した記録を読み戻す(begin から)。形が違う(2.15.x までの前の記録など)ときは空にする
+  if (!ppBuf()) return;
   const size_t n = platLoadCanPre(g_ppBuf, PP_BYTES);
-  const PpHead *h = (const PpHead *)g_ppBuf;
-  return n >= sizeof(PpHead) && h->magic == PP_MAGIC && h->ver == PP_VER && h->n <= CAN_MAX_IDS && n == sizeof(PpHead) + sizeof(PpRec) * h->n;
+  const PpHead *h = ppHead();
+  const bool ok = n >= sizeof(PpHead) && h->magic == PP_MAGIC && h->ver == PP_VER && h->n <= CAN_MAX_IDS && h->nHist <= CAN_REC_HIST &&
+                  n == sizeof(PpHead) + sizeof(PpRec) * h->n;
+  if (!ok) ppReset();
 }
 
 void begin() {
@@ -611,9 +640,8 @@ void begin() {
   g_rec = 0;
   g_recHistN = 0;
   g_firstSeen = false;
-  g_ppHave = ppLoad();
-  g_ppDone = false;
-  g_ppResN = g_ppUp = g_ppDown = 0;
+  g_ppRec = false;
+  ppLoad();
 }
 
 void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *data, uint32_t nowMs) {
@@ -650,6 +678,24 @@ void onFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint8_t *
       }
     }
     e.dlc = dlc;
+  }
+  if (g_ppRec) {  // 前後で比べるの記録中(2.16.0): 最初の値と、それから変わったビット
+    Entry &e = g_e[i];
+    if (e.wCnt == 0) {
+      memset(e.wFirst, 0, 8);
+      memcpy(e.wFirst, data, dlc);
+      e.wDlc = dlc;
+    } else {
+      const int nb = dlc < e.wDlc ? dlc : e.wDlc;
+      for (int b = 0; b < nb; b++) e.wTog[b] |= (uint8_t)(e.wFirst[b] ^ data[b]);
+      if (dlc != e.wDlc) {  // 長さが変わった: 長い方にしかないバイトは変わったものとして、短い方にそろえる
+        const int nx = dlc > e.wDlc ? dlc : e.wDlc;
+        for (int b = nb; b < nx; b++) e.wTog[b] = 0xFF;
+        e.wDlc = (uint8_t)nb;
+      }
+    }
+    if (e.wCnt < 0xFFFF) e.wCnt++;
+    g_ppRecFrames++;
   }
   platUnlock();
 }
@@ -772,139 +818,229 @@ int getHistory(int entry, int byteIndex, uint8_t *out) {
   return n;
 }
 
-// ---- 前後で比べる(2.6.0)
-static const int PP_WIN = CAN_PP_WIN_MS / CAN_HIST_INTERVAL_MS;  // 見る点の数
-// 履歴の新しい方から PP_WIN 点で、バイトごとの幅が CAN_PP_QUIET 以下か(quiet の bit)と、そのバイトの真ん中の値(md)。platLock の中で呼ぶ
-static void ppStats(const Entry &e, uint8_t *quiet, uint8_t *md) {
-  *quiet = 0;
-  for (int b = 0; b < 8; b++) {
-    md[b] = 0;
-    if (b >= e.dlc) continue;
-    uint8_t lo = 255, hi = 0;
-    for (int k = 0; k < PP_WIN; k++) {
-      const uint8_t v = e.hist[b][(g_histPos - 1 - k + 2 * CAN_HIST_SAMPLES) % CAN_HIST_SAMPLES];
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
-    }
-    if (hi - lo > CAN_PP_QUIET) continue;
-    int cnt[CAN_PP_QUIET + 1] = {};
-    for (int k = 0; k < PP_WIN; k++) cnt[e.hist[b][(g_histPos - 1 - k + 2 * CAN_HIST_SAMPLES) % CAN_HIST_SAMPLES] - lo]++;
-    int acc = 0, v = 0;
-    while (v < CAN_PP_QUIET && acc + cnt[v] <= PP_WIN / 2) acc += cnt[v++];  // 小さい方から PP_WIN / 2 番目(0 から数える)
-    md[b] = (uint8_t)(lo + v);
-    *quiet |= (uint8_t)(1u << b);
-  }
-}
-
+// ---- 前後で比べる(2.6.0。2.16.0 で作り直し)
 int ppWaitMs(uint32_t nowMs) {
   if (!g_e || !g_firstSeen) return -1;
-  const uint32_t el = nowMs - g_firstMs;
-  int w = el >= (uint32_t)CAN_PP_SETTLE_MS ? 0 : (int)(CAN_PP_SETTLE_MS - el);
-  const int hw = g_histCount >= PP_WIN ? 0 : (PP_WIN - g_histCount) * CAN_HIST_INTERVAL_MS;
-  return w > hw ? w : hw;
+  const int32_t el = (int32_t)(nowMs - g_firstMs);  // 受信タスクの時刻が少し先のときは負
+  if (el < 0) return CAN_PP_SETTLE_MS;
+  return el >= CAN_PP_SETTLE_MS ? 0 : (int)(CAN_PP_SETTLE_MS - el);
 }
 
-bool ppRecordPre(uint32_t nowMs) {
-  if (ppWaitMs(nowMs) != 0) return false;
-  if (!g_ppBuf) g_ppBuf = (uint8_t *)platAlloc(PP_BYTES);
-  if (!g_ppBuf) return false;
-  PpHead *h = (PpHead *)g_ppBuf;
-  PpRec *r = (PpRec *)(g_ppBuf + sizeof(PpHead));
-  int n = 0;
-  platLock();
-  for (int i = 0; i < g_n && n < CAN_MAX_IDS; i++) {
-    const Entry &e = g_e[i];
-    PpRec &p = r[n++];
-    memset(&p, 0, sizeof(p));
-    p.id = e.id;
-    p.bus = e.bus;
-    p.ext = e.ext;
-    p.dlc = e.dlc;
-    ppStats(e, &p.quiet, p.md);
-  }
-  platUnlock();
-  memset(h, 0, sizeof(*h));
-  h->magic = PP_MAGIC;
-  h->ver = PP_VER;
-  h->n = (uint16_t)n;
-  g_ppHave = true;
-  g_ppDone = false;
-  g_ppResN = g_ppUp = g_ppDown = 0;
-  platSaveCanPre(g_ppBuf, sizeof(PpHead) + sizeof(PpRec) * (size_t)n);  // 書けなくても、電源を切るまでは使える
-  return true;
+bool ppRecording() {
+  return g_ppRec;
+}
+
+int ppRecLeftMs(uint32_t nowMs) {
+  if (!g_ppRec) return 0;
+  const int32_t el = (int32_t)(nowMs - g_ppRecStart);
+  if (el < 0) return CAN_PP_WIN_MS;
+  return el >= CAN_PP_WIN_MS ? 0 : (int)(CAN_PP_WIN_MS - el);
+}
+
+int ppPreCount() {
+  return g_ppBuf ? ppHead()->nPre : 0;
+}
+
+int ppPostCount() {
+  return g_ppBuf ? ppHead()->nPost : 0;
+}
+
+bool ppNextIsPost() {
+  return ppPreCount() > ppPostCount();
 }
 
 bool ppHasPre() {
-  return g_ppHave;
-}
-
-int ppRecordPost(uint32_t nowMs) {
-  if (!g_ppHave || ppWaitMs(nowMs) != 0) return -1;
-  const PpHead *h = (const PpHead *)g_ppBuf;
-  const PpRec *r = (const PpRec *)(g_ppBuf + sizeof(PpHead));
-  // 差の大きい方から CAN_PP_MAX 個を残す(best は |差| の大きい順)
-  PpResult best[CAN_PP_MAX];
-  int bestD[CAN_PP_MAX];
-  int nb = 0, up = 0, down = 0;
-  platLock();
-  for (int i = 0; i < g_n; i++) {
-    const Entry &e = g_e[i];
-    const PpRec *p = nullptr;
-    for (int k = 0; k < h->n && !p; k++)
-      if (r[k].id == e.id && r[k].bus == e.bus && r[k].ext == e.ext) p = &r[k];
-    if (!p) continue;
-    uint8_t q, md[8];
-    ppStats(e, &q, md);
-    const int nbyte = e.dlc < p->dlc ? e.dlc : p->dlc;
-    for (int b = 0; b < nbyte; b++) {
-      if (!((p->quiet & q) >> b & 1)) continue;
-      const int d = (int)md[b] - (int)p->md[b];
-      const int ad = d < 0 ? -d : d;
-      if (ad < CAN_PP_MIN_DIFF) continue;
-      if (d > 0) up++;
-      else down++;
-      int at = nb;
-      while (at > 0 && (bestD[at - 1] < 0 ? -bestD[at - 1] : bestD[at - 1]) < ad) at--;
-      if (at >= CAN_PP_MAX) continue;
-      const int last = nb < CAN_PP_MAX ? nb : CAN_PP_MAX - 1;
-      for (int k = last; k > at; k--) {
-        best[k] = best[k - 1];
-        bestD[k] = bestD[k - 1];
-      }
-      best[at] = PpResult{ (uint16_t)i, (uint8_t)b, p->md[b], md[b] };
-      bestD[at] = d;
-      if (nb < CAN_PP_MAX) nb++;
-    }
-  }
-  platUnlock();
-  // 並べ方: 増えたもの(差の大きい順)のあとに減ったもの(差の大きい順)
-  int k = 0;
-  for (int pass = 0; pass < 2; pass++)
-    for (int i = 0; i < nb; i++)
-      if ((bestD[i] > 0) == (pass == 0)) g_ppRes[k++] = best[i];
-  g_ppResN = nb;
-  g_ppUp = up;
-  g_ppDown = down;
-  g_ppDone = true;
-  return up + down;
+  return ppPreCount() > 0;
 }
 
 bool ppHasResult() {
-  return g_ppDone;
+  return ppPostCount() > 0;
 }
 
-int ppResults(PpResult *out, int maxOut, int *up, int *down) {
-  if (up) *up = g_ppUp;
-  if (down) *down = g_ppDown;
-  const int n = g_ppResN < maxOut ? g_ppResN : maxOut;
-  for (int i = 0; i < n; i++) out[i] = g_ppRes[i];
-  return g_ppResN;
+bool ppStart(uint32_t nowMs) {
+  if (g_ppRec || ppWaitMs(nowMs) != 0 || !ppBuf()) return false;
+  const PpHead *h = ppHead();
+  if (h->nPre == 255 || h->nPost == 255) return false;  // 回数の上限(uint8_t で数えている)
+  platLock();
+  for (int i = 0; i < g_n; i++) {
+    g_e[i].wCnt = 0;
+    memset(g_e[i].wTog, 0, sizeof(g_e[i].wTog));
+  }
+  g_ppRecFrames = 0;
+  g_ppRecPost = h->nPre > h->nPost;
+  g_ppRecStart = nowMs;
+  g_ppRec = true;
+  platUnlock();
+  return true;
+}
+
+static int ppFindRec(uint32_t id, uint8_t bus, uint8_t ext) {
+  const PpHead *h = ppHead();
+  const PpRec *r = ppRecs();
+  for (int k = 0; k < h->n; k++)
+    if (r[k].id == id && r[k].bus == bus && r[k].ext == ext) return k;
+  return -1;
+}
+
+// 記録を数に入れる(platLock の中で呼ぶ)。post = 後の記録
+static void ppMergeLocked(bool post) {
+  PpHead *h = ppHead();
+  PpRec *r = ppRecs();
+  const bool first = h->nPre == 0 && h->nPost == 0;  // 1 回目の前: 受けた ID の、記録の間ずっと変わらなかったビットを全部候補にする
+  const bool firstPost = post && h->nPost == 0;       // 1 回目の後: 一覧に出す値を取る
+  static bool matched[CAN_MAX_IDS];
+  memset(matched, 0, sizeof(matched));
+  for (int i = 0; i < g_n; i++) {
+    const Entry &e = g_e[i];
+    int k = ppFindRec(e.id, e.bus, e.ext);
+    bool created = false;
+    if (k < 0) {
+      if (h->n >= CAN_MAX_IDS) continue;
+      k = h->n++;
+      memset(&r[k], 0, sizeof(PpRec));
+      r[k].id = e.id;
+      r[k].bus = e.bus;
+      r[k].ext = e.ext;
+      r[k].dlc = e.wCnt ? e.wDlc : e.dlc;
+      created = true;
+    }
+    matched[k] = true;
+    PpRec &p = r[k];
+    const bool seen = e.wCnt > 0;
+    if (seen) {
+      uint8_t &c = post ? p.seenPost : p.seenPre;
+      if (c < 255) c++;
+    }
+    if (seen && firstPost) memcpy(p.post, e.wFirst, 8);
+    if (first) {
+      memset(p.cand, 0, sizeof(p.cand));
+      if (seen) {
+        for (int b = 0; b < e.wDlc; b++) p.cand[b] = (uint8_t)~e.wTog[b];
+        memcpy(p.ref, e.wFirst, 8);
+        p.dlc = e.wDlc;
+      }
+    } else if (created || !seen) {
+      memset(p.cand, 0, sizeof(p.cand));  // 毎回の記録で受けた ID でなければ、ビットの候補にしない
+    } else {
+      const int nb = e.wDlc < p.dlc ? e.wDlc : p.dlc;
+      for (int b = 0; b < 8; b++) {
+        if (b >= nb) {
+          p.cand[b] = 0;
+          continue;
+        }
+        const uint8_t steady = (uint8_t)~e.wTog[b];
+        const uint8_t diff = (uint8_t)(e.wFirst[b] ^ p.ref[b]);
+        p.cand[b] &= (uint8_t)(steady & (post ? diff : (uint8_t)~diff));
+      }
+    }
+  }
+  for (int k = 0; k < h->n; k++)
+    if (!matched[k]) memset(r[k].cand, 0, sizeof(r[k].cand));  // 電源を入れてから一度も受けていない ID
+  if (post) h->nPost++;
+  else h->nPre++;
+}
+
+bool ppPoll(uint32_t nowMs) {
+  if (!g_ppRec || !g_ppBuf || ppRecLeftMs(nowMs) > 0) return false;
+  bool counted = false;
+  platLock();
+  g_ppRec = false;
+  if (g_ppRecFrames > 0) {  // 何も受けなかった記録は数に入れない(CANリーダーがつながっていない)
+    ppMergeLocked(g_ppRecPost);
+    counted = true;
+  }
+  platUnlock();
+  if (!counted) return true;
+  PpHead *h = ppHead();
+  if (h->nPost > 0) {  // 件数の移り変わり(後を記録してから)
+    if (h->nHist == CAN_REC_HIST) {
+      memmove(h->hist, h->hist + 1, sizeof(h->hist[0]) * (CAN_REC_HIST - 1));
+      h->nHist--;
+    }
+    const int c = ppResults(nullptr, 0);
+    h->hist[h->nHist++] = (uint16_t)(c < 65535 ? c : 65535);
+  }
+  platSaveCanPre(g_ppBuf, sizeof(PpHead) + sizeof(PpRec) * (size_t)h->n);  // 書けなくても、電源を切るまでは使える
+  return true;
+}
+
+static int ppFindEntryLocked(uint32_t id, uint8_t bus, uint8_t ext) {
+  for (int i = 0; i < g_n; i++)
+    if (g_e[i].id == id && g_e[i].bus == bus && g_e[i].ext == ext) return i;
+  return -1;
+}
+
+int ppResults(PpResult *out, int maxOut) {
+  if (!g_ppBuf) return 0;
+  const PpHead *h = ppHead();
+  const PpRec *r = ppRecs();
+  if (h->nPre == 0 || h->nPost == 0) return 0;
+  // 並べ方: C-CAN → B-CAN、ID の小さい順(記録の並びは見つけた順なので、毎回並べ直す)
+  static uint8_t order[CAN_MAX_IDS];
+  const int n = h->n;
+  for (int k = 0; k < n; k++) order[k] = (uint8_t)k;
+  for (int a = 1; a < n; a++) {
+    const uint8_t t = order[a];
+    int b = a;
+    while (b > 0 && (r[order[b - 1]].bus > r[t].bus || (r[order[b - 1]].bus == r[t].bus && r[order[b - 1]].id > r[t].id))) {
+      order[b] = order[b - 1];
+      b--;
+    }
+    order[b] = t;
+  }
+  int total = 0;
+  platLock();
+  for (int a = 0; a < n; a++) {
+    const PpRec &p = r[order[a]];
+    PpResult q;
+    memset(&q, 0, sizeof(q));
+    q.id = p.id;
+    q.bus = p.bus;
+    q.ext = p.ext;
+    q.entry = -1;
+    int nq = 0;  // この ID の候補の数
+    if (p.seenPre == h->nPre && p.seenPost == 0) {
+      q.kind = PP_GONE;
+      nq = 1;
+    } else if (p.seenPre == 0 && p.seenPost == h->nPost) {
+      q.kind = PP_NEW;
+      nq = 1;
+    } else {
+      for (int b = 0; b < 8; b++) nq += p.cand[b] ? 1 : 0;
+    }
+    if (nq == 0) continue;
+    if (out && total < maxOut) q.entry = (int16_t)ppFindEntryLocked(p.id, p.bus, p.ext);
+    if (q.kind != PP_BITS) {
+      if (out && total < maxOut) out[total] = q;
+      total++;
+      continue;
+    }
+    for (int b = 0; b < 8; b++) {
+      if (!p.cand[b]) continue;
+      q.byte = (uint8_t)b;
+      q.mask = p.cand[b];
+      q.pre = p.ref[b];
+      q.post = p.post[b];
+      if (out && total < maxOut) out[total] = q;
+      total++;
+    }
+  }
+  platUnlock();
+  return total;
+}
+
+int ppHistory(int *out) {
+  if (!g_ppBuf) return 0;
+  const PpHead *h = ppHead();
+  for (int i = 0; i < h->nHist; i++) out[i] = h->hist[i];
+  return h->nHist;
 }
 
 void ppClear() {
-  g_ppHave = false;
-  g_ppDone = false;
-  g_ppResN = g_ppUp = g_ppDown = 0;
+  platLock();
+  g_ppRec = false;
+  platUnlock();
+  if (g_ppBuf) ppReset();
   platSaveCanPre(nullptr, 0);
 }
 

@@ -169,9 +169,9 @@ void platCanFrame(uint8_t bus, uint8_t ext, uint32_t id, uint8_t dlc, const uint
 void platResetImuCal();
 // 3000rpm 超・以下の累計時間を今すぐ NVS に書く(「時間の記録」のリセットのあと)。ふだんは TIME_SAVE_MS ごとに書く
 void platSaveTimes();
-// CAN確認の「前後で比べる」の前の記録(2.6.0)を保存する(n = 0 なら消す)。書けたら true
+// CAN確認の「前後で比べる」の記録(2.6.0。2.16.0 からは前・後の全部の記録)を保存する(n = 0 なら消す)。書けたら true
 bool platSaveCanPre(const void *data, size_t n);
-// 保存した前の記録を読む。戻り値は読んだバイト数(無い・入らないときは 0)
+// 保存した記録を読む。戻り値は読んだバイト数(無い・入らないときは 0)
 size_t platLoadCanPre(void *data, size_t maxN);
 // 走行記録の保存領域(2.15.0。基板ではパーティション spiffs。PC 上の試験では RAM)。off は先頭からのバイト。
 // platOdoErase は ODO_SECTOR_BYTES の区切りの単位(off・n とも区切りに合っている)。どれも、できたら true
@@ -274,20 +274,38 @@ int candidates(uint16_t *entries, uint8_t *masks, int maxOut);
 bool getView(int entry, View *out);
 // 古い順に並べた値を out(CAN_HIST_SAMPLES 個)へ入れる。戻り値は入れた個数
 int getHistory(int entry, int byteIndex, uint8_t *out);
-// ---- 前後で比べる(2.6.0。config.h の CAN_PP_*)。前の記録は platSaveCanPre で保存し、begin で読み戻す
+// ---- 前後で比べる(2.6.0。2.16.0 で作り直し。config.h の CAN_PP_*)。「前」と「後」を交互に何回でも記録し、毎回同じように分かれるものを残す。
+// 1 回の記録 = 下「前を記録」「後を記録」を押してから CAN_PP_WIN_MS のあいだ受けたフレーム。候補は次の 3 種類:
+//   PP_BITS = 毎回の記録の間ずっと変わらなかったビットで、前ではいつも同じ値、後ではいつもその逆(ESC の状態のようなスイッチの信号)
+//   PP_GONE = 前では毎回受けて、後では一度も受けなかった ID(後は受信なし)
+//   PP_NEW  = 前では一度も受けず、後では毎回受けた ID(前は受信なし)
+// 記録は platSaveCanPre で保存し、begin で読み戻す(電源を切っても続けられる)
+enum PpKind : uint8_t { PP_BITS, PP_GONE, PP_NEW };
 struct PpResult {
-  uint16_t entry;  // 表の番号
-  uint8_t byte;    // バイトの位置
-  uint8_t pre, post;  // 前と後の真ん中の値
+  int16_t entry;   // 表の番号(今は受けていない ID は -1)
+  uint8_t kind;    // PpKind
+  uint8_t bus;     // 0 = C-CAN、1 = B-CAN
+  uint8_t ext;     // 1 = 29 ビット ID
+  uint8_t byte;    // バイトの位置(PP_BITS)
+  uint8_t mask;    // 候補のビット(PP_BITS)
+  uint8_t pre, post;  // 1 回目の前と 1 回目の後の、そのバイトの値(PP_BITS)
+  uint32_t id;
 };
-int ppWaitMs(uint32_t nowMs);      // 記録できるまでの残り [ms](0 = 今できる。-1 = まだ何も受けていない)
-bool ppRecordPre(uint32_t nowMs);  // 直前 CAN_PP_WIN_MS を「前」にして保存する(候補は消す)。記録できないときは false
-bool ppHasPre();
-int ppRecordPost(uint32_t nowMs);  // 直前 CAN_PP_WIN_MS を「後」にして、前と比べた候補を作る。戻り値 = 候補の数(-1 = 記録できない)
-bool ppHasResult();
-// 候補(増えたもの → 減ったもの、それぞれ差の大きい順)。戻り値は全部の数。up・down に増えた・減ったの数
-int ppResults(PpResult *out, int maxOut, int *up = nullptr, int *down = nullptr);
-void ppClear();  // 前の記録(保存も)と候補を消す
+int ppWaitMs(uint32_t nowMs);     // 記録を始められるまでの残り [ms](0 = 今できる。-1 = まだ何も受けていない)
+bool ppStart(uint32_t nowMs);     // 次の記録(前・後は交互。ppNextIsPost)を始める。始められないとき(待ち・記録中)は false
+bool ppPoll(uint32_t nowMs);      // 記録の終わりを見る(UI から毎回呼ぶ)。CAN_PP_WIN_MS たったら数に入れて保存する。終わったら true
+bool ppRecording();               // 記録中
+int ppRecLeftMs(uint32_t nowMs);  // 記録中の残り [ms](記録中でなければ 0)
+bool ppNextIsPost();              // 次(記録中はその記録)は「後」
+int ppPreCount();                 // 前を記録した回数
+int ppPostCount();                // 後を記録した回数
+bool ppHasPre();                  // 前を 1 回以上記録した
+bool ppHasResult();               // 後を 1 回以上記録した(候補を出せる)
+// 候補(C-CAN → B-CAN、ID の小さい順、バイトの順)。戻り値は全部の数(out に入れるのは maxOut まで)
+int ppResults(PpResult *out, int maxOut);
+// 件数の移り変わり(後を記録してからの記録ごと。古い順、最大 CAN_REC_HIST 個)。戻り値は入れた個数
+int ppHistory(int *out);
+void ppClear();  // 記録(保存も)と候補を消す
 }
 
 // ---------------------------------------------------------------- trip

@@ -643,7 +643,7 @@ static void drawClockTicks() {
   }
 }
 
-// ---- 針(2.11.0: Apple Watch 風。時針・分針は四角の枠と中の 2 色、秒針は縁の付いた赤の正三角形。config.h の HAND_*・SEC_*)。
+// ---- 針(2.11.0: Apple Watch 風の四角。2.16.0: 時針・分針は塗りつぶしで、色で見分ける。秒針は縁の付いた赤の正三角形。config.h の HAND_*・SEC_*)。
 // 時針・分針・秒針の順に下から描く。角度は 1/4 度(3 時が 0°、時計回り)。-1 = 出さない(時刻が分からない)
 static int16_t g_handK[3] = { -1, -1, -1 };  // 画面に描いてある針の角度
 // 今の時刻の針の角度。時針は分と秒の分も、分針は秒の分も進める(1/4 度に丸める)
@@ -702,10 +702,10 @@ static void secInner(int key, gfx::Pt p[3]) {
   // 内側の三角の先は、外側の先から 2 × SEC_FRAME(正三角形の先は、縁の幅の 2 倍だけ内へ入る)
   triPoints(key, SEC_TRI_R_TIP - 2.0f * SEC_FRAME, SEC_TRI_SIDE * (ri - d) / ri, p);
 }
-// 時針・分針の枠の外側(i = 0 時針、1 分針)
+// 時針・分針の縁の外側(i = 0 時針、1 分針)。塗りはこの HAND_EDGE 内側
 static int handOuter(int i, int key, gfx::Pt *p) {
   const float rOut = i == 0 ? HAND_H_R_OUT : HAND_M_R_OUT;
-  return rrectPoints(key, HAND_R_IN, rOut, HAND_W + HAND_FRAME, HAND_CORNER + HAND_FRAME * 0.5f, p);
+  return rrectPoints(key, HAND_R_IN, rOut, HAND_W + 2.0f * HAND_EDGE, HAND_CORNER + HAND_EDGE, p);
 }
 static gfx::Rect handRect(int i, int key) {
   gfx::Pt p[20];
@@ -715,12 +715,16 @@ static gfx::Rect handRect(int i, int key) {
   }
   return ptsRect(p, handOuter(i, key, p));
 }
-// 色: 暗い背景(黒・緑・赤)は枠が白・中が黒、明るい背景(黄)は枠が黒・中が白(本人「枠白中黒　背景が明るい場合は逆」)。秒針の縁は枠と同じ色
-static uint16_t handFrameOn(uint16_t bg) {
+// 色(2.16.0。本人 11/12「時計の短針と長針の枠のみから塗りつぶし＋色分け」「青はちょっと醜いですね。黄色で行きます」): 時針は HAND_H_RGB(白)、
+// 分針は HAND_M_RGB(黄)で塗りつぶす。背景が明るい(黄)ときは、黄の分針が見えないので紺(ピークの回転数と同じ決まり。peakColOn)。時針は
+// どの背景でも同じ色。まわりに細い黒の縁(HAND_EDGE_RGB。黒の背景では見えない。弧・目盛・アイコンの上と、黄・赤の背景で針の形を分ける)。
+// 2.11.0〜2.15.x は枠と中の 2 色(暗い背景は枠が白・中が黒、明るい背景は逆)。秒針の縁は今もその枠の色(暗い背景は白、明るい背景は黒)
+static uint16_t secEdgeOn(uint16_t bg) {
   return isBright(bg) ? rgb(0x000000) : C_WHITE;
 }
-static uint16_t handInnerOn(uint16_t bg) {
-  return isBright(bg) ? C_WHITE : rgb(0x000000);
+static uint16_t handColOn(int i, uint16_t bg) {  // i = 0 時針、1 分針
+  if (i == 0) return rgb(HAND_H_RGB);
+  return isBright(bg) ? fgOn(bg) : rgb(HAND_M_RGB);
 }
 static void drawHand(int i, int key) {
   gfx::Pt p[20];
@@ -728,23 +732,22 @@ static void drawHand(int i, int key) {
     secOuter(key, p);
     gfx::polyBegin(ptsRect(p, 3));
     gfx::polyAdd(p, 3);
-    gfx::polyFill(fadeOn(g_bgCol, handFrameOn(g_bgCol)));
+    gfx::polyFill(fadeOn(g_bgCol, secEdgeOn(g_bgCol)));
     secInner(key, p);
     gfx::polyBegin(ptsRect(p, 3));
     gfx::polyAdd(p, 3);
     gfx::polyFill(fadeOn(g_bgCol, rgb(SEC_RGB)));
     return;
   }
-  int n = handOuter(i, key, p);
+  int n = handOuter(i, key, p);  // 縁(外側の形)を塗ってから、その HAND_EDGE 内側を針の色で塗りつぶす
   gfx::polyBegin(ptsRect(p, n));
   gfx::polyAdd(p, n);
-  gfx::polyFill(fadeOn(g_bgCol, handFrameOn(g_bgCol)));
+  gfx::polyFill(fadeOn(g_bgCol, rgb(HAND_EDGE_RGB)));
   const float rOut = i == 0 ? HAND_H_R_OUT : HAND_M_R_OUT;
-  const float rc = HAND_CORNER - HAND_FRAME * 0.5f;
-  n = rrectPoints(key, HAND_R_IN + HAND_FRAME, rOut - HAND_FRAME, HAND_W - HAND_FRAME, rc > 0 ? rc : 0, p);
+  n = rrectPoints(key, HAND_R_IN + HAND_EDGE, rOut - HAND_EDGE, HAND_W, HAND_CORNER, p);
   gfx::polyBegin(ptsRect(p, n));
   gfx::polyAdd(p, n);
-  gfx::polyFill(fadeOn(g_bgCol, handInnerOn(g_bgCol)));
+  gfx::polyFill(fadeOn(g_bgCol, handColOn(i, g_bgCol)));
 }
 // 針を k へ動かす。er[0..done) はもう g_drvFace から写した四角(内側を描き直した所)。そこに掛かる針と、動いた針の前の所・今の所を
 // 写して消し、消した所に掛かる針も全部(下の針に重なるときは、その上の針も)描き直す
@@ -907,7 +910,7 @@ static int centerLines(uint8_t mode) {
   return mode == CM_LOAD || mode == CM_STATUS ? 4 : (mode == CM_NONE ? 0 : 1);  // CM_CLOCK は 1 行
 }
 // 行 i の範囲(行だけを描き直すときは、この四角を g_drvBase から戻してから描く)。文字の全部が入り、ほかの行と重ならない。
-// どれも真ん中の四角 CB_RECT の中で、画素の中心が半径 114 以内(針は半径 HAND_R_IN − HAND_EDGE から外なので掛からない)。
+// どれも真ん中の四角 CB_RECT の中で、画素の中心が半径 114 以内(針は縁も含めて半径 HAND_R_IN から外なので掛からない)。
 // ピークの数字(4 桁で幅 190)と GPS の「衛星 12」は、アイコンの四角の端に少し入る(戻すのは g_drvBase なので、アイコンも元のまま)
 static gfx::Rect centerLineRect(uint8_t mode, int i) {
   static const gfx::Rect LOAD_R[4] = { { 185, 158, 281, 182 }, { 143, 182, 323, 213 }, { 140, 213, 327, 265 }, { 150, 266, 316, 296 } };  // 2.11.0: タイトルを大きく
@@ -2584,10 +2587,10 @@ static void canItems(const LinkStats &ls, uint32_t now, InfoItem *it) {
   if (nh) snprintf(k.value, sizeof(k.value), "候補 %d 件 記録 %d 回", hist[nh - 1], rec);
   else snprintf(k.value, sizeof(k.value), "記録 %d 回", rec);
   k.act = A_OPEN_CAN;
-  // 前後で比べる(2.6.0。CAN の最後のページ)。判定なし
+  // 前後で比べる(2.6.0。CAN の最後のページ)。判定なし。2.16.0: 記録中は「記録中」、後を記録したら候補の数
   InfoItem &q = it[P_CAN_PP];
-  int up = 0, down = 0;
-  if (cantab::ppHasResult()) cantab::ppResults(nullptr, 0, &up, &down), snprintf(q.value, sizeof(q.value), "候補 %d 件", up + down);
+  if (cantab::ppRecording()) snprintf(q.value, sizeof(q.value), "記録中");
+  else if (cantab::ppHasResult()) snprintf(q.value, sizeof(q.value), "候補 %d 件", cantab::ppResults(nullptr, 0));
   else snprintf(q.value, sizeof(q.value), "%s", cantab::ppHasPre() ? "前を記録した" : "記録なし");
   q.act = A_OPEN_CANPP;
 }
@@ -3349,7 +3352,7 @@ static int listEntry(int i) {  // 一覧の i 番目の表の番号
   return (i >= 0 && i < CAN_LIST_MAX) ? g_candE[i] : -1;
 }
 static uint8_t listMask(int i) {  // 一覧の i 番目の候補のバイトの印
-  if (g_canPp) return (i >= 0 && i < CAN_PP_MAX) ? (uint8_t)(1u << (g_ppList[i].byte & 7)) : 0;
+  if (g_canPp) return (i >= 0 && i < CAN_PP_MAX && g_ppList[i].kind == cantab::PP_BITS) ? (uint8_t)(1u << (g_ppList[i].byte & 7)) : 0;
   return (i >= 0 && i < CAN_LIST_MAX) ? g_candM[i] : 0;
 }
 static int g_detEntry = -1, g_detByte = 0;
@@ -3422,6 +3425,7 @@ static void drawCanGrid(const cantab::View &v, uint8_t mask, int sel, int y0, bo
     textC(FONT_MONO600_38, (float)x, (float)y, t, !have ? C_LABEL : ((mask >> i & 1) ? C_ACCENT : C_WHITE));
   }
 }
+static bool g_canIdLive = false;  // 一覧に描いてある候補を、今受けている(2.16.0。前後で比べるの「後は受信なし」などは受けていないことがある)
 static void updCanId() {
   const int shown = listCount();
   if (shown == 0) {  // 候補がなくなった(やり直した): CAN の画面へ
@@ -3430,30 +3434,41 @@ static void updCanId() {
   }
   if (g_canIdx >= shown) g_canIdx = 0;
   cantab::View v;
-  if (!cantab::getView(listEntry(g_canIdx), &v)) return;
+  const bool live = cantab::getView(listEntry(g_canIdx), &v);
+  if (!live && !g_canPp) return;
+  if (!g_full && live != g_canIdLive) g_full = true;  // 受け始めた・受けなくなった: 全部を描き直す
   bool full = g_full;
   if (full) {
     g_full = false;
+    g_canIdLive = live;
     gfx::fillAll(C_BG);
     g_tagsDirty = true;
     drawTopBack();
     char id[16], t[32];
-    fmtId(id, sizeof(id), v.id, v.ext);
-    snprintf(t, sizeof(t), "%s %s", v.bus ? "B-CAN" : "C-CAN", id);
+    if (g_canPp) {  // 2.16.0: ID は候補から(今は受けていないこともある)
+      const cantab::PpResult &r = g_ppList[g_canIdx];
+      fmtId(id, sizeof(id), r.id, r.ext);
+      snprintf(t, sizeof(t), "%s %s", r.bus ? "B-CAN" : "C-CAN", id);
+    } else {
+      fmtId(id, sizeof(id), v.id, v.ext);
+      snprintf(t, sizeof(t), "%s %s", v.bus ? "B-CAN" : "C-CAN", id);
+    }
     fitTextC(FP_NAME, 3, 330, 233, 184, t, C_LABEL2);
-    if (g_canPp) {  // 2.6.0: 何番目か、候補のバイト、前と後の真ん中の値と差
+    if (g_canPp) {  // 2.16.0: 何番目か。ビットは「b0 & 02  01 → 03」(バイト & 候補のビット、1 回目の前 → 1 回目の後のそのバイトの値)
       const cantab::PpResult &r = g_ppList[g_canIdx];
       char u[64];
-      snprintf(u, sizeof(u), "%d/%d  b%d  %d → %d  %+d", g_canIdx + 1, shown, r.byte, r.pre, r.post, (int)r.post - (int)r.pre);
+      if (r.kind == cantab::PP_BITS) snprintf(u, sizeof(u), "%d/%d  b%d & %02X  %02X → %02X", g_canIdx + 1, shown, r.byte, r.mask, r.pre, r.post);
+      else snprintf(u, sizeof(u), "%d/%d  %s", g_canIdx + 1, shown, r.kind == cantab::PP_GONE ? "後は受信なし" : "前は受信なし");
       mixDraw(FONT_NUM600_28, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_28, FONT_JP600_30, u) * 0.5f, 336, u, C_LABEL);
     } else {
       snprintf(t, sizeof(t), "%d / %d", g_canIdx + 1, shown);
       textC(FONT_NUM600_28, 233, 336, t, C_LABEL);
     }
     drawSideArrows();
-    drawOpenBand();  // 2.4.4: 長押しで詳細
+    if (live) drawOpenBand();  // 2.4.4: 長押しで詳細(今は受けていない ID は詳細なし)
+    else textC(FONT_JP600_30, 233, 268, "今は受信していない", C_LABEL);
   }
-  drawCanGrid(v, listMask(g_canIdx), -1, 250, full);
+  if (live) drawCanGrid(v, listMask(g_canIdx), -1, 250, full);
 }
 
 // 詳細のグラフ(新しい値が右端)
@@ -3536,8 +3551,8 @@ static void updCanRedo() {
   drawTopBack();
   drawName("やり直す");
   char t[48];
-  if (g_canPp) {  // 2.6.0
-    snprintf(t, sizeof(t), "前の記録と候補を消す");
+  if (g_canPp) {  // 2.6.0。2.16.0: 前・後の記録を全部
+    snprintf(t, sizeof(t), "前と後の記録を消す");
     mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, t) * 0.5f, 277, t, C_LABEL2);
   } else {
     snprintf(t, sizeof(t), "記録 %d 回を消して", cantab::recordCount());
@@ -3547,20 +3562,24 @@ static void updCanRedo() {
   drawBottom("やり直す", C_BAND_RED, C_WHITE);
 }
 
-// ---- 前後で比べる(2.6.0。設定 → 受信の状態 → CAN の最後のページの下「長押しで開く」。config.h の CAN_PP_*)
-// 下「前を記録」(前の記録が無いとき)・「後を記録」(あるとき)。前も後もエンジンがかかっている間に記録する(2.7.0。案内の字)。
-// 受信が始まって CAN_PP_SETTLE_MS たつまでは、帯に残りの秒を灰で出す
-// (押しても何もしない)。候補ができたら、件数と「増えた・減った」の数。左半分「やり直す」(確認へ)、右半分「一覧」(1 バイトずつ、前 → 後)
+// ---- 前後で比べる(2.6.0。2.16.0 で作り直し。設定 → 受信の状態 → CAN の最後のページの下「長押しで開く」。config.h の CAN_PP_*)
+// 下「前を記録」「後を記録」(交互。1 回目は前)。押すと CAN_PP_WIN_MS のあいだ記録し(帯に「記録中 n 秒」を灰で)、終わったら数に入れて
+// 保存する(電源を切っても続く)。受信が始まって CAN_PP_SETTLE_MS たつまでは、帯に残りの秒を灰で出す(押しても何もしない)。
+// 後を記録したら、候補の件数・前と後の回数・件数の移り変わり。左半分「やり直す」(確認へ)、右半分「一覧」(1 件ずつ)
 static char g_canPpKey[64];
-static const uint16_t C_PP_WAIT = rgb(0x5A606A);  // 記録できるまでの下の帯の字(灰。長押しを取り消したときの帯の字と同じ色)
+static const uint16_t C_PP_WAIT = rgb(0x5A606A);  // 押せないときの下の帯の字(灰。長押しを取り消したときの帯の字と同じ色)
 static void updCanPp(uint32_t now) {
   const int wait = cantab::ppWaitMs(now);
-  const bool pre = cantab::ppHasPre(), done = cantab::ppHasResult();
-  int up = 0, down = 0;
-  const int stored = done ? cantab::ppResults(nullptr, 0, &up, &down) : 0;
+  const bool rec = cantab::ppRecording();
+  const int leftS = rec ? (cantab::ppRecLeftMs(now) + 999) / 1000 : 0;
+  const int nPre = cantab::ppPreCount(), nPost = cantab::ppPostCount();
+  const bool post = cantab::ppNextIsPost();  // 次(記録中はその記録)は後
+  const int cnt = nPost ? cantab::ppResults(nullptr, 0) : 0;
+  int hist[CAN_REC_HIST];
+  const int nh = cantab::ppHistory(hist);
   const int waitS = wait < 0 ? -1 : (wait + 999) / 1000;
   char key[64];
-  snprintf(key, sizeof(key), "%d|%d|%d|%d|%d|%d", pre, done, up, down, stored, waitS);
+  snprintf(key, sizeof(key), "%d|%d|%d|%d|%d|%d|%d|%d", rec, leftS, nPre, nPost, cnt, nh, nh ? hist[nh - 1] : -1, waitS);
   if (!g_full && strcmp(key, g_canPpKey) == 0) return;
   g_full = false;
   strncpy(g_canPpKey, key, sizeof(g_canPpKey) - 1);
@@ -3570,37 +3589,49 @@ static void updCanPp(uint32_t now) {
   drawTopBack();
   drawName("前後で比べる");
   char t[64];
-  if (done) {
-    snprintf(t, sizeof(t), "%d", up + down);
+  if (rec) {  // 記録中: 状態を変えないで待つ
+    const char *m = post ? "後を記録中" : "前を記録中";
+    mixDraw(FONT_NUM600_34, FONT_JP600_34, 233 - mixWidth(FONT_NUM600_34, FONT_JP600_34, m) * 0.5f, 256, m, C_WHITE);
+    textC(FONT_JP600_30, 233, 300, "そのまま待つ", C_LABEL);
+  } else if (nPost > 0) {  // 候補の件数、前と後の回数、件数の移り変わり(後を記録してから)
+    snprintf(t, sizeof(t), "%d", cnt);
     drawBigValue(t, "件", 258, C_WHITE, 200);
-    snprintf(t, sizeof(t), "増えた %d 減った %d", up, down);
+    snprintf(t, sizeof(t), "前 %d 回 後 %d 回", nPre, nPost);
     mixDraw(FONT_NUM600_28, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_28, FONT_JP600_30, t) * 0.5f, 298, t, C_WHITE);
-    textC(FONT_JP500_24, 233, 330, "前と後で違うバイト", C_LABEL);
-  } else if (pre) {  // 左の「やり直す」に寄らないよう 34 px。2.7.0: 後もエンジンがかかっている間に記録する
+    t[0] = 0;
+    for (int i = 0; i < nh; i++) {
+      char a[16];
+      snprintf(a, sizeof(a), i ? " → %d" : "%d", hist[i]);
+      strncat(t, a, sizeof(t) - 1 - strlen(t));
+    }
+    mixDraw(FONT_NUM600_24, FONT_JP500_24, 233 - mixWidth(FONT_NUM600_24, FONT_JP500_24, t) * 0.5f, 330, t, C_LABEL);
+  } else if (nPre > 0) {  // 前だけ記録した
     mixDraw(FONT_NUM600_34, FONT_JP600_34, 233 - mixWidth(FONT_NUM600_34, FONT_JP600_34, "前を記録した") * 0.5f, 256, "前を記録した", C_WHITE);
-    textC(FONT_JP600_30, 233, 300, "給油してエンジンを", C_LABEL);
-    textC(FONT_JP600_30, 233, 334, "かけたら「後を記録」", C_LABEL);
-  } else {  // 2.7.0: 前はエンジンを切る前に記録する(燃料などはエンジンが止まると 0 になり、前の 10 秒に入ると候補から外れる)
+    textC(FONT_JP600_30, 233, 300, "状態を変えて", C_LABEL);
+    textC(FONT_JP600_30, 233, 334, "「後を記録」", C_LABEL);
+  } else {
     mixDraw(FONT_NUM600_44, FONT_JP600_44, 233 - mixWidth(FONT_NUM600_44, FONT_JP600_44, "記録なし") * 0.5f, 256, "記録なし", C_WHITE);
-    snprintf(t, sizeof(t), "止まって %d 秒たったら", CAN_PP_WIN_MS / 1000);
-    mixDraw(FONT_NUM600_30, FONT_JP600_30, 233 - mixWidth(FONT_NUM600_30, FONT_JP600_30, t) * 0.5f, 300, t, C_LABEL);
-    textC(FONT_JP600_30, 233, 334, "エンジンを切る前に記録", C_LABEL);
+    textC(FONT_JP600_30, 233, 300, "今の状態で「前を記録」", C_LABEL);
+    textC(FONT_JP600_30, 233, 334, "状態を変えて「後を記録」", C_LABEL);
   }
-  if (pre) {
+  if (nPre > 0 || rec) {
     textC(FONT_JP600_30, 62, 244, "やり", C_ACCENT);
     textC(FONT_JP600_30, 62, 276, "直す", C_ACCENT);
   }
-  if (done && stored > 0) {
+  if (nPost > 0 && cnt > 0) {
     textC(FONT_JP600_30, 404, 244, "一覧", C_ACCENT);
     bigChevron(404, 268, 26, 1, C_ACCENT, 8.0f, 2.5f);
   }
   if (wait < 0) {
     drawBottom("受信なし", C_BAND_BOT, C_PP_WAIT);
+  } else if (rec) {
+    snprintf(t, sizeof(t), "記録中 %d 秒", leftS);
+    drawBottom(t, C_BAND_BOT, C_PP_WAIT);
   } else if (wait > 0) {
     snprintf(t, sizeof(t), "待ち %d 秒", waitS);
     drawBottom(t, C_BAND_BOT, C_PP_WAIT);
   } else {
-    drawBottom(pre ? "後を記録" : "前を記録");
+    drawBottom(post ? "後を記録" : "前を記録");
   }
 }
 
@@ -4161,7 +4192,7 @@ static bool menuOpenable() {
     case SC_SET_GRP:
       return g_grpAct != A_NONE;
     case SC_CAN_ID:
-      return g_canIdx < g_listN;
+      return g_canIdx < g_listN && listEntry(g_canIdx) >= 0;  // 2.16.0: 今は受けていない候補(前後で比べる)は詳細なし
     case SC_ODO:  // 2.15.0: 細かい方へ
       return odoCanOpen();
     default:
@@ -4229,6 +4260,7 @@ static void menuOpen() {
       }
       break;
     case SC_CAN_ID:
+      if (listEntry(g_canIdx) < 0) break;  // 2.16.0: 今は受けていない候補
       g_detEntry = listEntry(g_canIdx);
       g_detByte = 0;
       for (int b = 0; b < 8; b++) {
@@ -4303,7 +4335,7 @@ static bool tapBand(int z, uint32_t now) {
     case SC_CAN_REDO:
       return true;
     case SC_CAN_PP:
-      return cantab::ppWaitMs(now) == 0;
+      return cantab::ppWaitMs(now) == 0 && !cantab::ppRecording();  // 2.16.0: 記録中は押せない
     default:
       return false;
   }
@@ -4533,10 +4565,9 @@ void tap(int x, int y, uint32_t nowMs) {
       if (z == Z_TOP) {
         go(SC_SET_GRP);  // 受信の状態 → CAN の「前後で比べる」のページへ
       } else if (z == Z_BOT) {
-        if (cantab::ppHasPre()) cantab::ppRecordPost(nowMs);  // 記録できるまでは何もしない(帯に残りの秒)
-        else cantab::ppRecordPre(nowMs);
+        cantab::ppStart(nowMs);  // 2.16.0: 前・後は交互。記録できるまでと記録中は何もしない(帯に残りの秒)
         g_full = true;
-      } else if (z == Z_LEFT && cantab::ppHasPre()) {
+      } else if (z == Z_LEFT && (cantab::ppHasPre() || cantab::ppRecording())) {
         g_canPp = true;
         go(SC_CAN_REDO);
       } else if (z == Z_RIGHT && cantab::ppHasResult() && cantab::ppResults(nullptr, 0) > 0) {
@@ -4724,6 +4755,7 @@ void update(const Signals &s, const LinkStats &ls, const PerfStats &ps, const Sy
   tachRedTrack(s);    // タコの目盛と針を赤にするか(どの画面でも。2.4.0)
   idleTrack(s, now);  // 3000rpm 以下の経過時間(どの画面でも)
   infoTrack(ls, si, now);  // 受信の状態の判定のための記録(どの画面でも)
+  cantab::ppPoll(now);     // 2.16.0: 前後で比べるの記録の終わり(どの画面でも。終わったら数に入れて保存する)
   if (g_sc == SC_OPENING) {
     updOpening(s, ls, si, now);
     if (g_sc == SC_OPENING) return;  // 「SIM」の印は出さない

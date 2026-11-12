@@ -43,10 +43,9 @@
  *   データ = 自己診断。config.h の OPENING_ON・OPC_*・OPT_*・OPD_*。タッチで飛ばせる)。2026-10-21、2.5.0 で 3 種類に
  *
  * CAN の ID 探し: 設定 → 受信の状態 → CAN の「CAN確認」(操作の前後で「変化を記録」を押して絞る。スイッチのような値)と、最後のページ
- *   「前後で比べる」(2.6.0。燃料のようにゆっくり変わる値)。前後で比べるは、止まって 10 秒たったら、エンジンを切る前に「前を記録」→
- *   電源を切って給油など → 入れ直してエンジンをかけ、15 秒たったら「後を記録」(2.7.0: 前も後もエンジンがかかっている間。燃料の
- *   0A18A000 b5 はエンジンが止まると 0 になる)。前も後も変化が少なく、差が 5 以上のバイトを、増えたもの・減ったものの順に一覧で出す。
- *   前の記録は保存されるので、電源を切っても残る(config.h の CAN_PP_*)
+ *   「前後で比べる」(2.6.0。2.16.0 で作り直し)。前後で比べるは「前を記録」「後を記録」を交互に何回でも押す(押してから 10 秒受けたものが
+ *   1 回の記録)。毎回の記録の間ずっと変わらず、前ではいつも同じ値・後ではいつもその逆のビットと、後は受信なし・前は受信なしの ID を
+ *   一覧で出す。記録は保存されるので、電源を切っても続けられる(制御 OFF のように、エンジンをかけ直さないと戻らない切り替え。config.h の CAN_PP_*)
  *
  * デモ表示: 設定の最後の項目「デモ」を「入」にすると、XIAO をつながずに模擬の値(c6_display_debug と同じ場面 1〜9)を出す。
  *   入の間は UART を読まない。画面の下に「SIM」、上に場面番号が出る。設定は保存され、電源を入れ直しても続く。
@@ -655,7 +654,7 @@ static void saveTimes(uint32_t now, bool force) {
 void platSaveTimes() {
   saveTimes(millis(), true);
 }
-// CAN確認の「前後で比べる」の前の記録(2.6.0。給油などで電源を切っても残す)。n = 0 なら消す
+// CAN確認の「前後で比べる」の記録(2.6.0。2.16.0 からは前・後の全部の記録。電源を切っても残す)。n = 0 なら消す
 bool platSaveCanPre(const void *data, size_t n) {
   if (!g_sys.nvsOk) return false;
   mlink::graceUntil(millis() + 5000);  // フラッシュへ書く間の UART の取りこぼしを線の品質に入れない
@@ -666,7 +665,7 @@ bool platSaveCanPre(const void *data, size_t n) {
     ok = g_prefs.putBytes("canpre", data, n) == n;
   }
   mlink::graceUntil(millis() + 200);
-  Serial.printf("CAN確認(前後で比べる): 前の記録を%s %s(%u バイト)\n", n ? "保存" : "消去", ok ? "OK" : "失敗", (unsigned)n);
+  Serial.printf("CAN確認(前後で比べる): 記録を%s %s(%u バイト)\n", n ? "保存" : "消去", ok ? "OK" : "失敗", (unsigned)n);
   return ok;
 }
 size_t platLoadCanPre(void *data, size_t maxN) {
