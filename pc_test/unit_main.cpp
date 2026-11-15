@@ -1313,6 +1313,7 @@ int main() {
     ui::update(b, ls, ps, si, td);
     auto px = [&](int x, int y) { return fb[y * gfx::W + x]; };
     const uint16_t BLACK = gfx::rgb(0x000000), RED = gfx::rgb(0xE3241B), DIMRED = gfx::rgb(0x8E130D), PALE = gfx::rgb(0xE0B000), WHITE = gfx::rgb(0xFFFFFF);
+    const uint16_t FILL = gfx::rgb(ARC_FILL_RGB);  // 弧の伸びた所(2.17.0: 白を暗くした色。2.16.0 までは白)
     auto arcPx = [&](float deg) {  // 弧の太さの真ん中の画素
       const float a = deg * 3.14159265f / 180.0f, r = (ARC_R_IN + ARC_R_OUT) * 0.5f;
       return px((int)(233 + r * cosf(a)), (int)(233 + r * sinf(a)));
@@ -1321,7 +1322,7 @@ int main() {
     const float water80 = WATER_ARC_START_DEG + ARC_SWEEP_DEG * (80.0f - WATER_BAR_MIN_C) / (WATER_BAR_MAX_C - WATER_BAR_MIN_C);  // 水温 80 ℃ の所(70 ℃ の青より上)
     // 2.13.0 まで塗っていた所のうち、弧にもアイコンにも掛からない点: 燃料は (233, 300)、水温は (233, 165)
     CHECK(px(233, 300) == BLACK && px(233, 165) == BLACK, "正常: 塗らない");
-    CHECK(arcPx(fuel10) == WHITE && arcPx(water80) == WHITE, "燃料 35 %: 10 % の所は白(伸びた所)。水温 90 ℃: 80 ℃ の所は白");
+    CHECK(arcPx(fuel10) == FILL && arcPx(water80) == FILL && FILL != WHITE, "燃料 35 %: 10 % の所は伸びた所の色(暗くした白)。水温 90 ℃: 80 ℃ の所も同じ");
     gfx::dirtyClear();
     b.fuelPct = set.fuelWarnPct + FUEL_CAUTION_ABOVE_PCT - 1;  // 29 %: 注意
     ui::update(b, ls, ps, si, td + 2 * ALARM_BLINK_HALF_MS);
@@ -1379,14 +1380,14 @@ int main() {
     b.waterC = set.warnTempC - WATER_CAUTION_BELOW_C - 1.5f;  // 103.5: 正常
     b.fuelPct = set.fuelWarnPct + FUEL_CAUTION_ABOVE_PCT + 1.0f;  // 31: 正常
     ui::update(b, ls, ps, si, td + 16 * ALARM_BLINK_HALF_MS);
-    CHECK(arcPx(water80) == WHITE && arcPx(fuel10) == WHITE, "注意の境目から 1.5 ℃ / 1 % 戻ったら正常");
+    CHECK(arcPx(water80) == FILL && arcPx(fuel10) == FILL, "注意の境目から 1.5 ℃ / 1 % 戻ったら正常");
     b.waterC = 118;  // 正常から一気に警告温度以上(2 段上がる)
     b.fuelPct = 50;
     ui::update(b, ls, ps, si, td + 18 * ALARM_BLINK_HALF_MS);
-    CHECK(arcPx(water80) == RED && arcPx(fuel10) == WHITE, "正常から警告温度以上: いっぺんに警告");
+    CHECK(arcPx(water80) == RED && arcPx(fuel10) == FILL, "正常から警告温度以上: いっぺんに警告");
     b.waterC = 90;  // 警告から一気に正常(2 段戻る)
     ui::update(b, ls, ps, si, td + 20 * ALARM_BLINK_HALF_MS);
-    CHECK(arcPx(water80) == WHITE, "警告から大きく下がったら、いっぺんに正常");
+    CHECK(arcPx(water80) == FILL, "警告から大きく下がったら、いっぺんに正常");
     gfx::dirtyClear();
   }
 
@@ -3810,23 +3811,49 @@ int main() {
     sc.utc = 1793065338u;  // 10:42:18(日本時間)
     ui::update(c, lc, ps, sc, tc += 1000);
     CHECK(px(sx, sy) == gfx::rgb(SEC_RGB), "時刻が分かったら針を出す(10:42:18 の秒針は 3 時から 18°。2.11.0: 赤の三角)");
+    {  // 2.17.0: 秒針の三角の根元側に、白の短い針(本人 11/15「秒針に白で短い針を追加」)。半径 SEC_NDL_R_IN から三角の底まで、太さ SEC_NDL_W。
+      // 18° の向きの線の上で、根元の 4 px 外・半径 137・三角の底の手前(半径 146)は白、5.5 px 横は縁の外(黒の背景)、根元の 4 px 内は
+      // 何も無い、三角の中(半径 155)は赤。見るのは、その点が入っている画素
+      auto secPx = [&](float r, float side) {
+        const float a = 18.0f * 3.14159265f / 180.0f, ca = cosf(a), sa = sinf(a);
+        return px((int)floorf(233 + r * ca - side * sa), (int)floorf(233 + r * sa + side * ca));
+      };
+      const uint16_t W = gfx::rgb(0xFFFFFF);
+      CHECK(secPx(SEC_NDL_R_IN + 4.0f, 0) == W && secPx(137, 0) == W && secPx(146, 0) == W && secPx(137, 5.5f) == 0 && secPx(137, -5.5f) == 0 &&
+              secPx(SEC_NDL_R_IN - 4.0f, 0) == 0 && secPx(155, 0) == gfx::rgb(SEC_RGB),
+            "秒針: 赤の三角の根元側に白の短い針(黒の背景。2.17.0)");
+    }
     {  // 2.11.0: 目盛は 60 本。毎時(12 時・3 時)は白、1 分ごと(6 時 + 1 分 = 96°)は白の半分の濃さ(黒の背景)
       const uint16_t m = px((int)lroundf(233 + 170 * cosf(96.0f * 3.14159265f / 180.0f)), (int)lroundf(233 + 170 * sinf(96.0f * 3.14159265f / 180.0f)));
       CHECK(px(233, 233 - 165) == gfx::rgb(0xFFFFFF) && px(233 + 165, 233) == gfx::rgb(0xFFFFFF) && m != 0 && m != gfx::rgb(0xFFFFFF),
             "目盛: 毎時は白、1 分ごとは薄い(2.11.0)");
-      // 2.16.0: 時針・分針は塗りつぶしで、色で見分ける(本人 11/12「時計の短針と長針の枠のみから塗りつぶし＋色分け」)。
+      // 2.17.0: 時針(短針)は黄の塗りつぶし、分針(長針)は黄の枠だけ(本人 11/15「短針が見づらいので、長針を中抜にして短針を黄色にして
+      // ください」。2.16.0 は時針が白・分針が黄の塗りつぶし)。
       // 10:42:18 の時針は 12 時から 321.15°、分針は 253.8°。半径 148(弧とアイコンの外、目盛の内)で、針の真ん中と真ん中から 6 px 横
-      // (塗りの中。塗りの太さ HAND_W 15.5)は針の色、12 px 横(縁の外)は黒の背景のまま
+      // (時針は塗りの中、分針は枠の中。塗りの太さ HAND_W 15.5、枠の太さ HAND_M_FRAME 4.5)、12 px 横(縁の外)は黒の背景のまま。
+      // 見るのは、その点が入っている画素(点から 1.5 px 以内に収まる)
       auto handPx = [&](float deg12, float side) {
         const float a = (deg12 + 270.0f) * 3.14159265f / 180.0f, ca = cosf(a), sa = sinf(a);
-        return px((int)lroundf(233 + 148 * ca - side * sa), (int)lroundf(233 + 148 * sa + side * ca));
+        return px((int)floorf(233 + 148 * ca - side * sa), (int)floorf(233 + 148 * sa + side * ca));
       };
       const uint16_t HC = gfx::rgb(HAND_H_RGB), MC = gfx::rgb(HAND_M_RGB);
-      CHECK(HC != MC && HC != 0 && MC != 0 && HC != gfx::rgb(SEC_RGB) && MC != gfx::rgb(SEC_RGB), "時針・分針・秒針の色はどれも違う(2.16.0)");
+      CHECK(HC == gfx::rgb(0xFFDC00) && MC == HC && HC != gfx::rgb(SEC_RGB), "時針・分針は黄、秒針は赤(2.17.0)");
       CHECK(handPx(321.15f, 0) == HC && handPx(321.15f, 6) == HC && handPx(321.15f, -6) == HC && handPx(321.15f, 12) == 0 && handPx(321.15f, -12) == 0,
-            "時針: 中まで時針の色で塗りつぶす(黒の背景。2.16.0)");
-      CHECK(handPx(253.8f, 0) == MC && handPx(253.8f, 6) == MC && handPx(253.8f, -6) == MC && handPx(253.8f, 12) == 0 && handPx(253.8f, -12) == 0,
-            "分針: 中まで分針の色で塗りつぶす(黒の背景。2.16.0)");
+            "時針: 中まで黄で塗りつぶす(黒の背景。2.17.0)");
+      CHECK(handPx(253.8f, 0) == 0 && handPx(253.8f, 1) == 0 && handPx(253.8f, -1) == 0 && handPx(253.8f, 6) == MC && handPx(253.8f, -6) == MC &&
+              handPx(253.8f, 12) == 0 && handPx(253.8f, -12) == 0,
+            "分針: 枠だけが黄で、中は塗らない(黒の背景が見える。2.17.0)");
+      {  // 針の長さ(本人 11/15「針をもう少し長くしてください」): 根元を内へ伸ばした(半径 115 → HAND_R_IN)。針の向きの線の上で、
+        // 根元の 4 px 外は針(時針は塗り、分針は枠の根元側の辺)、根元の 3 px 内は針が無い(分針の所は燃料のアイコンに掛かるので時針だけ見る)
+        auto alongPx = [&](float deg12, float r) {
+          const float a = (deg12 + 270.0f) * 3.14159265f / 180.0f;
+          return px((int)floorf(233 + r * cosf(a)), (int)floorf(233 + r * sinf(a)));
+        };
+        CHECK(HAND_R_IN < 115.0f && alongPx(321.15f, HAND_R_IN + 4.0f) == HC && alongPx(321.15f, HAND_R_IN - 3.0f) != HC && alongPx(253.8f, HAND_R_IN + 3.75f) == MC,
+              "時針・分針の根元は半径 HAND_R_IN(2.16.0 までの 115 より内。2.17.0)");
+        CHECK(alongPx(321.15f, HAND_H_R_OUT - 4.0f) == HC && alongPx(321.15f, HAND_H_R_OUT + 3.0f) != HC && alongPx(253.8f, HAND_M_R_OUT - 3.5f) == MC,
+              "時針・分針の先は今までと同じ半径(HAND_H_R_OUT・HAND_M_R_OUT)");
+      }
     }
     CHECK(same(c, tc), "針の絵 = 最初から描いた絵");
     for (int k = 1; k <= 75; k++) {  // 1 秒ずつ進める(秒針が一回り以上。分針・時針も動く)
@@ -4002,18 +4029,25 @@ int main() {
     ui::update(c, lc, ps, sc, tc += 1000);
     ui::update(c, lc, ps, sc, tc += 1000);
     CHECK(px(233, 233 - (int)LOAD_DISC_R + 8) == gfx::rgb(0x000000) && px(233, 233 + 140) != gfx::rgb(0x000000), "背景が黄でも高負荷時間は黒い円の上");
-    {  // 2.16.0: 背景が黄のときの針。時針は白のまま、分針は黄が見えないので紺(ピークの回転数と同じ決まり)。
-      // 今の時刻(sc.utc)の針の向き(12 時から)を求め、半径 148(弧とアイコンの外、目盛の内)の針の真ん中の色を見る
+    {  // 2.17.0: 背景が黄のときの針。時針も分針も、黄が見えないので紺(ピークの回転数と同じ決まり。2.16.0 は時針が白のまま)。
+      // 今の時刻(sc.utc)の針の向き(12 時から)を求め、半径 148(弧とアイコンの外、目盛の内)の、時針は真ん中、分針は真ん中と枠(6 px 横)の色を見る
       const uint32_t t12 = (uint32_t)(((uint64_t)sc.utc + CLOCK_TZ_SEC) % 43200u);
       const float hDeg = 30.0f * (float)(t12 / 3600) + 0.5f * (float)(t12 / 60 % 60) + (float)(t12 % 60) / 120.0f;
       const float mDeg = 6.0f * (float)(t12 / 60 % 60) + 0.1f * (float)(t12 % 60);
-      auto handPxY = [&](float deg12) {
-        const float a = (deg12 + 270.0f) * 3.14159265f / 180.0f;
-        return px((int)lroundf(233 + 148 * cosf(a)), (int)lroundf(233 + 148 * sinf(a)));
+      auto handPxY = [&](float deg12, float side) {
+        const float a = (deg12 + 270.0f) * 3.14159265f / 180.0f, ca = cosf(a), sa = sinf(a);
+        return px((int)floorf(233 + 148 * ca - side * sa), (int)floorf(233 + 148 * sa + side * ca));
       };
+      const uint16_t NAVY = gfx::rgb(0x06132E), BGY = px(233, 233 + 140);  // 背景の黄(黒い円の外。前の CHECK と同じ点)
       CHECK(fabsf(hDeg - mDeg) > 20.0f && fabsf(hDeg - mDeg) < 340.0f, "(試験の前提)時針と分針が離れている時刻");
-      CHECK(handPxY(hDeg) == gfx::rgb(HAND_H_RGB) && handPxY(mDeg) == gfx::rgb(0x06132E) && gfx::rgb(HAND_M_RGB) != gfx::rgb(0x06132E),
-            "背景が黄: 時針は白のまま、分針は紺(黄は見えない。2.16.0)");
+      CHECK(handPxY(hDeg, 0) == NAVY && handPxY(hDeg, 6) == NAVY && gfx::rgb(HAND_H_RGB) != NAVY, "背景が黄: 時針は紺の塗りつぶし(黄は見えない。2.17.0)");
+      CHECK(handPxY(mDeg, 6) == NAVY && handPxY(mDeg, -6) == NAVY && handPxY(mDeg, 0) == BGY && BGY != NAVY && BGY != gfx::rgb(0x000000),
+            "背景が黄: 分針は紺の枠だけ(中は背景の黄が見える。2.17.0)");
+      {  // 秒針の短い針は、背景が黄のときは黒(三角の縁と同じ決まり)。半径 137 の所
+        const float sDeg = 6.0f * (float)(t12 % 60), a = (sDeg + 270.0f) * 3.14159265f / 180.0f;
+        CHECK(fabsf(sDeg - 180.0f) > 15.0f, "(試験の前提)秒針が 6 時の向きにない(背景の色を見た点に掛からない)");
+        CHECK(px((int)floorf(233 + 137 * cosf(a)), (int)floorf(233 + 137 * sinf(a))) == gfx::rgb(0x000000), "背景が黄: 秒針の短い針は黒(2.17.0)");
+      }
     }
     CHECK(same(c, tc), "高負荷時間 黄(背景が黄)の絵 = 最初から描いた絵");
     load::testReset();
@@ -5015,6 +5049,219 @@ int main() {
     odo::begin();
     ui::testShow(ui::SC_DRIVE);
     ui::update(d, ls, ps, si, tu += 100);
+    gfx::dirtyClear();
+  }
+
+  // ---------------- 36. 2.17.0: 水温・燃料の針(本人 11/15「水温、燃料に針を追加して、オレンジにしてください」「オレンジの線は直線にして
+  //                  もう少し赤くしてください」)、分針の中抜き(「長針を中抜にして」「長針の中抜きを申すこし小さくしてください」)、
+  //                  内へ伸ばした針と真ん中の行(「針をもう少し長くしてください」)
+  {
+    settingsDefaults(&set);
+    load::testReset();
+    Signals n;
+    memset(&n, 0, sizeof(n));
+    n.linkUp = n.rpmOk = n.gearOk = n.waterOk = n.fuelOk = true;
+    n.rpm = 2000;  // 背景は黒
+    n.gear = '2';
+    n.waterC = 90;   // 弧の 282.5° の所(3 時が 0°、時計回り)
+    n.fuelPct = 60;  // 弧の 80° の所
+    SysInfo sn;
+    memset(&sn, 0, sizeof(sn));  // 時刻が分からない = 時計の針は出ない
+    sn.rc.gpsOn = true; sn.rc.gpsOk = true; sn.rc.fixType = 3; sn.rc.numSV = 12; sn.rc.enabled = true; sn.rc.imuOk = true; sn.rc.bleOk = true; sn.rc.connected = true;
+    uint32_t tn = 500000000;
+    const uint16_t BLACK = gfx::rgb(0x000000), WHITE = gfx::rgb(0xFFFFFF), NDL = gfx::rgb(GAUGE_NDL_RGB), YEL = gfx::rgb(HAND_M_RGB);
+    auto px = [&](int x, int y) { return fb[y * gfx::W + x]; };
+    // 向き deg の線の上で半径 r、線から side px 横(+ は角度が増える側)の点が入っている画素(点から 1.5 px 以内に収まる)
+    auto at = [&](float deg, float r, float side) {
+      const float a = deg * 3.14159265f / 180.0f, ca = cosf(a), sa = sinf(a);
+      return px((int)floorf(233 + r * ca - side * sa), (int)floorf(233 + r * sa + side * ca));
+    };
+    static uint16_t fbN[gfx::W * gfx::H];
+    auto sameN = [&](uint32_t t) {  // 少しずつ描いた絵 = 同じ時刻に最初から描いた絵
+      memcpy(fbN, fb, sizeof(fbN));
+      ui::testRedraw();
+      ui::update(n, ls, ps, sn, t);
+      gfx::dirtyClear();
+      return memcmp(fbN, fb, sizeof(fbN)) == 0;
+    };
+    auto ndlInk = [&]() {  // 時計の内側(半径 150 以内)にある、針の色の画素の数
+      int c = 0;
+      for (int y = 80; y < 386; y++)
+        for (int x = 80; x < 386; x++) {
+          const float dx = (float)x + 0.5f - 233.0f, dy = (float)y + 0.5f - 233.0f;
+          if (dx * dx + dy * dy < 150.0f * 150.0f && px(x, y) == NDL) c++;
+        }
+      return c;
+    };
+    auto waterDeg = [&](float c) { return WATER_ARC_START_DEG + ARC_SWEEP_DEG * (c - WATER_BAR_MIN_C) / (WATER_BAR_MAX_C - WATER_BAR_MIN_C); };
+    auto fuelDeg = [&](float pc) { return FUEL_ARC_START_DEG - ARC_SWEEP_DEG * pc / 100.0f; };
+    const float RM = (ARC_R_IN + ARC_R_OUT) * 0.5f;  // 弧の太さの真ん中
+    const float RX = ARC_R_OUT + 5.0f;               // 弧の外へ出た所(針はここまで届く。目盛より内)
+    const float A0W = WATER_ARC_START_DEG, A1W = WATER_ARC_START_DEG + ARC_SWEEP_DEG, A0F = FUEL_ARC_START_DEG, A1F = FUEL_ARC_START_DEG - ARC_SWEEP_DEG;
+    // 弧(グラフ)の伸びた所の色(本人 11/15「水温と燃料は色が少しきついので暗めにして欲しい」「グラフの色が強い」): 白と青を暗くした色
+    const uint16_t FILL = gfx::rgb(ARC_FILL_RGB), COLD = gfx::rgb(ARC_COLD_RGB), BLUE = gfx::rgb(0x2F8BFF);
+    ui::testPeakReset();
+    ui::testShow(ui::SC_DRIVE);
+    ui::update(n, ls, ps, sn, tn);
+    gfx::dirtyClear();
+    // ---- 弧の色(背景が黒): 水温 90 ℃ の弧の 60 ℃ の所は暗くした青、80 ℃ の所と、燃料 60 % の弧の 30 % の所は暗くした白
+    CHECK(FILL != WHITE && COLD != BLUE && FILL != COLD && FILL != BLACK && COLD != BLACK, "(試験の前提)弧の伸びた所の色は、白・青そのものではない");
+    CHECK(at(waterDeg(60), RM, 0) == COLD && at(waterDeg(80), RM, 0) == FILL && at(fuelDeg(30), RM, 0) == FILL,
+          "弧の伸びた所は、白と青を暗くした色(背景が黒。2.17.0)");
+    // ---- 針の位置・形・色
+    CHECK(NDL == gfx::rgb(0xFF6000) && NDL != gfx::rgb(0xE3241B) && NDL != gfx::rgb(SEC_RGB) && NDL != YEL && NDL != WHITE && NDL != FILL &&
+            NDL != gfx::rgb(0xE0B000),
+          "針の色は赤寄りの橙。警告の赤・秒針の赤・時計の針の黄・注意の暗い黄・弧の伸びた所と違う色(RGB565 にしても)");
+    CHECK(at(waterDeg(90), RM, 0) == NDL && at(waterDeg(90), RX, 0) == NDL && at(waterDeg(90), RX, 9) == BLACK && at(waterDeg(90), RX, -9) == BLACK &&
+            at(waterDeg(90), GAUGE_NDL_R_OUT + 4.0f, 0) == BLACK,
+          "水温 90 ℃: 弧の今の値の所に針(弧を横切って外へ出る)");
+    CHECK(at(fuelDeg(60), RM, 0) == NDL && at(fuelDeg(60), RX, 0) == NDL && at(fuelDeg(60), RX, 9) == BLACK && at(fuelDeg(60), RX, -9) == BLACK &&
+            at(fuelDeg(60), GAUGE_NDL_R_OUT + 4.0f, 0) == BLACK,
+          "燃料 60 %: 弧の今の値の所に針");
+    {  // まっすぐな線: 根元の近く(半径 102)と先の近く(半径 140)で同じ太さ(1.5 px 横は針の色、6.5 px 横は縁の外)
+      bool straight = true;
+      for (float deg : { waterDeg(90), fuelDeg(60) })
+        for (float r : { 102.0f, 140.0f })
+          straight = straight && at(deg, r, 1.5f) == NDL && at(deg, r, -1.5f) == NDL && at(deg, r, 6.5f) != NDL && at(deg, r, -6.5f) != NDL;
+      CHECK(straight, "針はまっすぐな線(根元も先も同じ太さ GAUGE_NDL_W)");
+    }
+    const int ink2 = ndlInk();
+    CHECK(ink2 > 400 && ink2 < 800, "針の色の画素は 2 本ぶん");
+    // ---- 値が変わったら針が動き、前の所に跡が残らない
+    n.waterC = 100;
+    n.fuelPct = 40;
+    ui::update(n, ls, ps, sn, tn += 100);
+    CHECK(at(waterDeg(100), RM, 0) == NDL && at(waterDeg(90), RM, 0) == FILL && at(waterDeg(90), RX, 0) == BLACK, "水温 100 ℃: 針が動く。前の所は弧の伸びた所と背景に戻る");
+    CHECK(at(fuelDeg(40), RM, 0) == NDL && at(fuelDeg(60), RM, 0) != NDL && at(fuelDeg(60), RM, 0) != FILL && at(fuelDeg(60), RX, 0) == BLACK,
+          "燃料 40 %: 針が動く。前の所は弧の地と背景に戻る");
+    CHECK(ndlInk() == ink2 || abs(ndlInk() - ink2) < 40, "針が動いても、針の色の画素は 2 本ぶんのまま");
+    CHECK(sameN(tn), "針が動いた絵 = 最初から描いた絵");
+    // ---- 弧の端: 針は弧の端から横へ少し出る(弧の外の 1.8 px 横も針の色)。離れたら跡が残らない
+    n.waterC = 20;    // 弧の始まり(40 ℃)より下 → 左端
+    n.fuelPct = 100;  // 右端
+    ui::update(n, ls, ps, sn, tn += 100);
+    CHECK(at(A0W, RM, 0) == NDL && at(A0W, RM, -1.8f) == NDL && at(A0W, RM, -8.0f) == BLACK, "水温が弧の始まりより下: 針は左端(弧の端から少し出る)");
+    CHECK(at(A1F, RM, 0) == NDL && at(A1F, RM, -1.8f) == NDL && at(A1F, RM, -8.0f) == BLACK, "燃料 100 %: 針は右端(弧の端から少し出る)");
+    CHECK(sameN(tn), "針が弧の端にある絵 = 最初から描いた絵");
+    n.waterC = 130;  // 弧の終わり(120 ℃)より上 → 右端。警告(赤の点滅)
+    n.fuelPct = 0;   // 左端。警告
+    ui::update(n, ls, ps, sn, tn += 100);
+    CHECK(at(A0W, RM, -1.8f) == BLACK && at(A1F, RM, -1.8f) == BLACK && at(A0W, RX, 0) == BLACK && at(A1F, RX, 0) == BLACK, "弧の端から出ていた針の跡が残らない");
+    CHECK(at(A1W, RM, 0) == NDL && at(A1W, RM, 1.8f) == NDL && at(A0F, RM, 0) == NDL && at(A0F, RM, 1.8f) == NDL, "水温が弧の終わりより上・燃料 0 %: 針は反対の端");
+    CHECK(sameN(tn), "針が反対の端にある絵 = 最初から描いた絵");
+    ui::update(n, ls, ps, sn, tn += ALARM_BLINK_HALF_MS);  // 点滅のもう片方
+    CHECK(at(A1W, RM, 0) == NDL && at(A0F, RM, 0) == NDL && sameN(tn), "警告(赤の点滅)の点灯側でも消灯側でも、針は同じ色");
+    // ---- 信号がない(「– –」)ときは針を出さない
+    n.waterOk = false;
+    n.fuelOk = false;
+    ui::update(n, ls, ps, sn, tn += 100);
+    CHECK(ndlInk() == 0 && sameN(tn), "水温・燃料の信号がないときは針を出さない");
+    n.waterOk = n.fuelOk = true;
+    n.waterC = 90;
+    n.fuelPct = 60;
+    ui::update(n, ls, ps, sn, tn += 100);
+    CHECK(abs(ndlInk() - ink2) < 40 && sameN(tn), "信号が戻ったら針も戻る");
+    // ---- 背景が黄(回転数が高い)のとき: 針のまわりの黒い縁も、弧の端から出た分まで消える(背景が黒だと縁の跡は見えない)
+    n.rpm = 5600;
+    n.waterC = 20;
+    n.fuelPct = 100;
+    ui::update(n, ls, ps, sn, tn += 100);
+    ui::update(n, ls, ps, sn, tn += 100);
+    CHECK(px(233, 233 + 140) != BLACK && at(A0W, RM, 0) == NDL && at(A1F, RM, 0) == NDL && sameN(tn), "背景が黄: 針は同じ色。絵 = 最初から描いた絵");
+    n.waterC = 90;
+    n.fuelPct = 60;
+    ui::update(n, ls, ps, sn, tn += 100);
+    CHECK(at(waterDeg(90), RM, 0) == NDL && at(fuelDeg(60), RM, 0) == NDL && sameN(tn), "背景が黄: 弧の端から出ていた針(黒い縁も)の跡が残らない");
+    CHECK(at(waterDeg(60), RM, 0) == BLUE && at(waterDeg(80), RM, 0) == WHITE && at(fuelDeg(30), RM, 0) == WHITE,
+          "背景が黄: 弧の伸びた所は今までどおり白と青(暗くすると背景に沈む)");
+    n.rpm = 2000;
+    ui::update(n, ls, ps, sn, tn += 100);
+    ui::update(n, ls, ps, sn, tn += 100);
+    for (int k = 0; k < 8; k++) ui::update(n, ls, ps, sn, tn += 1000);  // ピークの印と数字が消えるまで待つ
+    gfx::dirtyClear();
+    CHECK(px(233, 233 + 140) == BLACK && at(waterDeg(80), RM, 0) == FILL && sameN(tn), "背景が黒に戻った絵 = 最初から描いた絵(弧はまた暗くした色)");
+    // ---- 時計の針との重なり。2026-10-27 0:00:00(日本時間)= 1793026800
+    const uint32_t DAY0 = 1793026800u;
+    sn.timeOk = true;
+    sn.utc = DAY0 + 3 * 3600 + 59 * 60 + 40;  // 3:59:40: 分針は 12 時から 358°(= 268°。水温の弧の、70 ℃ より上の伸びた所の上)
+    ui::update(n, ls, ps, sn, tn += 1000);
+    CHECK(at(268, RM, 0) == FILL && at(268, RM, 5.5f) == YEL && at(268, RM, -5.5f) == YEL && at(268, RM, 12) == FILL && at(268, RM, -12) == FILL,
+          "分針の中抜き: 枠だけが黄で、中は下の弧(伸びた所)がそのまま見える");
+    CHECK(sameN(tn), "分針が弧の上にある絵 = 最初から描いた絵");
+    sn.utc = DAY0 + 8 * 3600 + 2 * 60 + 5;  // 8:02:05: 分針は 12 時から 12.5°(= 282.5°。水温 90 ℃ の針の真上)
+    ui::update(n, ls, ps, sn, tn += 1000);
+    CHECK(at(waterDeg(90), RM, 0) == NDL && at(waterDeg(90), RM, 5.5f) == YEL && at(waterDeg(90), RM, -5.5f) == YEL, "分針の中抜きから、下の水温の針が見える");
+    CHECK(at(268, RM, 5.5f) == FILL && sameN(tn), "分針が動いたら前の所は弧に戻る。絵 = 最初から描いた絵");
+    sn.utc = DAY0 + 5 * 3600 + 40 * 60;  // 5:40:00: 時針は 12 時から 170°(= 80°。燃料 60 % の針の真上)
+    ui::update(n, ls, ps, sn, tn += 1000);
+    CHECK(at(fuelDeg(60), RM, 0) == YEL && at(fuelDeg(60), RM, 3) == YEL && at(fuelDeg(60), RM, -3) == YEL, "時針(塗りつぶし)は燃料の針の上に重なる");
+    CHECK(sameN(tn), "時針が燃料の針の上にある絵 = 最初から描いた絵");
+    n.fuelPct = 61;  // 時針の下で燃料の針が動く(弧を描き直して写したあと、時針を描き直す)
+    ui::update(n, ls, ps, sn, tn += 100);
+    CHECK(at(fuelDeg(60), RM, 0) == YEL && sameN(tn), "時針の下で針が動いても、時針は上のまま");
+    n.fuelPct = 60;
+    sn.utc = DAY0 + 8 * 3600 + 2 * 60 + 5;
+    ui::update(n, ls, ps, sn, tn += 1000);
+    CHECK(at(fuelDeg(60), RM, 0) == NDL && sameN(tn), "時針が動いたら、下の燃料の針が戻る");
+    // ---- 内へ伸ばした針と真ん中の行: 接続の状態の 1 行目(GPS「衛星 12」)の四角の右上の隅に、2 時の向き(330°)の分針の根元が掛かる。
+    // 行だけを描き直したあとも、針はその上に残る
+    for (int k = 0; k < 12; k++) ui::update(n, ls, ps, sn, tn += 1000);  // 接続の状態が消えるまで待つ(STATUS_SHOW_MS)
+    gfx::dirtyClear();
+    CHECK(ui::testCenter() == 4, "(試験の前提)接続の状態が変わらなければ、真ん中はデジタル時計");
+    sn.utc = DAY0 + 8 * 3600 + 10 * 60;  // 8:10:00: 分針は 12 時から 60°(= 330°)
+    sn.rc.connected = false;             // RaceChrono: 未接続 → 接続の状態が出る
+    ui::update(n, ls, ps, sn, tn += 100);
+    gfx::dirtyClear();
+    const float RR = HAND_R_IN + 3.75f;  // 分針の枠の、根元側の辺の真ん中(行の四角の中: 画素 (327, 178) のあたり)
+    CHECK(ui::testCenter() == 3 && at(330, RR, 0) == YEL && sameN(tn), "接続の状態の行の四角に分針の根元が掛かる(針が上)");
+    sn.rc.numSV = 88;  // 1 行目の数字だけが変わる(行の四角だけを描き直して写す)
+    ui::update(n, ls, ps, sn, tn += 100);
+    CHECK(gfx::dirtyCount() > 0 && ui::testCenter() == 3 && at(330, RR, 0) == YEL && at(330, RR, 5.5f) == YEL && at(330, RR, -5.5f) == YEL,
+          "真ん中の行を描き直しても、そこに掛かる針は消えない(行を写したあとで針を描き直す)");
+    CHECK(sameN(tn), "行を描き直した絵 = 最初から描いた絵");
+    sn.utc = DAY0 + 1 * 3600 + 59 * 60 + 30;  // 1:59:30: 時針は 12 時から 59.75°(ほぼ同じ向き)。分針は離れる
+    ui::update(n, ls, ps, sn, tn += 100);
+    sn.rc.numSV = 7;
+    ui::update(n, ls, ps, sn, tn += 100);
+    CHECK(ui::testCenter() == 3 && at(329.75f, RR, 0) == YEL && sameN(tn), "時針でも同じ(行を描き直しても根元が消えない)");
+    sn.rc.connected = true;
+    sn.rc.numSV = 12;
+    for (int k = 0; k < 12; k++) ui::update(n, ls, ps, sn, tn += 1000);
+    gfx::dirtyClear();
+    // ---- オープニング(サーキット): 弧と一緒に針も動く(弧の端から端まで)。弧の端から横へ出ていた針の跡が残らない。
+    // 見るのは、弧の両端のすぐ先の 2 行(弧もアイコンも真ん中の文字も無い所。針が端にあるときだけ、針の橙が掛かる)
+    {
+      auto endsInk = [&]() {
+        int c = 0;
+        for (int x = 145; x < 172; x++)
+          for (int y : { 171, 172, 293, 294 }) c += (px(x, y) != BLACK) + (px(gfx::W - 1 - x, y) != BLACK);
+        return c;
+      };
+      sn.utc = DAY0 + 6 * 3600;  // 6:00:00: 時計の針は真上と真下(弧の端の向きに無い。2 時前の時針は、根元の角が右上の端の先に少し掛かる)
+      ui::update(n, ls, ps, sn, tn += 1000);
+      gfx::dirtyClear();
+      CHECK(ui::screen() == ui::SC_DRIVE && endsInk() == 0, "(試験の前提)針が弧の端に無ければ、弧の端のすぐ先には何も無い");
+      const uint32_t to = tn + 100000;
+      ui::testShow(ui::SC_OPENING, 0);
+      int inkMax = 0, endsMax = 0;
+      for (uint32_t dt = 0; dt < OPC_TOTAL_MS - OPC_CLOCK_MS; dt += 8) {  // 時計が浮かぶ前まで(弧は 0 → 一杯 → 今の値)
+        ui::update(n, ls, ps, sn, to + dt);
+        gfx::dirtyClear();
+        const int k = ndlInk(), e = dt < OPC_SCAN_MS + OPC_FLASH_MS + OPC_RISE_MS ? endsInk() : 0;  // 背景が黒の間だけ数える
+        if (k > inkMax) inkMax = k;
+        if (e > endsMax) endsMax = e;
+      }
+      CHECK(ui::screen() == ui::SC_OPENING && inkMax > 400 && inkMax < ink2 + 80, "オープニング: 弧と一緒に針が出る(いつも 2 本ぶんまで)");
+      CHECK(endsMax > 0 && endsInk() == 0, "オープニング: 弧の端から出ていた針の跡が残らない(弧が今の値まで戻ったあと)");
+      CHECK(at(waterDeg(90), RM, 0) == NDL && at(fuelDeg(60), RM, 0) == NDL, "オープニング: 弧が今の値まで戻ったら、針も今の値の所");
+      ui::update(n, ls, ps, sn, to + OPC_TOTAL_MS);
+      gfx::dirtyClear();
+      tn = to + OPC_TOTAL_MS;
+      CHECK(ui::screen() == ui::SC_DRIVE && sameN(tn), "オープニングが終わった絵 = 最初から描いた絵");
+    }
+    settingsDefaults(&set);
+    ui::testShow(ui::SC_DRIVE);
+    ui::update(n, ls, ps, si, tn += 100);
     gfx::dirtyClear();
   }
 

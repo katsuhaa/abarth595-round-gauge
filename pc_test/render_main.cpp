@@ -226,6 +226,17 @@ int main(int argc, char **argv) {
     }
     shot("DriveClockYellow", sig(5500, '3', 92, 62), ui::SC_DRIVE);  // 2.11.0: シフト点の手前(背景が黄)の針の色
     shot("DriveClockRed", sig(6300, '4', 92, 62), ui::SC_DRIVE);     // 2.11.0: シフト点を超えた(背景が赤)の針の色
+    {  // 2.17.0: 水温・燃料の針(赤寄りの橙のまっすぐな線)と、時計の針との重なり(分針は枠だけなので、中から下が見える)
+      const uint32_t keep = si.utc;
+      si.utc = 1793026800u + 8 * 3600 + 2 * 60 + 5;  // 8:02:05(日本時間): 分針が水温 90 ℃ の針の真上
+      shot("DriveNeedleMin", sig(850, 'N', 90, 60), ui::SC_DRIVE);
+      si.utc = 1793026800u + 5 * 3600 + 40 * 60;  // 5:40:00: 時針が燃料 60 % の針の真上(針は隠れる)
+      shot("DriveNeedleHour", sig(850, 'N', 90, 60), ui::SC_DRIVE);
+      si.utc = 1793026800u + 10 * 3600 + 10 * 60 + 30;
+      shot("DriveNeedleEnds", sig(850, 'N', 20, 100), ui::SC_DRIVE);  // 針が弧の端(水温は弧の始まりより下、燃料 100 %)
+      shot("DriveNeedleEnds2", sig(850, 'N', 125, 0), ui::SC_DRIVE);  // 反対の端(水温・燃料とも警告)
+      si.utc = keep;
+    }
     si.timeOk = false;
     memset(&si.rc, 0, sizeof(si.rc));
     memset(&ls, 0, sizeof(ls));

@@ -530,6 +530,21 @@ void polyAdd(const Pt *p, int n) {
   }
 }
 
+void polyAddHole(const Pt *p, int n) {  // polyAdd と逆の向きで足す(中の面積を引く)
+  if (n < 3) return;
+  float area2 = 0;
+  for (int i = 0; i < n; i++) {
+    const Pt &a = p[i], &b = p[(i + 1) % n];
+    area2 += a.x * b.y - b.x * a.y;
+  }
+  float ox = (float)g_pb.x0, oy = (float)g_pb.y0;
+  for (int i = 0; i < n; i++) {
+    const Pt &a = p[i], &b = p[(i + 1) % n];
+    if (area2 >= 0) accLine(b.x - ox, b.y - oy, a.x - ox, a.y - oy);
+    else accLine(a.x - ox, a.y - oy, b.x - ox, b.y - oy);
+  }
+}
+
 void polyFill(uint16_t c) {
   int bw = g_pw - 2;
   for (int yy = 0; yy < g_ph; yy++) {

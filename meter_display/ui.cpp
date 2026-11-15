@@ -26,7 +26,7 @@ static const uint16_t C_TRACK = rgb(0x1F3A70);        // 走行画面の弧の�
 static const uint16_t C_HBAR = rgb(0x274F9C);         // データ画面の横棒の地
 static const uint16_t C_WHITE = rgb(0xFFFFFF);
 static const uint16_t C_LABEL = rgb(0xA9C0E8);        // 名前、単位、アイコン
-static const uint16_t C_WATER_BLUE = rgb(0x2F8BFF);   // 水温の 70℃ 未満
+static const uint16_t C_WATER_BLUE = rgb(0x2F8BFF);   // 水温の 70℃ 未満(2.17.0: 背景が明るいときだけ。ふだんは ARC_COLD_RGB)
 static const uint16_t C_WARN_TRACK = rgb(0x6A1C26);   // 水温の警告温度から上の地
 static const uint16_t C_ALARM = rgb(0xE3241B);        // 異常のときの枠と下地
 static const uint16_t C_ALARM_TRACK = rgb(0x8E130D);  // 異常のときのバーの地
@@ -415,6 +415,29 @@ static int fuelArcQ(const Signals &s) {
 static void arc(float a0, float a1, uint16_t c) {
   gfx::fillArc(233, 233, ARC_R_IN, ARC_R_OUT, a0, a1, c);
 }
+// 弧の伸びた所の色(2.17.0。config.h の ARC_FILL_RGB・ARC_COLD_RGB。2.16.0 までの白・青より暗い)。背景が明るい(黄)ときは、今までどおり白・青
+static uint16_t arcFillOn(uint16_t bg) {
+  return isBright(bg) ? C_WHITE : rgb(ARC_FILL_RGB);
+}
+static uint16_t arcColdOn(uint16_t bg) {
+  return isBright(bg) ? C_WATER_BLUE : rgb(ARC_COLD_RGB);
+}
+static void needlePoints(int key, float rIn, float rOut, float wIn, float wOut, gfx::Pt p[4]);
+static gfx::Rect ptsRect(const gfx::Pt *p, int n);
+// 水温・燃料の針(2.17.0。本人 11/15「水温、燃料に針を追加して、オレンジにしてください」)。弧の今の値の所に、弧を横切って外へ少し出る
+// まっすぐな線の針を描く(config.h の GAUGE_NDL_*)。key = 向き [1/4 度](3 時が 0°、時計回り)。弧の塗りの上に、黒の縁 → 橙の順に塗る。
+// 時計の内側の絵(g_drvFace)の一部なので、時計の針はこの上に重なる
+static void drawGaugeNeedle(int key) {
+  gfx::Pt p[4];
+  needlePoints(key, GAUGE_NDL_R_IN, GAUGE_NDL_R_OUT, GAUGE_NDL_W + 2.0f * GAUGE_NDL_EDGE, GAUGE_NDL_W + 2.0f * GAUGE_NDL_EDGE, p);
+  gfx::polyBegin(ptsRect(p, 4));
+  gfx::polyAdd(p, 4);
+  gfx::polyFill(rgb(GAUGE_NDL_EDGE_RGB));
+  needlePoints(key, GAUGE_NDL_R_IN + GAUGE_NDL_EDGE, GAUGE_NDL_R_OUT - GAUGE_NDL_EDGE, GAUGE_NDL_W, GAUGE_NDL_W, p);
+  gfx::polyBegin(ptsRect(p, 4));
+  gfx::polyAdd(p, 4);
+  gfx::polyFill(rgb(GAUGE_NDL_RGB));
+}
 // 弧のある側(上 = 水温、下 = 燃料)を、半径 ALARM_FILL_R の円の中で横一直線に切った形で塗る(10/22)。
 // 弧・アイコン・「– –」はこの中に収まるので、描き直すときはこれで消す(オープニング)。2.14.0: 警告でも赤く塗らなくなったので、消すためだけに使う。
 // clear: なめらかにせず、縁から 2 px 外まで c 一色にする(前に赤く塗った縁の画素が残らない。輪の内側 RING_R_IN には届かない)。
@@ -503,10 +526,11 @@ static void drawWaterPanel(const Signals &s, bool clean) {
   }
   if (lvl) {
     arc(A0, ae, levelColor(lvl, g_bgCol));
-    return;
+  } else {
+    arc(A0, ae, arcColdOn(g_bgCol));
+    if (ae > ab) arc(ab, ae, arcFillOn(g_bgCol));
   }
-  arc(A0, ae, C_WATER_BLUE);
-  if (ae > ab) arc(ab, ae, C_WHITE);
+  drawGaugeNeedle((int)lroundf(A0 * 4.0f) + waterArcQ(s));  // 2.17.0: 今の水温の所に針
 }
 
 // 燃料(5.5、5.6、5.7 を円弧にしたもの)。下の弧: 左端(140°)から反時計回り(角度が減る向き)に伸びる。
@@ -527,7 +551,8 @@ static void drawFuelPanel(const Signals &s, bool clean) {
   const float aw = A1 - ARC_SWEEP_DEG * (float)g_set->fuelWarnPct / 100.0f;  // 警告になる残量の所
   arc(A0, aw, C_TRACK);
   arc(aw, A1, C_WARN_TRACK);
-  arc(as, A1, lvl ? levelColor(lvl, g_bgCol) : C_WHITE);
+  arc(as, A1, lvl ? levelColor(lvl, g_bgCol) : arcFillOn(g_bgCol));
+  drawGaugeNeedle((int)lroundf(A1 * 4.0f) - fuelArcQ(s));  // 2.17.0: 今の残量の所に針
 }
 
 // 3000rpm 以下の経過時間(config.h の IDLE_*)。update のたびに記録する(どの画面でも)。2.12.0: 回転数は設定の「過負荷 回転数」(初期値 3000)
@@ -616,7 +641,8 @@ static uint32_t fuelKey(const Signals &s) {
 // 画面 = 輪のマスとピークの三角(半径 RING_R_IN − 0.5 から外。画面にだけ描く)+ 時計の内側(半径 CLK_CLIP_R まで)+ 針。
 // 時計の内側(背景・異常の塗り・弧・アイコン・目盛・真ん中・「SIM」の印)は、別の画面メモリー g_drvFace に描いて、変わった所だけを
 // 画面へ写す(innerDraw)。g_drvFace はいつも全部が正しいので、写す範囲は広めでよい。真ん中の 1 行だけが変わったときは、その行の四角を
-// 行を描く前の絵(g_drvBase)から戻して描き直し、その四角だけを写す(行の四角は針に掛からず、ほかの行と重ならない)。
+// 行を描く前の絵(g_drvBase)から戻して描き直し、その四角だけを写す(行の四角はほかの行と重ならない。2.17.0: 針の根元が掛かることが
+// あるので、写したあとで、そこに掛かる針を描き直す)。
 // 針は画面にだけ描く: 前の所と今の所を g_drvFace から写して消し、消した所に掛かる針を全部、下から順に描き直す(handsUpdate)。
 // 写すのは半径 CLK_CLIP_R の中だけなので、輪のマスは消えない。少しずつ描いた絵は、最初から描いた絵と 1 画素も違わない
 static uint16_t *g_drvFace = nullptr;  // 時計の内側の絵(針を除く。半径 CLK_CLIP_R の中だけを使う)
@@ -643,7 +669,8 @@ static void drawClockTicks() {
   }
 }
 
-// ---- 針(2.11.0: Apple Watch 風の四角。2.16.0: 時針・分針は塗りつぶしで、色で見分ける。秒針は縁の付いた赤の正三角形。config.h の HAND_*・SEC_*)。
+// ---- 針(2.11.0: Apple Watch 風の四角。2.16.0: 時針・分針は塗りつぶしで、色で見分ける。2.17.0: 時針は黄の塗りつぶし、分針は黄の枠だけ
+// (中抜き)。秒針は縁の付いた赤の正三角形と、その根元側の白い短い針(2.17.0)。config.h の HAND_*・SEC_*)。
 // 時針・分針・秒針の順に下から描く。角度は 1/4 度(3 時が 0°、時計回り)。-1 = 出さない(時刻が分からない)
 static int16_t g_handK[3] = { -1, -1, -1 };  // 画面に描いてある針の角度
 // 今の時刻の針の角度。時針は分と秒の分も、分針は秒の分も進める(1/4 度に丸める)
@@ -707,28 +734,48 @@ static int handOuter(int i, int key, gfx::Pt *p) {
   const float rOut = i == 0 ? HAND_H_R_OUT : HAND_M_R_OUT;
   return rrectPoints(key, HAND_R_IN, rOut, HAND_W + 2.0f * HAND_EDGE, HAND_CORNER + HAND_EDGE, p);
 }
+// 秒針の白い短い針(2.17.0。本人 11/15「秒針に白で短い針を追加」)の縁の外側。根元は半径 SEC_NDL_R_IN、先は三角の底の少し先まで
+// (三角の下に入れて、三角の縁とつなげる)。白の所はこの SEC_NDL_EDGE 内側
+static float secNeedleROut() {
+  return SEC_TRI_R_TIP - SEC_TRI_SIDE * 0.8660254f + SEC_NDL_EDGE;
+}
+static int secNeedleOuter(int key, gfx::Pt *p) {
+  return rrectPoints(key, SEC_NDL_R_IN, secNeedleROut(), SEC_NDL_W + 2.0f * SEC_NDL_EDGE, 0, p);
+}
 static gfx::Rect handRect(int i, int key) {
   gfx::Pt p[20];
-  if (i == 2) {
+  if (i == 2) {  // 三角と白い短い針の両方が入る四角
     secOuter(key, p);
-    return ptsRect(p, 3);
+    return ptsRect(p, 3 + secNeedleOuter(key, p + 3));
   }
   return ptsRect(p, handOuter(i, key, p));
 }
-// 色(2.16.0。本人 11/12「時計の短針と長針の枠のみから塗りつぶし＋色分け」「青はちょっと醜いですね。黄色で行きます」): 時針は HAND_H_RGB(白)、
-// 分針は HAND_M_RGB(黄)で塗りつぶす。背景が明るい(黄)ときは、黄の分針が見えないので紺(ピークの回転数と同じ決まり。peakColOn)。時針は
-// どの背景でも同じ色。まわりに細い黒の縁(HAND_EDGE_RGB。黒の背景では見えない。弧・目盛・アイコンの上と、黄・赤の背景で針の形を分ける)。
-// 2.11.0〜2.15.x は枠と中の 2 色(暗い背景は枠が白・中が黒、明るい背景は逆)。秒針の縁は今もその枠の色(暗い背景は白、明るい背景は黒)
+// 色と形(2.17.0。本人 11/15「短針が見づらいので、長針を中抜にして短針を黄色にしてください」): 時針は HAND_H_RGB(黄)で塗りつぶす。分針は
+// HAND_M_RGB(黄)の枠だけ(太さ HAND_M_FRAME。中は塗らないので、下の弧・目盛・時針がそのまま見える)。背景が明るい(黄)ときは、黄が
+// 見えないので紺(ピークの回転数と同じ決まり。peakColOn)。まわりに細い黒の縁(HAND_EDGE_RGB。分針は枠の内側にも HAND_M_EDGE_IN。
+// 黒の背景では見えない。弧・目盛・アイコン・時針の上と、黄・赤の背景で針の形を分ける)。
+// 2.16.0 は時針が白・分針が黄の塗りつぶし、2.11.0〜2.15.x は枠と中の 2 色(暗い背景は枠が白・中が黒、明るい背景は逆)。
+// 秒針の三角の縁と、秒針の短い針(2.17.0)は、今もその枠の色(暗い背景は白、明るい背景は黒)
 static uint16_t secEdgeOn(uint16_t bg) {
   return isBright(bg) ? rgb(0x000000) : C_WHITE;
 }
 static uint16_t handColOn(int i, uint16_t bg) {  // i = 0 時針、1 分針
-  if (i == 0) return rgb(HAND_H_RGB);
-  return isBright(bg) ? fgOn(bg) : rgb(HAND_M_RGB);
+  return isBright(bg) ? fgOn(bg) : rgb(i == 0 ? HAND_H_RGB : HAND_M_RGB);
 }
 static void drawHand(int i, int key) {
   gfx::Pt p[20];
-  if (i == 2) {  // 秒針: 縁(外側の三角)を塗ってから、中(内側の三角)を赤で
+  if (i == 2) {  // 秒針: 白い短い針(黒の縁 → 白)を描いてから、三角(縁 → 赤)をその先に重ねる。背景が明るい(黄)ときは、針は黒で
+    // 縁なし(三角の縁と同じ決まり。縁も黒だと太く見えるので描かない)
+    int n = secNeedleOuter(key, p);
+    if (!isBright(g_bgCol)) {
+      gfx::polyBegin(ptsRect(p, n));
+      gfx::polyAdd(p, n);
+      gfx::polyFill(fadeOn(g_bgCol, rgb(HAND_EDGE_RGB)));
+    }
+    n = rrectPoints(key, SEC_NDL_R_IN + SEC_NDL_EDGE, secNeedleROut() - SEC_NDL_EDGE, SEC_NDL_W, 0, p);
+    gfx::polyBegin(ptsRect(p, n));
+    gfx::polyAdd(p, n);
+    gfx::polyFill(fadeOn(g_bgCol, secEdgeOn(g_bgCol)));
     secOuter(key, p);
     gfx::polyBegin(ptsRect(p, 3));
     gfx::polyAdd(p, 3);
@@ -739,11 +786,29 @@ static void drawHand(int i, int key) {
     gfx::polyFill(fadeOn(g_bgCol, rgb(SEC_RGB)));
     return;
   }
-  int n = handOuter(i, key, p);  // 縁(外側の形)を塗ってから、その HAND_EDGE 内側を針の色で塗りつぶす
+  const float rOut = i == 0 ? HAND_H_R_OUT : HAND_M_R_OUT;
+  int n = handOuter(i, key, p);
+  if (i == 1) {  // 分針(2.17.0): 枠だけ。縁(外側の形から、枠の内側の縁のさらに内側をくり抜いた形)を塗ってから、枠を針の色で塗る
+    gfx::Pt q[20];
+    const float in1 = HAND_EDGE + HAND_M_FRAME, in2 = in1 + HAND_M_EDGE_IN;  // 外側の形から、枠の内側・内側の縁の内側までの幅
+    const float rc1 = HAND_CORNER - HAND_M_FRAME, rc2 = rc1 - HAND_M_EDGE_IN;
+    gfx::polyBegin(ptsRect(p, n));
+    gfx::polyAdd(p, n);
+    int m = rrectPoints(key, HAND_R_IN + in2, rOut - in2, HAND_W + 2.0f * HAND_EDGE - 2.0f * in2, rc2 > 0 ? rc2 : 0, q);
+    gfx::polyAddHole(q, m);
+    gfx::polyFill(fadeOn(g_bgCol, rgb(HAND_EDGE_RGB)));
+    n = rrectPoints(key, HAND_R_IN + HAND_EDGE, rOut - HAND_EDGE, HAND_W, HAND_CORNER, p);
+    gfx::polyBegin(ptsRect(p, n));
+    gfx::polyAdd(p, n);
+    m = rrectPoints(key, HAND_R_IN + in1, rOut - in1, HAND_W + 2.0f * HAND_EDGE - 2.0f * in1, rc1 > 0 ? rc1 : 0, q);
+    gfx::polyAddHole(q, m);
+    gfx::polyFill(fadeOn(g_bgCol, handColOn(i, g_bgCol)));
+    return;
+  }
+  // 時針: 縁(外側の形)を塗ってから、その HAND_EDGE 内側を針の色で塗りつぶす
   gfx::polyBegin(ptsRect(p, n));
   gfx::polyAdd(p, n);
   gfx::polyFill(fadeOn(g_bgCol, rgb(HAND_EDGE_RGB)));
-  const float rOut = i == 0 ? HAND_H_R_OUT : HAND_M_R_OUT;
   n = rrectPoints(key, HAND_R_IN + HAND_EDGE, rOut - HAND_EDGE, HAND_W, HAND_CORNER, p);
   gfx::polyBegin(ptsRect(p, n));
   gfx::polyAdd(p, n);
@@ -910,7 +975,8 @@ static int centerLines(uint8_t mode) {
   return mode == CM_LOAD || mode == CM_STATUS ? 4 : (mode == CM_NONE ? 0 : 1);  // CM_CLOCK は 1 行
 }
 // 行 i の範囲(行だけを描き直すときは、この四角を g_drvBase から戻してから描く)。文字の全部が入り、ほかの行と重ならない。
-// どれも真ん中の四角 CB_RECT の中で、画素の中心が半径 114 以内(針は縁も含めて半径 HAND_R_IN から外なので掛からない)。
+// どれも真ん中の四角 CB_RECT の中で、画素の中心が半径 114 以内(2.17.0: 針の根元 HAND_R_IN がこの中まで来るので、行を描き直したら
+// 針も描き直す。updDrive)。
 // ピークの数字(4 桁で幅 190)と GPS の「衛星 12」は、アイコンの四角の端に少し入る(戻すのは g_drvBase なので、アイコンも元のまま)
 static gfx::Rect centerLineRect(uint8_t mode, int i) {
   static const gfx::Rect LOAD_R[4] = { { 185, 158, 281, 182 }, { 143, 182, 323, 213 }, { 140, 213, 327, 265 }, { 150, 266, 316, 296 } };  // 2.11.0: タイトルを大きく
@@ -1117,12 +1183,12 @@ static void fillOutsideClock(uint16_t c) {
 enum : uint8_t { IR_WATER = 1, IR_FUEL = 2, IR_CENTER = 4 };
 static int innerRects(uint8_t reg, gfx::Rect *out) {
   int n = 0;
-  if (reg & IR_WATER) {  // 上側(塗る所・弧・「– –」は y 172 より上)とアイコン
-    out[n++] = gfx::Rect{ (int16_t)CLK_SQ0, (int16_t)CLK_SQ0, (int16_t)CLK_SQ1, 172 };
+  if (reg & IR_WATER) {  // 上側(弧・針・「– –」は y 178 より上。2.17.0: 弧の端に来た針のぶん 172 → 178)とアイコン
+    out[n++] = gfx::Rect{ (int16_t)CLK_SQ0, (int16_t)CLK_SQ0, (int16_t)CLK_SQ1, 178 };
     out[n++] = gfx::Rect{ (int16_t)(ICON_WATER_X - 1), (int16_t)(ICON_WATER_Y - 1), (int16_t)(ICON_WATER_X + ICON_M + 1), (int16_t)(ICON_WATER_Y + ICON_M + 1) };
   }
-  if (reg & IR_FUEL) {  // 下側(y 294 から下)とアイコン
-    out[n++] = gfx::Rect{ (int16_t)CLK_SQ0, 294, (int16_t)CLK_SQ1, (int16_t)CLK_SQ1 };
+  if (reg & IR_FUEL) {  // 下側(y 288 から下。2.17.0: 294 → 288)とアイコン
+    out[n++] = gfx::Rect{ (int16_t)CLK_SQ0, 288, (int16_t)CLK_SQ1, (int16_t)CLK_SQ1 };
     out[n++] = gfx::Rect{ (int16_t)(ICON_FUEL_X - 1), (int16_t)(ICON_FUEL_Y - 1), (int16_t)(ICON_FUEL_X + ICON_M + 1), (int16_t)(ICON_FUEL_Y + ICON_M + 1) };
   }
   if (reg & IR_CENTER) out[n++] = CB_RECT;  // 黒い円(半径 LOAD_DISC_R)・真ん中・印
@@ -1254,7 +1320,7 @@ static void updDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, u
     return;
   }
   if (anyLine && !g_drvBase) reg |= IR_CENTER;  // 行の下地を取っておけなかった: 真ん中ごと描き直す
-  gfx::Rect er[12];
+  gfx::Rect er[24];  // 写した四角(内側の 5 + 真ん中の行 4)と、針を消す四角(3 本 × 前と今)
   int ne = 0;
   if (reg) {
     gfx::setTarget(g_drvFace);
@@ -1270,7 +1336,8 @@ static void updDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, u
       g_fuelKey = fuelKey(s);
     }
   }
-  // 真ん中の行(変わった行だけ)。行は針・弧・アイコン・印に掛からない
+  // 真ん中の行(変わった行だけ)。行は弧・アイコン・印に掛からない。針には掛かることがある(2.17.0: 針の根元を内へ伸ばした)ので、
+  // 写した行の四角も handsUpdate に渡して、そこに掛かる針を描き直す
   if (anyLine) {
     for (int i = 0; i < centerLines(c.mode); i++) {
       if (!lineNew[i]) continue;
@@ -1282,11 +1349,12 @@ static void updDrive(const Signals &s, const LinkStats &ls, const SysInfo &si, u
         gfx::setTarget(nullptr);
       }
       gfx::copyRectFrom(g_drvFace, r.x0, r.y0, r.x1, r.y1);
+      er[ne++] = r;
       memcpy(g_cKey[i], keys[i], sizeof(g_cKey[i]));
     }
   }
   // 針(1 秒に 1 回。内側を写した所に掛かる針も)
-  handsUpdate(hk, er, ne, 12);
+  handsUpdate(hk, er, ne, 24);
 }
 
 // ================================================================ アナログ計(仕様書に無いページ。2026-10-14 にブースト計として追加、

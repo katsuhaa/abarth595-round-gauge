@@ -69,8 +69,10 @@ void ringPaint(float cx, float cy, float rIn, float rOut, float a0, float a1, fl
 
 // ---- 多角形(縁をなめらかに塗る) ----
 // polyBegin → polyAdd(何個でも。重なった所は 1 回ぶんとして塗る)→ polyFill か polyToMask
+// polyAddHole(2.17.0): 前に polyAdd した形の中をくり抜く(枠だけの形を塗る。穴は、その形の中に全部入っていて、ほかの穴と重ならないこと)
 void polyBegin(Rect bounds);
 void polyAdd(const Pt *p, int n);
+void polyAddHole(const Pt *p, int n);
 void polyFill(uint16_t c);
 void polyToMask(uint8_t *mask);  // bounds の幅×高さ。0〜255 の濃さ
 
