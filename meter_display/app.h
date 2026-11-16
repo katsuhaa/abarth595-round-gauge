@@ -406,10 +406,12 @@ struct Period {
   bool canFwd;          // 次の期間がある(今日より前の期間)
 };
 bool today(int32_t *d);                                     // 今日(日本時間の日数)。時刻が分からなければ false
-bool periodAt(int level, int32_t anchor, Period *out);      // 今日が分からなければ false
+bool refDay(int32_t *d);                                    // 基準の日(2.17.1): いちばん新しい記録のある日(今日走っていれば今日)。記録が無ければ今日。それも分からなければ false
+bool lastRecDay(int32_t from, int32_t to, int32_t *d);      // from〜to の中で、いちばん新しい記録のある日(2.17.1。無ければ false)
+bool periodAt(int level, int32_t anchor, Period *out);      // 基準の日(refDay)までの期間。基準の日が無ければ false(2.17.1: GPS の時刻が無くても、記録があれば出す。1 日は記録のある日だけを送る)
 void bounds(int level, int32_t d, int32_t *first, int32_t *last);
-int32_t prevAnchor(int level, int32_t anchor);              // 前の期間の最後の日
-int32_t nextAnchor(int level, int32_t anchor);              // 次の期間の最後の日(今日より先は今日)
+int32_t prevAnchor(int level, int32_t anchor);              // 前の期間の最後の日(1 日は、前の記録のある日)
+int32_t nextAnchor(int level, int32_t anchor);              // 次の期間の最後の日(基準の日より先は基準の日。1 日は、次の記録のある日)
 // 日付(日本時間の日数)→ 年・月・日・曜日(0 = 日曜)
 void civil(int32_t d, int *y, int *m, int *dd, int *wday);
 int32_t daysFrom(int y, int m, int d);  // 年・月・日 → 日数

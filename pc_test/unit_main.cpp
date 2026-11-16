@@ -3170,7 +3170,7 @@ int main() {
     SysInfo si2 = si;
     ls2.infoValid = true; ls2.info.proto_ver = METER_LINK_PROTO_VER; ls2.info.can_fps[0] = 9999; ls2.info.can_fps[1] = 9999;
     si2.rc.enabled = true; si2.rc.gpsOk = true; si2.rc.fixType = 3; si2.rc.numSV = 99; si2.rc.pvtPerSec = 25; si2.rc.imuOk = true;
-    si2.rc.gLon = -1.99f; si2.rc.gLat = -1.99f;
+    si2.rc.gLon = 1.99f; si2.rc.gLat = 1.99f;  // 2.17.2: 「+」は「-」より幅が広い(2.17.1 までは -1.99)
     d.rpmOk = true; d.rpm = DATA_RING_MAX_RPM; d.sim = true; d.scene = 7; d.waterC = 118; d.fuelPct = 100;
     trip::setTimes(359999000u, 359999000u);
     ui::testRedraw();
@@ -4999,12 +4999,25 @@ int main() {
     holdOpen(d, tu);
     CHECK(ui::testOdoLevel() == odo::ODO_LV_WEEK && ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 10, 31), "長押しで 1 週(10 月の最後の週 10/25〜10/31)");
     holdOpen(d, tu);
-    CHECK(ui::testOdoLevel() == odo::ODO_LV_DAY && ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 10, 31), "長押しで 1 日(10/31)");
+    CHECK(ui::testOdoLevel() == odo::ODO_LV_WEEK, "記録の無い週(10/25〜10/31)は 1 日へ開かない(2.17.1)");
+    ui::tap(80, 233, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 10, 24), "1 週: 前の週(10/18〜10/24)");
+    holdOpen(d, tu);
+    CHECK(ui::testOdoLevel() == odo::ODO_LV_DAY && ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 10, 20), "長押しで 1 日(その週の記録のある日 10/20。2.17.1)");
     holdOpen(d, tu);
     CHECK(ui::testOdoLevel() == odo::ODO_LV_DAY, "1 日より細かい方は無い");
     ui::swipe(-1, tu += 100);
     ui::update(d, ls, ps, si, tu += 100);
-    CHECK(ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 10, 30), "1 日: 右へスワイプで前の日(記録の無い日も 1 日ずつ)");
+    CHECK(ui::testOdoDaysBack() == nov8 - sep10, "1 日: 右へスワイプで前の記録のある日(9/10。走っていない日は飛ばす。2.17.1)");
+    ui::swipe(-1, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoDaysBack() == nov8 - sep10, "1 日: いちばん古い記録の日より前へは送らない");
+    ui::swipe(1, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    ui::swipe(1, tu += 100);
+    ui::update(d, ls, ps, si, tu += 100);
+    CHECK(ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 11, 3), "1 日: 次の記録のある日へ(9/10 → 10/20 → 11/3)");
     ui::tap(233, 60, tu += 100);
     ui::update(d, ls, ps, si, tu += 100);
     CHECK(ui::testOdoLevel() == odo::ODO_LV_WEEK, "上の帯で 1 週");
@@ -5045,11 +5058,91 @@ int main() {
     char v[64];
     CHECK(ui::testInfoItem(4, 8, ls, ps, si, tu, v, sizeof(v)) >= 0 && strstr(v, "件") != nullptr, "本体の状態の 9 ページ目 = 走行記録(件数)");
     CHECK(gfx::missingGlyphs() == miss0, "走行記録の項目・本体の状態: 字はどれもある");
+    {  // 2.17.1: 起動し直して GPS の時刻がまだ分からない間も、保存した記録を出す(本人 11/15「バージョンアップをすると走行記録が消えてしまいます」)
+      odo::begin();  // 保存領域はそのまま(電源の入れ直し)。時刻も ODO もまだ
+      int32_t rd = 0, td2 = 0;
+      CHECK(!odo::today(&td2) && odo::refDay(&rd) && rd == nov8, "走行記録(時刻 待ち): 基準の日 = いちばん新しい記録の日(11/8)");
+      CHECK(odo::periodAt(odo::ODO_LV_YEAR, rd, &pd) && !pd.current && pd.odoKnown && pd.odoStart == 22000 && pd.odoEnd == 22615 && pd.km == 615 && !pd.canFwd,
+            "走行記録(時刻 待ち): 2026 年 = 22000〜22615(615 km)。「今年」は付かない");
+      CHECK(odo::periodAt(odo::ODO_LV_DAY, odo::daysFrom(2026, 11, 3), &pd) && pd.odoEnd == 22520 && pd.km == 180 && pd.canFwd && pd.canBack,
+            "走行記録(時刻 待ち): 11/3 = 22340〜22520(180 km)");
+      CHECK(odo::nextAnchor(odo::ODO_LV_MONTH, odo::daysFrom(2026, 10, 31)) == nov8, "走行記録(時刻 待ち): 次の期間はいちばん新しい記録の日まで");
+      ui::testShow(ui::SC_SET_LIST, 0);
+      ui::testTouch(tu);
+      ui::update(d, ls, ps, si, tu += 100);
+      holdOpen(d, tu);
+      CHECK(ui::screen() == ui::SC_ODO && ui::testOdoLevel() == odo::ODO_LV_YEAR && ui::testOdoDaysBack() == 0, "走行記録の画面(時刻 待ち): 1 年(いちばん新しい記録の年)から");
+      holdOpen(d, tu);
+      holdOpen(d, tu);
+      CHECK(ui::testOdoLevel() == odo::ODO_LV_MONTH && ui::testOdoDaysBack() == 0, "走行記録の画面(時刻 待ち): 長押しで 3 ヶ月 → 1 ヶ月(11 月)");
+      ui::tap(80, 233, tu += 100);
+      ui::update(d, ls, ps, si, tu += 100);
+      CHECK(ui::testOdoDaysBack() == nov8 - odo::daysFrom(2026, 10, 31), "走行記録の画面(時刻 待ち): 左の半分で前の月(10 月)");
+      for (int lv = 0; lv < odo::ODO_LV_COUNT; lv++)
+        for (int back : { 0, 3, 40, 70 }) {
+          ui::testShow(ui::SC_ODO, lv, back);
+          ui::update(d, ls, ps, si, tu += 100);
+        }
+      CHECK(gfx::missingGlyphs() == miss0, "走行記録の画面(時刻 待ち): 字はどれもある");
+      // 時刻が分かったら今日が基準(「今年」が付く)
+      in.utc = gtime::epoch(2026, 11, 9, 1, 0, 0);
+      in.odoKm = 22615;
+      odo::update(in, to += ODO_MIN_INTERVAL_MS + 1000);
+      CHECK(odo::refDay(&rd) && rd == nov8 && odo::periodAt(odo::ODO_LV_YEAR, rd, &pd) && pd.current && pd.odoEnd == 22615,
+            "走行記録: 時刻が分かっても、走っていない今日(11/9)は基準にしない(いちばん新しい記録の日 11/8。「今年」は付く)");
+      CHECK(odo::periodAt(odo::ODO_LV_DAY, rd, &pd) && !pd.current && !pd.canFwd && pd.canBack, "走行記録: 1 日(11/8)。今日ではなく、先へは送れない");
+      in.odoKm = 22620;
+      odo::update(in, to += ODO_MIN_INTERVAL_MS + 1000);
+      CHECK(odo::refDay(&rd) && rd == nov8 + 1 && odo::periodAt(odo::ODO_LV_DAY, rd, &pd) && pd.current && pd.km == 5 && pd.odoEnd == 22620, "走行記録: 今日走ったら今日(11/9)が基準");
+      // 記録が 1 件も無く、時刻も分からない: 期間は出せない(今までの「時刻 待ち」の画面)
+      memset(g_hostOdo, 0xFF, g_hostOdoSize);
+      odo::begin();
+      CHECK(!odo::refDay(&rd) && !odo::periodAt(odo::ODO_LV_YEAR, 0, &pd), "走行記録: 記録が無く時刻も分からなければ期間は出せない");
+    }
     memset(g_hostOdo, 0xFF, g_hostOdoSize);
     odo::begin();
     ui::testShow(ui::SC_DRIVE);
     ui::update(d, ls, ps, si, tu += 100);
     gfx::dirtyClear();
+  }
+
+  // ---------------- 2.17.1: デモ(模擬データ)の間は、累積時間 ▲▼・過負荷時間を数えない(本人 11/15「デモ画面で動作させたときに累積させる
+  //                  ことの意味はなんですか？」)
+  {
+    settingsDefaults(&set);
+    load::testReset();
+    const uint32_t a0 = trip::aboveMs(), b0 = trip::belowMs();
+    trip::setTimes(1000, 2000);
+    Signals m;
+    memset(&m, 0, sizeof(m));
+    m.linkUp = m.rpmOk = true;
+    m.rpm = set.loadRpm + 500;
+    uint32_t tm = 600000000;
+    m.sim = true;
+    trip::update(m, tm, set.loadRpm);
+    load::update(m, set, tm);
+    for (int i = 0; i < 50; i++) {
+      tm += 100;
+      trip::update(m, tm, set.loadRpm);
+      load::update(m, set, tm);
+    }
+    m.rpm = 800;
+    for (int i = 0; i < 50; i++) {
+      tm += 100;
+      trip::update(m, tm, set.loadRpm);
+      load::update(m, set, tm);
+    }
+    CHECK(trip::aboveMs() == 1000 && trip::belowMs() == 2000 && load::valueMs() == 0, "デモの間は累積時間 ▲▼・過負荷時間が増えない(2.17.1)");
+    m.sim = false;
+    m.rpm = set.loadRpm + 500;
+    for (int i = 0; i < 10; i++) {
+      tm += 100;
+      trip::update(m, tm, set.loadRpm);
+      load::update(m, set, tm);
+    }
+    CHECK(trip::aboveMs() == 2000 && trip::belowMs() == 2000 && load::valueMs() == 1000, "デモを切ったら、実車の回転数で増える");
+    trip::setTimes(a0, b0);
+    load::testReset();
   }
 
   // ---------------- 36. 2.17.0: 水温・燃料の針(本人 11/15「水温、燃料に針を追加して、オレンジにしてください」「オレンジの線は直線にして

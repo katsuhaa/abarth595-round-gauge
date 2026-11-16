@@ -319,7 +319,7 @@ int main(int argc, char **argv) {
     Signals a = sig(5600, '4', 112, 12);
     shot("DataAlarm", a, ui::SC_DATA);
     // 2.5.0: 外周の回転数の輪。振り切り(全周が赤)と、行の字がいちばん長くなる値(輪に掛からないこと)
-    si.rc.fixType = 3; si.rc.numSV = 99; si.rc.pvtPerSec = 25; si.rc.imuOk = true; si.rc.gLon = -1.99f; si.rc.gLat = -1.99f;
+    si.rc.fixType = 3; si.rc.numSV = 99; si.rc.pvtPerSec = 25; si.rc.imuOk = true; si.rc.gLon = 1.99f; si.rc.gLat = 1.99f;  // 2.17.2: 「+」は「-」より幅が広い
     ls.info.can_fps[0] = 9999; ls.info.can_fps[1] = 9999;
     trip::setTimes(359999000u, 359999000u);  // 99:59:59
     shot("DataRingMax", sig(8000, '3', 118, 100), ui::SC_DATA);
@@ -642,6 +642,11 @@ int main(int argc, char **argv) {
     shot("OdoDay", s, ui::SC_ODO, 4, 0);               // 1 日(今日)
     shot("OdoDayNoRun", s, ui::SC_ODO, 4, 5);          // 走らなかった日(その前の ODO)
     shot("SysOdo", s, ui::SC_SET_GRP, 8, 4);
+    odo::begin();  // 2.17.1: 起動し直して GPS の時刻がまだ分からない間も、保存した記録を出す(期間の後ろに「時刻 待ち」)
+    shot("OdoWaitYear", s, ui::SC_ODO, 0, 0);          // 1 年(いちばん新しい記録の年)
+    shot("OdoWaitWeek", s, ui::SC_ODO, 3, 0);          // 1 週
+    shot("OdoWaitDay", s, ui::SC_ODO, 4, 0);           // 1 日(いちばん新しい記録の日。字がいちばん長い)
+    odo::update(in, to += ODO_MIN_INTERVAL_MS + 1000);  // 時刻が分かった状態に戻す
     printf("%-22s missing=%u\n", "Odo", (unsigned)gfx::missingGlyphs());
   }
 

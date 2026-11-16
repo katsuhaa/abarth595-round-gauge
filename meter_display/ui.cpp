@@ -897,7 +897,7 @@ static void statusMake(int row, const LinkStats &ls, const SysInfo &si, uint32_t
       else set(0, "OK");
       break;
     case 2:
-      o->name = "RaceChrono";
+      o->name = "RC";  // 2.17.2: 「RaceChrono」は字を大きくすると真ん中に入らないので「RC」(本人 11/16「状態表示のフォントが小さすぎて見えません」)
       if (!r.enabled) set(1, "切");
       else if (!r.bleOk) set(2, "不可");
       else if (r.connected) set(0, "接続中");
@@ -977,15 +977,16 @@ static int centerLines(uint8_t mode) {
 // 行 i の範囲(行だけを描き直すときは、この四角を g_drvBase から戻してから描く)。文字の全部が入り、ほかの行と重ならない。
 // どれも真ん中の四角 CB_RECT の中で、画素の中心が半径 114 以内(2.17.0: 針の根元 HAND_R_IN がこの中まで来るので、行を描き直したら
 // 針も描き直す。updDrive)。
-// ピークの数字(4 桁で幅 190)と GPS の「衛星 12」は、アイコンの四角の端に少し入る(戻すのは g_drvBase なので、アイコンも元のまま)
+// ピークの数字(4 桁で幅 190)と接続の状態の 1 行目の四角は、アイコンの四角の端に少し入る(戻すのは g_drvBase なので、アイコンも元のまま。
+// 2.17.2: 1 行目の字は入らなくなった。2.17.1 までは「衛星 12」の字が入っていた)
 static gfx::Rect centerLineRect(uint8_t mode, int i) {
   static const gfx::Rect LOAD_R[4] = { { 185, 158, 281, 182 }, { 143, 182, 323, 213 }, { 140, 213, 327, 265 }, { 150, 266, 316, 296 } };  // 2.11.0: タイトルを大きく
   if (mode == CM_PEAK) return gfx::Rect{ 136, 186, 330, 282 };  // 2.11.0: 「rpm」も(色が変わるので行に入れた)
   if (mode == CM_LOAD) return LOAD_R[i & 3];
   if (mode == CM_IDLE) return gfx::Rect{ 138, 206, 329, 292 };
   if (mode == CM_CLOCK) return gfx::Rect{ CENTER_X0, (int16_t)(CLOCK_DIGI_BASE - 54), CENTER_X1, (int16_t)(CLOCK_DIGI_BASE + 6) };
-  const int mid = STATUS_Y0 + STATUS_PITCH * i;  // 接続の状態
-  return gfx::Rect{ CENTER_X0, (int16_t)(mid - 14), (int16_t)(i < 2 ? 329 : 331), (int16_t)(mid + 14) };
+  const int mid = STATUS_Y0 + STATUS_PITCH * i;  // 接続の状態(2.17.2: 字を大きくしたので高さ 28 → 31 = 行の間隔。右端は 329 にそろえた)
+  return gfx::Rect{ CENTER_X0, (int16_t)(mid - 16), 329, (int16_t)(mid + 15) };
 }
 static void centerKey(const Center &c, int i, char *k, size_t n) {
   switch (c.mode) {
@@ -1059,13 +1060,15 @@ static void centerLine(const Center &c, int i) {
     const StatusLine &l = c.st[i & 3];
     const int mid = STATUS_Y0 + STATUS_PITCH * i;
     const uint16_t dot = l.kind == 0 ? C_DOT_OK : (l.kind == 2 ? alarmOn(bg) : C_DOT_OFF);
-    gfx::fillCircle((float)STATUS_DOT_X, (float)mid, 6.0f, fadeOn(bg, dot));
-    gfx::drawText(FONT_NUM600_22, STATUS_NAME_X, (float)(mid + 7), l.name, fadeOn(bg, fgOn(bg)));
+    // 2.17.2: 字を大きくした(本人 11/16「状態表示のフォントが小さすぎて見えません」): 名前・英数字の値 22 → 30 px、日本語の値 18 → 30 px、
+    //   「衛星」14 → 24 px、点の半径 6 → 7
+    gfx::fillCircle((float)STATUS_DOT_X, (float)mid, 7.0f, fadeOn(bg, dot));
+    gfx::drawText(FONT_NUM600_30, STATUS_NAME_X, (float)(mid + 10), l.name, fadeOn(bg, fgOn(bg)));
     float x = STATUS_VALUE_X;
-    if (l.sv) x = gfx::drawText(FONT_JP500_14, x, (float)(mid + 4), "衛星", fadeOn(bg, labelOn(bg))) + 3;
+    if (l.sv) x = gfx::drawText(FONT_JP500_24, x, (float)(mid + 10), "衛星", fadeOn(bg, labelOn(bg))) + 4;
     const uint16_t vc = l.kind == 2 ? alarmOn(bg) : ((l.kind == 0 || l.sv) ? fgOn(bg) : labelOn(bg));
-    if (isAsciiLike(l.value)) gfx::drawText(FONT_NUM600_22, x, (float)(mid + 7), l.value, fadeOn(bg, vc));
-    else gfx::drawText(FONT_JP600_18, x, (float)(mid + 5), l.value, fadeOn(bg, vc));
+    if (isAsciiLike(l.value)) gfx::drawText(FONT_NUM600_30, x, (float)(mid + 10), l.value, fadeOn(bg, vc));
+    else gfx::drawText(FONT_JP600_30, x, (float)(mid + 11), l.value, fadeOn(bg, vc));
   }
 }
 // 真ん中の変わらない所(下地は背景で塗ってある): 黒い円、「rpm」、▼ 3000rpm の見出し
@@ -2102,28 +2105,32 @@ static void fmtSigned(char *out, size_t n, float v, int dec) {  // マイナス�
   else snprintf(out, n, "+%.*f", dec, (double)v);
 }
 
-// 1 行: 点、名前(GPS・IMU・CAN)、そのあとに「小さい名前 値」の組を並べる。全体を中央に寄せる
+// 1 行: 点、名前(GPS・IMU・CAN)、そのあとに「小さい名前 値」の組を並べる。全体を中央に寄せる。
+// 2.17.2: 字を大きくした(本人 11/16「データ画面、オープニング画面の状態表示のフォントが小さすぎて見えません」): 名前・値 28 → 34 px、
+//   小さい名前 24 → 30 px。点と名前の間を 4 px あけ、組の間は 16 → 14 px。行の間隔 36 → 38、並びを GPS・CAN・IMU に(updData)
 struct StatPart {
   const char *label;  // 小さい名前(無ければ "")
   char value[24];
   uint16_t col;       // 値の色
 };
 static void drawStatLine(int y, const char *name, uint16_t dot, const StatPart *p, int n) {
-  fillRectData(36, y - 28, 394, 36, C_BG);
-  float w = 16 + gfx::textWidth(FONT_NUM600_28, name) + 16;
+  fillRectData(24, y - 31, 418, 38, C_BG);  // 字の上端(「受信なし」などで y − 29)から下端(「g」で y + 6)まで。IMU の行は左端が x = 35 まで来る
+  float w = 16 + 4 + gfx::textWidth(FONT_NUM600_34, name) + 14;
   for (int i = 0; i < n; i++) {
-    if (p[i].label[0]) w += mixWidth(FONT_NUM600_24, FONT_JP500_24, p[i].label) + 6;
-    w += mixWidth(FONT_NUM600_28, FONT_JP600_30, p[i].value) + (i + 1 < n ? 16 : 0);
+    if (p[i].label[0]) w += mixWidth(FONT_NUM600_30, FONT_JP600_30, p[i].label) + 5;
+    w += mixWidth(FONT_NUM600_34, FONT_JP600_34, p[i].value) + (i + 1 < n ? 14 : 0);
   }
   float x = floorf(233 - w * 0.5f);
-  gfx::fillCircle(x + 8, (float)(y - 10), 8, dot);
-  x = gfx::drawText(FONT_NUM600_28, x + 16, (float)y, name, C_WHITE) + 16;
+  gfx::fillCircle(x + 8, (float)(y - 12), 8, dot);
+  x = gfx::drawText(FONT_NUM600_34, x + 20, (float)y, name, C_WHITE) + 14;
   for (int i = 0; i < n; i++) {
-    if (p[i].label[0]) x = mixDraw(FONT_NUM600_24, FONT_JP500_24, x, (float)y, p[i].label, C_LABEL) + 6;
-    x = mixDraw(FONT_NUM600_28, FONT_JP600_30, x, (float)y, p[i].value, p[i].col) + 16;
+    if (p[i].label[0]) x = mixDraw(FONT_NUM600_30, FONT_JP600_30, x, (float)y, p[i].label, C_LABEL) + 5;
+    x = mixDraw(FONT_NUM600_34, FONT_JP600_34, x, (float)y, p[i].value, p[i].col) + 14;
   }
 }
-// 3 行ぶんの中身を作る(描くかどうかは文字の並びが変わったかで決める)
+// 3 行ぶんの中身を作る(描くかどうかは文字の並びが変わったかで決める)。
+// 2.17.2: 字を大きくしたので、行が外周の輪に掛からないよう桁を抑える(衛星の数・Hz は 2 桁、加速度は ±9.99、CAN の受信数は 4 桁まで。
+//   車ではこの範囲を出ない。2.17.1 までは CAN の受信数が 5 桁でも入っていた)
 static int statLines(int row, const LinkStats &ls, const SysInfo &si, const char **name, uint16_t *dot, StatPart *p) {
   const RcStats &r = si.rc;
   for (int i = 0; i < 2; i++) {
@@ -2137,8 +2144,8 @@ static int statLines(int row, const LinkStats &ls, const SysInfo &si, const char
     if (!r.gpsOn) { snprintf(p[0].value, 24, "切"); p[0].col = C_LABEL; return 1; }  // 2.10.0: 送信の入・切に関係なく動かす
     if (!r.gpsOk) { snprintf(p[0].value, 24, "受信なし"); p[0].col = C_ALARM; *dot = C_ALARM; return 1; }
     p[0].label = "衛星";
-    snprintf(p[0].value, 24, "%u", (unsigned)r.numSV);
-    snprintf(p[1].value, 24, "%u Hz", (unsigned)r.pvtPerSec);
+    snprintf(p[0].value, 24, "%u", (unsigned)(r.numSV > 99 ? 99 : r.numSV));
+    snprintf(p[1].value, 24, "%u Hz", (unsigned)(r.pvtPerSec > 99 ? 99 : r.pvtPerSec));
     if (r.fixType >= 2) *dot = C_DOT_OK;
     return 2;
   }
@@ -2147,9 +2154,9 @@ static int statLines(int row, const LinkStats &ls, const SysInfo &si, const char
     if (!r.enabled) { snprintf(p[0].value, 24, "切"); p[0].col = C_LABEL; return 1; }
     if (!r.imuOk) { snprintf(p[0].value, 24, "応答なし"); p[0].col = C_ALARM; *dot = C_ALARM; return 1; }
     p[0].label = "前後";
-    fmtSigned(p[0].value, 24, r.gLon, 2);
+    fmtSigned(p[0].value, 24, clampf(r.gLon, -9.99f, 9.99f), 2);
     p[1].label = "横";
-    fmtSigned(p[1].value, 24, r.gLat, 2);
+    fmtSigned(p[1].value, 24, clampf(r.gLat, -9.99f, 9.99f), 2);
     strncat(p[1].value, " g", 23 - strlen(p[1].value));
     *dot = C_DOT_OK;
     return 2;
@@ -2161,9 +2168,9 @@ static int statLines(int row, const LinkStats &ls, const SysInfo &si, const char
     return 1;
   }
   p[0].label = "C";
-  snprintf(p[0].value, 24, "%u/s", (unsigned)ls.info.can_fps[0]);
+  snprintf(p[0].value, 24, "%u/s", (unsigned)(ls.info.can_fps[0] > 9999 ? 9999 : ls.info.can_fps[0]));
   p[1].label = "B";
-  snprintf(p[1].value, 24, "%u/s", (unsigned)ls.info.can_fps[1]);
+  snprintf(p[1].value, 24, "%u/s", (unsigned)(ls.info.can_fps[1] > 9999 ? 9999 : ls.info.can_fps[1]));
   *dot = ls.info.can_fps[0] ? C_DOT_OK : C_ALARM;
   return 2;
 }
@@ -2173,7 +2180,7 @@ static const int DATA_COL_W = 204;
 static void drawDataCell(int colX, const IconData &icon, bool ok, int value, const char *unit, uint8_t lvl) {
   // lvl(2.14.0): 1 = 注意(暗い黄。点滅なし)、2 = 警告(赤で点滅。消灯側は暗い赤)
   const uint16_t ac = lvl == 2 ? (g_alarmOff ? alarmDimOn(C_BG) : C_ALARM) : C_CAUTION;
-  fillRectData(colX - 2, 182, DATA_COL_W + 4, 76, C_BG);
+  fillRectData(colX - 2, 186, DATA_COL_W + 4, 72, C_BG);  // 2.17.2: 上端 182 → 186(上の 3 行の IMU の「g」が 185 まで来る。字は 196 から)
   char t[20];
   if (!ok) snprintf(t, sizeof(t), "– –");
   else if (value < 0) snprintf(t, sizeof(t), "−%d", -value);  // 氷点下。マイナスは U+2212
@@ -2246,15 +2253,17 @@ static void updData(const Signals &s, const LinkStats &ls, const SysInfo &si, ui
     g_full = false;
     gfx::fillAll(C_BG);
   }
+  // 2.17.2: 並びは GPS・CAN・IMU(字を大きくしたので、いちばん長い IMU の行を、輪の内側の幅が広い 3 行目に。2.17.1 までは GPS・IMU・CAN)
+  static const int ROW_KIND[3] = { 0, 2, 1 };  // 行ごとの中身(statLines の row: 0 = GPS、1 = IMU、2 = CAN)
   for (int row = 0; row < 3; row++) {
     const char *name;
     uint16_t dot;
     StatPart p[2];
-    int n = statLines(row, ls, si, &name, &dot, p);
+    int n = statLines(ROW_KIND[row], ls, si, &name, &dot, p);
     char key[64];
     snprintf(key, sizeof(key), "%04X|%s|%s|%s|%s", dot, p[0].label, p[0].value, n > 1 ? p[1].label : "", n > 1 ? p[1].value : "");
     if (full || strcmp(key, g_dStatKey[row]) != 0) {
-      drawStatLine(96 + 36 * row, name, dot, p, n);
+      drawStatLine(103 + 38 * row, name, dot, p, n);  // 2.17.2: 96 + 36 × 行 → 103 + 38 × 行
       strncpy(g_dStatKey[row], key, sizeof(g_dStatKey[row]) - 1);
       g_dStatKey[row][sizeof(g_dStatKey[row]) - 1] = 0;
     }
@@ -3143,9 +3152,12 @@ static void drawOdoArrows(bool back, bool fwd) {
 static void mixC(const FontData &fa, const FontData &fj, float base, const char *t, uint16_t c) {
   mixDraw(fa, fj, 233 - mixWidth(fa, fj, t) * 0.5f, base, t, c);
 }
-static bool odoCanOpen() {  // 細かい方がある(1 日でない)、今日が分かっている
-  int32_t d;
-  return g_odoLevel < odo::ODO_LV_DAY && odo::today(&d);
+static bool odoCanOpen() {  // 細かい方がある(1 日でない)、基準の日がある(2.17.1: いちばん新しい記録のある日)。1 週 → 1 日は、その週に記録のある日があるとき
+  int32_t d, f, l;
+  if (g_odoLevel >= odo::ODO_LV_DAY || !odo::refDay(&d)) return false;
+  if (g_odoLevel < odo::ODO_LV_WEEK) return true;
+  odo::bounds(g_odoLevel, g_odoAnchor, &f, &l);
+  return odo::lastRecDay(f, l, &d);
 }
 static void updOdo(uint32_t now) {
   (void)now;
@@ -3155,7 +3167,7 @@ static void updOdo(uint32_t now) {
   odo::Status st;
   odo::status(&st);
   char key[sizeof(g_odoKey)];
-  snprintf(key, sizeof(key), "O%d|%ld|%d|%ld|%d|%lu|%lu|%lu|%d|%d|%d|%d|%lu|%d", g_odoLevel, (long)g_odoAnchor, (int)known, (long)p.first, (int)p.odoKnown,
+  snprintf(key, sizeof(key), "O%d|%d|%ld|%d|%ld|%d|%lu|%lu|%lu|%d|%d|%d|%d|%lu|%d", (int)st.timeKnown, g_odoLevel, (long)g_odoAnchor, (int)known, (long)p.first, (int)p.odoKnown,
            (unsigned long)p.odoEnd, (unsigned long)p.odoStart, (unsigned long)p.aboveS, (int)p.hasRecord, (int)p.canBack, (int)p.canFwd, (int)p.current,
            (unsigned long)st.cur, (int)st.curOk);
   if (!g_full && strcmp(key, g_odoKey) == 0) return;
@@ -3165,7 +3177,7 @@ static void updOdo(uint32_t now) {
   g_tagsDirty = true;
   drawTopBack(ODO_NAME[g_odoLevel]);
   char t[64], a[24], b[24];
-  if (!known) {  // GPS の時刻がまだ分からない: 期間は出せない。今の ODO と起動からの距離
+  if (!known) {  // GPS の時刻がまだ分からず、保存した記録も無い: 期間は出せない。今の ODO と起動からの距離
     mixC(FONT_NUM600_34, FONT_JP600_34, 162, "時刻 待ち", C_LABEL2);
     if (st.curOk) {
       fmtOdo(t, sizeof(t), st.cur);
@@ -3178,6 +3190,8 @@ static void updOdo(uint32_t now) {
     return;
   }
   odoPeriodText(g_odoLevel, p, t, sizeof(t));
+  // 2.17.1: GPS の時刻が無くても、保存した記録を出す(いちばん新しい記録の日まで)。時刻が分かる前は期間の後ろに「時刻 待ち」(「今年・今月…」は付かない)
+  if (!st.timeKnown) strncat(t, "  時刻 待ち", sizeof(t) - strlen(t) - 1);
   mixC(FONT_NUM600_34, FONT_JP600_34, 162, t, C_LABEL2);
   if (!p.odoKnown) {
     textC(FONT_JP600_44, 233, 240, "記録なし", C_LABEL);
@@ -4281,7 +4295,7 @@ static void itemOpen(const Item &it, Screen from) {
     go(SC_SET_RESET);
   } else if (it.kind == K_ODO) {  // 2.15.0: 走行記録の 1 年の画面(今年から。2.15.1 までは 3 ヶ月)
     int32_t d = 0;
-    odo::today(&d);
+    odo::refDay(&d);
     g_odoLevel = odo::ODO_LV_YEAR;
     g_odoAnchor = d;
     go(SC_ODO);
@@ -4320,9 +4334,10 @@ static void menuOpen() {
     case SC_ODO:  // 2.15.0: 細かい方へ(同じ日を含む期間 = その期間の中の、今日までで最後の期間)
       if (odoCanOpen()) {
         int32_t f, l, td = 0;
-        odo::today(&td);
+        odo::refDay(&td);
         odo::bounds(g_odoLevel, g_odoAnchor, &f, &l);
         g_odoAnchor = l < td ? l : td;
+        if (g_odoLevel == odo::ODO_LV_WEEK) odo::lastRecDay(f, l, &g_odoAnchor);  // 2.17.1: 1 日は、その週のいちばん新しい記録のある日から
         g_odoLevel++;
         g_full = true;
       }
@@ -4923,7 +4938,7 @@ void testShow(Screen sc, int a, int b) {
     g_canPp = a == 1;
   } else if (sc == SC_ODO) {  // 2.15.0: a = 細かさ(odo::ODO_LV_*。0 = 1 年 … 4 = 1 日)、b = 今日から何日前の日を含む期間
     int32_t td = 0;
-    odo::today(&td);
+    odo::refDay(&td);
     g_odoLevel = (a >= 0 && a < odo::ODO_LV_COUNT) ? a : 0;
     g_odoAnchor = td - (b > 0 ? b : 0);
     g_setItem = ODO_FIRST;
@@ -4961,7 +4976,7 @@ int testOdoLevel() {
 }
 int testOdoDaysBack() {
   int32_t td = 0;
-  odo::today(&td);
+  odo::refDay(&td);
   return (int)(td - g_odoAnchor);
 }
 bool testHolding() {

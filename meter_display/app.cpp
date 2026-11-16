@@ -1059,6 +1059,7 @@ void update(const Signals &s, uint32_t nowMs, int rpm) {
   g_started = true;
   g_lastMs = nowMs;
   if (dt > 500) dt = 500;  // 画面の切り替えなどで間が空いても、数えすぎない
+  if (s.sim) return;  // 2.17.1: デモ(模擬データ)の間は数えない(本人 11/15「デモ画面で動作させたときに累積させることの意味はなんですか？」)
   if (s.speedOk && s.speedKmh >= MOVING_SPEED_KMH) {
     g_moving += dt;
     if (s.throttleOk && s.throttlePct >= WOT_THROTTLE_PCT) g_wot += dt;
@@ -1142,6 +1143,8 @@ static uint32_t g_seq = 0;          // 最後の通し番号
 static uint32_t g_records = 0, g_writes = 0, g_failures = 0;
 static int32_t g_earliest = 0;      // いちばん古い記録の日
 static bool g_haveEarliest = false;
+static int32_t g_newest = 0;        // いちばん新しい記録の日(2.17.1。時刻が分かる前の基準の日)
+static bool g_haveNewest = false;
 static bool g_haveLatest = false;   // 起動時に読んだいちばん新しい記録(今日の続きに使う)
 static Rec g_latest;
 static bool g_haveLast = false;     // 最後に書いた記録(状態の表示)
@@ -1233,6 +1236,7 @@ static void tabPut(int32_t d, uint32_t seq, uint32_t start, uint32_t odo, uint32
   e->odo = odo;
   e->aboveS = aboveS;
   if (!g_haveEarliest || d < g_earliest) g_earliest = d, g_haveEarliest = true;
+  if (!g_haveNewest || d > g_newest) g_newest = d, g_haveNewest = true;
 }
 static int32_t dayOf(uint32_t utc) {
   return (int32_t)(((uint64_t)utc + CLOCK_TZ_SEC) / 86400u);
@@ -1305,7 +1309,7 @@ static void resetState() {
   g_storageOk = false;
   g_slots = g_pos = g_seq = 0;
   g_records = g_writes = g_failures = 0;
-  g_haveEarliest = g_haveLatest = g_haveLast = false;
+  g_haveEarliest = g_haveNewest = g_haveLatest = g_haveLast = false;
   g_earliest = 0;
   g_dayKnown = g_startSet = g_aboveInit = false;
   g_curDay = 0;
@@ -1523,6 +1527,52 @@ bool today(int32_t *d) {
   *d = g_curDay;
   return true;
 }
+// 基準の日(2.17.1): いちばん新しい記録のある日(今日走っていれば今日。まだ書いていない分も入れる)。GPS の時刻は要らない
+// (本人 11/15「今日より新しいデータは無いのに今日から表示する必要はなに？」)。記録が 1 件も無いときだけ、今日(時刻が分かっていれば)
+bool refDay(int32_t *d) {
+  bool have = g_haveNewest;
+  int32_t r = g_newest;
+  if (g_dayKnown && (!have || g_curDay > r)) {
+    uint32_t st, od, a;
+    if (!have || dayRec(g_curDay, &st, &od, &a)) r = g_curDay, have = true;
+  }
+  if (!have) return false;
+  *d = r;
+  return true;
+}
+// 記録のある日(今日のまだ書いていない分も)を探す。from〜to(両端を含む)の中でいちばん新しい日
+bool lastRecDay(int32_t from, int32_t to, int32_t *d) {
+  int32_t ref;
+  if (!refDay(&ref)) return false;
+  if (to > ref) to = ref;
+  const int32_t lo = earliest();
+  if (from < lo) from = lo;
+  for (int32_t x = to; x >= from && x > to - ODO_TABLE_DAYS; x--) {
+    uint32_t st, od, a;
+    if (dayRec(x, &st, &od, &a)) {
+      *d = x;
+      return true;
+    }
+  }
+  return false;
+}
+// d より前で、いちばん近い記録のある日
+static bool prevRecDay(int32_t d, int32_t *out) {
+  return lastRecDay(d - ODO_TABLE_DAYS, d - 1, out);
+}
+// d より後で、いちばん近い記録のある日(基準の日まで)
+static bool nextRecDay(int32_t d, int32_t *out) {
+  int32_t ref;
+  if (!refDay(&ref)) return false;
+  for (int32_t x = d + 1; x <= ref && x < d + ODO_TABLE_DAYS; x++) {
+    uint32_t st, od, a;
+    if (dayRec(x, &st, &od, &a)) {
+      *out = x;
+      return true;
+    }
+  }
+  return false;
+}
 // 日 d を含む期間の最初と最後の日(level: 0 = 1 年、1 = 3 ヶ月(1〜3 月・4〜6 月・7〜9 月・10〜12 月)、2 = 1 ヶ月、3 = 1 週(ODO_WEEK_START 始まり)、
 // 4 = 1 日。2.15.2: 1 年を足した)
 void bounds(int level, int32_t d, int32_t *first, int32_t *last) {
@@ -1557,12 +1607,12 @@ static bool odoAt(int32_t d, uint32_t *odo) {
 }
 bool periodAt(int level, int32_t anchor, Period *o) {
   memset(o, 0, sizeof(*o));
-  if (!g_dayKnown) return false;
-  const int32_t today = g_curDay;
+  int32_t today;  // 基準の日(いちばん新しい記録のある日。2.17.1)
+  if (!refDay(&today)) return false;
   if (anchor > today) anchor = today;
   bounds(level, anchor, &o->first, &o->last);
   const int32_t end = o->last < today ? o->last : today;
-  o->current = o->last >= today;
+  o->current = g_dayKnown && o->first <= g_curDay && o->last >= g_curDay;  // 「今年・今月…」は今日が分かっていて、今日を含む期間だけ
   // 終わりの ODO と、始まりの ODO(期間の前の日の終わりの ODO。前に記録が無ければ、期間の中の最初の記録の始まり)
   o->odoKnown = odoAt(end, &o->odoEnd);
   bool startOk = odoAt(o->first - 1, &o->odoStart);
@@ -1577,19 +1627,27 @@ bool periodAt(int level, int32_t anchor, Period *o) {
   o->km = o->odoKnown && o->odoEnd >= o->odoStart ? o->odoEnd - o->odoStart : 0;
   o->canBack = earliest() < o->first;
   o->canFwd = o->last < today;
+  if (level == ODO_LV_DAY) {  // 2.17.1: 1 日は、記録のある日だけを送る(走っていない日は出さない)
+    int32_t x;
+    o->canBack = prevRecDay(o->first, &x);
+    o->canFwd = nextRecDay(o->last, &x);
+  }
   return true;
 }
 int32_t prevAnchor(int level, int32_t anchor) {  // 前の期間の、今日までで最後の日
   int32_t f, l;
+  if (level == ODO_LV_DAY) return prevRecDay(anchor, &l) ? l : anchor;  // 2.17.1: 前の、記録のある日
   bounds(level, anchor, &f, &l);
   bounds(level, f - 1, &f, &l);
   return l;
 }
 int32_t nextAnchor(int level, int32_t anchor) {  // 次の期間の、今日までで最後の日
   int32_t f, l;
+  if (level == ODO_LV_DAY) return nextRecDay(anchor, &l) ? l : anchor;  // 2.17.1: 次の、記録のある日
   bounds(level, anchor, &f, &l);
   bounds(level, l + 1, &f, &l);
-  return g_dayKnown && l > g_curDay ? g_curDay : l;
+  int32_t ref;
+  return refDay(&ref) && l > ref ? ref : l;
 }
 
 void testReset() {
@@ -1628,6 +1686,10 @@ void update(const Signals &s, const Settings &set, uint32_t nowMs) {
   g_started = true;
   g_lastMs = nowMs;
   if (dt > 500) dt = 500;  // 画面の切り替えなどで間が空いても、数えすぎない(trip と同じ)
+  if (s.sim) {  // 2.17.1: デモ(模擬データ)の間は数えない(増やさず、減らさず、リセットの数えもやり直す)
+    g_lowSince = 0;
+    return;
+  }
   // 過負荷 回転数未満が続いている時間(リセットの数え。▼ 3000rpm の経過時間と同じ数え方。信号なしは 0 から)。2.12.0: 設定の過負荷 回転数。
   // 境目は過負荷時間が増える所(以上)とそろえた(2.11.0 までは「以下」で、ちょうどのときは増えながらリセットも数えていた)
   if (s.rpmOk && s.rpm < set.loadRpm) {
